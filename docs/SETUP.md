@@ -81,11 +81,20 @@ BASE_PYTHON=/path/to/python3.10 tools/setup_integrated_runtime_env.sh
 REFERENCE_VENV=/path/to/known-good-venv tools/setup_integrated_runtime_env.sh
 RUN_DINO_SMOKE=0 tools/setup_integrated_runtime_env.sh
 BUILD_DETECTRON2=1 tools/setup_integrated_runtime_env.sh
+TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh
 ```
 
 `BUILD_DETECTRON2=auto` is the default. It builds the bundled Detectron2/EVA02 extension only when `eva02/eva02_det/detectron2/_C*.so` is missing.
 
 For Blackwell GPUs, use a PyTorch/CUDA build that supports the GPU architecture. On this machine the known-good runtime is the existing EVA02 inference venv, which can be passed through `REFERENCE_VENV`.
+
+TensorRT engines are not treated as portable artifacts. Rebuild them on each target PC. The default build uses BF16; if BF16 engine creation fails, setup retries with FP16 at the same default engine path. Set `TRT_FALLBACK_FP16=0` to make BF16 failure hard-fail.
+
+GPU notes:
+
+- RTX 5090 is Blackwell-class and needs an `sm_120` capable PyTorch/CUDA/TensorRT stack.
+- RTX 4090 is Ada-class and should work when the TensorRT engine is rebuilt locally.
+- Do not copy a `.engine` file between different GPU/driver/TensorRT combinations.
 
 ## 4. Run
 

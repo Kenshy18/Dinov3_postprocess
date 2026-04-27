@@ -11,6 +11,8 @@ ONNX_PATH="${ONNX_PATH:-$BUNDLE_ROOT/output/onnx/dinov3_backbone_fp32_1280x720_d
 ENGINE_PATH="${ENGINE_PATH:-$BUNDLE_ROOT/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
 CHECKPOINT="${CHECKPOINT:-$BUNDLE_ROOT/checkpoints/detector/model_final.pth}"
 BACKBONE_WEIGHTS="${BACKBONE_WEIGHTS:-$BUNDLE_ROOT/checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth}"
+TRT_PRECISION="${TRT_PRECISION:-bf16}"
+TRT_FORCE_LAYER_PRECISION="${TRT_FORCE_LAYER_PRECISION:-1}"
 
 mkdir -p "$(dirname "$ONNX_PATH")" "$(dirname "$ENGINE_PATH")"
 
@@ -24,12 +26,19 @@ mkdir -p "$(dirname "$ONNX_PATH")" "$(dirname "$ENGINE_PATH")"
   --no-verify-ort \
   --no-verify-trt
 
-"$PYTHON" "$TOOLS_DIR/build_trt_backbone_engine.py" \
+build_args=(
+  "$TOOLS_DIR/build_trt_backbone_engine.py"
   --onnx "$ONNX_PATH" \
   --engine "$ENGINE_PATH" \
-  --precision bf16 \
+  --precision "$TRT_PRECISION" \
   --min-shape 1x3x1280x720 \
   --opt-shape 8x3x1280x720 \
   --max-shape 8x3x1280x720 \
-  --workspace-gb 8 \
-  --force-layer-precision
+  --workspace-gb 8
+)
+
+if [[ "$TRT_FORCE_LAYER_PRECISION" == "1" ]]; then
+  build_args+=(--force-layer-precision)
+fi
+
+"$PYTHON" "${build_args[@]}"

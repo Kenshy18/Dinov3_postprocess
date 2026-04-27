@@ -699,14 +699,22 @@ def _infer_one_video(
         "processed_frames": int(processed),
         "detections": int(detections),
         "detections_per_frame": float(detections / max(1, processed)),
+        "e2e_fps": float(wall_fps),
+        "e2e_ms_per_frame": float(1000.0 / wall_fps) if wall_fps > 0 else 0.0,
         "wall_elapsed_sec": float(wall_elapsed),
         "wall_fps": float(wall_fps),
         "wall_ms_per_frame": float(1000.0 / wall_fps) if wall_fps > 0 else 0.0,
         "warmup_frames": int(warmup_frames),
         "measured_frames": int(measured_frames),
         "measured_time_sec": float(measured_time),
+        "compute_fps": float(measured_fps),
+        "compute_ms_per_frame": float(1000.0 / measured_fps) if measured_fps > 0 else 0.0,
         "measured_fps": float(measured_fps),
         "measured_ms_per_frame": float(1000.0 / measured_fps) if measured_fps > 0 else 0.0,
+        "fps_note": (
+            "e2e_fps/wall_fps includes decode/preprocess wait, warmup frames, and writer flush. "
+            "compute_fps/measured_fps excludes warmup and starts timing after each prefetched batch is available."
+        ),
         "jsonl_size_bytes": int(jsonl_path.stat().st_size if jsonl_path.is_file() else 0),
         "overlay_size_bytes": int(overlay_path.stat().st_size if overlay_path is not None and overlay_path.is_file() else 0),
     }
@@ -892,8 +900,8 @@ def main() -> int:
         )
         runs.append(result)
         print(
-            f"[DONE] {video_path.name}: wall_fps={result['wall_fps']:.2f} "
-            f"measured_fps={result['measured_fps']:.2f} "
+            f"[DONE] {video_path.name}: e2e_fps={result['e2e_fps']:.2f} "
+            f"compute_fps={result['compute_fps']:.2f} "
             f"det/frame={result['detections_per_frame']:.3f}"
         )
 

@@ -23,6 +23,8 @@ SMOKE_INPUT="${SMOKE_INPUT:-$REPO_ROOT/input/アクセル様２月解析用白�
 SMOKE_OUTPUT="${SMOKE_OUTPUT:-$RUNTIME_DIR/output_runs/setup_smoke}"
 REBUILD_TRT="${REBUILD_TRT:-auto}"
 ENGINE_PATH="${ENGINE_PATH:-$REPO_ROOT/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
+TRT_PRECISION="${TRT_PRECISION:-bf16}"
+TRT_FALLBACK_FP16="${TRT_FALLBACK_FP16:-1}"
 
 if [[ -z "$BASE_PYTHON" ]]; then
   if [[ -n "${REFERENCE_VENV:-}" && -x "$REFERENCE_VENV/bin/python" ]]; then
@@ -118,7 +120,16 @@ PY
 
 if [[ "$REBUILD_TRT" == "1" || ( "$REBUILD_TRT" == "auto" && ! -f "$ENGINE_PATH" ) ]]; then
   echo "[SETUP] TensorRT engine missing or rebuild requested; rebuilding: $ENGINE_PATH"
-  PYTHON="$PY" "$TOOLS_DIR/rebuild_default_trt_backbone.sh"
+  echo "[SETUP] TensorRT precision: $TRT_PRECISION"
+  if ! PYTHON="$PY" TRT_PRECISION="$TRT_PRECISION" "$TOOLS_DIR/rebuild_default_trt_backbone.sh"; then
+    if [[ "$TRT_PRECISION" == "bf16" && "$TRT_FALLBACK_FP16" == "1" ]]; then
+      echo "[WARN] BF16 TensorRT build failed; retrying with FP16 at the same engine path"
+      rm -f "$ENGINE_PATH" "${ENGINE_PATH%.engine}.json"
+      PYTHON="$PY" TRT_PRECISION=fp16 "$TOOLS_DIR/rebuild_default_trt_backbone.sh"
+    else
+      exit 1
+    fi
+  fi
 else
   echo "[SETUP] TensorRT engine exists: $ENGINE_PATH"
 fi

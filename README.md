@@ -127,6 +127,13 @@ output/runs/<run_name>/
 
 `sqlite/` と `overlay/` は後処理成果物へのsymlinkです。symlinkが作れない環境ではコピーします。
 
+## FPS metrics
+
+DINOv3推論summaryには互換性のため古い名前も残していますが、速度比較では以下を使い分けます。
+
+- `e2e_fps` / `wall_fps`: DINOv3推論スクリプト内のE2E速度。decode/preprocess待ち、warmup frame、JSONL writer flushを含みます。実運用の動画処理速度はこちらを基準にします。
+- `compute_fps` / `measured_fps`: warmup後、prefetch済みbatchが取得できた後から測るGPU推論寄りの速度。decode/preprocess待ちを含まないため、短い動画やI/O律速ではE2Eより大きく出ます。
+
 ## Default acceleration
 
 DINOv3側は既存の高速化済みruntimeを使います。
@@ -168,3 +175,11 @@ artifacts_to_upload/runtime_artifacts/
 ```
 
 このフォルダをGoogle Driveへアップロードし、共有URLを `configs/artifact_sources.env` の `RUNTIME_ARTIFACTS_URL` に設定してください。TensorRT engineはPC依存なのでアップロード対象から外し、初回セットアップで作成します。
+
+## GPU portability
+
+TensorRT engineはGPU、driver、CUDA、TensorRT versionに依存するため、別PCでは `tools/setup_integrated_runtime_env.sh` で再作成してください。checkpointとONNX exportは持ち回れます。
+
+- RTX 5090などのBlackwell系: CUDA/PyTorch/TensorRTが `sm_120` に対応している必要があります。この検証機では RTX PRO 6000 Blackwell + PyTorch CUDA 12.9 + TensorRT 10.13 で確認済みです。
+- RTX 4090などのAda系: TensorRT engineをそのPCで再作成する前提で対応想定です。
+- 既定はTensorRT BF16です。BF16 buildが失敗した場合、セットアップは同じengine pathにFP16で自動fallbackします。明示する場合は `TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh` を使えます。
