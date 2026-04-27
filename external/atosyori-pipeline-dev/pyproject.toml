@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "atosyori-postprocess"
+version = "0.1.0"
+description = "Development-friendly Atosyori post-processing workspace."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "opencv-python",
+  "torch",
+  "orjson",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+atosyori-postprocess = "atosyori_postprocess.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atosyori_postprocess"]

@@ -1,0 +1,41 @@
+__pycache__/
+*.pyc
+.venv_fast/
+
+# Local input videos
+input/*
+!input/.gitkeep
+!input/README.md
+
+# Local/generated model artifacts
+checkpoints/detector/*
+!checkpoints/detector/.gitkeep
+!checkpoints/detector/last_checkpoint
+checkpoints/dinov3/*
+!checkpoints/dinov3/.gitkeep
+output/onnx/*
+!output/onnx/.gitkeep
+output/trt/*
+!output/trt/.gitkeep
+
+# Classifier checkpoint location: keep directory skeleton only.
+two_stage_multiclass_20260426/outputs/**/*
+!two_stage_multiclass_20260426/outputs/**/
+!two_stage_multiclass_20260426/outputs/**/.gitkeep
+
+# Inference outputs
+output_runs/*
+!output_runs/.gitkeep
+!output_runs/README.md
+jsonl/
+overlay/
+summary.json
+
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.engine
+*.sqlite
+*.jsonl
+*.mp4
