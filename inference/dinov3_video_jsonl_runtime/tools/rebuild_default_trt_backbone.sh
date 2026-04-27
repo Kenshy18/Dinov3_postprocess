@@ -28,8 +28,8 @@ mkdir -p "$(dirname "$ONNX_PATH")" "$(dirname "$ENGINE_PATH")"
   --onnx "$ONNX_PATH" \
   --engine "$ENGINE_PATH" \
   --precision bf16 \
-  --min-shape 1x3x720x1280 \
-  --opt-shape 8x3x720x1280 \
-  --max-shape 8x3x720x1280 \
+  --min-shape 1x3x1280x720 \
+  --opt-shape 8x3x1280x720 \
+  --max-shape 8x3x1280x720 \
   --workspace-gb 8 \
   --force-layer-precision
