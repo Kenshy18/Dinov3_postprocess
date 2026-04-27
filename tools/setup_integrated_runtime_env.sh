@@ -37,8 +37,21 @@ DINOV3_ARTIFACTS_URL="${DINOV3_ARTIFACTS_URL:-}"
 DINOV3_ARTIFACTS_DIR="${DINOV3_ARTIFACTS_DIR:-}"
 REBUILD_TRT="${REBUILD_TRT:-auto}"
 
+if [[ -z "${REFERENCE_VENV:-}" ]]; then
+  for candidate in \
+    "$ROOT_DIR/../eva02_cascade_experimental/venv" \
+    "/home/kenke/workspace/CV/unified_training_codino_eva02/inference/eva02_cascade_experimental/venv"; do
+    if [[ -x "$candidate/bin/python" ]]; then
+      REFERENCE_VENV="$candidate"
+      break
+    fi
+  done
+fi
+
 if [[ -z "$BASE_PYTHON" ]]; then
-  if [[ -x /home/kenke/miniconda3/envs/eva02_trt/bin/python ]]; then
+  if [[ -n "${REFERENCE_VENV:-}" && -x "$REFERENCE_VENV/bin/python" ]]; then
+    BASE_PYTHON="$REFERENCE_VENV/bin/python"
+  elif [[ -x /home/kenke/miniconda3/envs/eva02_trt/bin/python ]]; then
     BASE_PYTHON=/home/kenke/miniconda3/envs/eva02_trt/bin/python
   elif command -v python3.10 >/dev/null 2>&1; then
     BASE_PYTHON="$(command -v python3.10)"
@@ -52,6 +65,9 @@ echo "[SETUP] DINO runtime:      $DINO_RUNTIME_DIR"
 echo "[SETUP] Atosyori repo:     $ATOSYORI_REPO"
 echo "[SETUP] env:              $ENV_DIR"
 echo "[SETUP] base python:      $BASE_PYTHON"
+if [[ -n "${REFERENCE_VENV:-}" ]]; then
+  echo "[SETUP] reference venv:   $REFERENCE_VENV"
+fi
 
 if [[ ! -d "$ENV_DIR" ]]; then
   "$BASE_PYTHON" -m venv --system-site-packages "$ENV_DIR"
@@ -107,6 +123,7 @@ done
 RUN_SMOKE="$RUN_DINO_SMOKE" \
   ENV_DIR="$ENV_DIR" \
   BASE_PYTHON="$BASE_PYTHON" \
+  REFERENCE_VENV="${REFERENCE_VENV:-}" \
   REBUILD_TRT="$REBUILD_TRT" \
   "$DINO_RUNTIME_DIR/tools/setup_fast_runtime_env.sh"
 

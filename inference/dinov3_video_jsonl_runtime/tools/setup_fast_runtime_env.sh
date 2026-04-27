@@ -7,7 +7,16 @@ REPO_ROOT="$(cd "$RUNTIME_DIR/../.." && pwd)"
 
 ENV_DIR="${ENV_DIR:-$RUNTIME_DIR/.venv_fast}"
 BASE_PYTHON="${BASE_PYTHON:-}"
-REFERENCE_VENV="${REFERENCE_VENV:-$REPO_ROOT/../eva02_cascade_experimental/venv}"
+if [[ -z "${REFERENCE_VENV:-}" ]]; then
+  for candidate in \
+    "$REPO_ROOT/../eva02_cascade_experimental/venv" \
+    "/home/kenke/workspace/CV/unified_training_codino_eva02/inference/eva02_cascade_experimental/venv"; do
+    if [[ -x "$candidate/bin/python" ]]; then
+      REFERENCE_VENV="$candidate"
+      break
+    fi
+  done
+fi
 RUN_SMOKE="${RUN_SMOKE:-1}"
 SMOKE_FRAMES="${SMOKE_FRAMES:-8}"
 SMOKE_INPUT="${SMOKE_INPUT:-$REPO_ROOT/input/アクセル様２月解析用白カン01.26.mp4}"
@@ -16,7 +25,9 @@ REBUILD_TRT="${REBUILD_TRT:-auto}"
 ENGINE_PATH="${ENGINE_PATH:-$REPO_ROOT/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
 
 if [[ -z "$BASE_PYTHON" ]]; then
-  if [[ -x /home/kenke/miniconda3/envs/eva02_trt/bin/python ]]; then
+  if [[ -n "${REFERENCE_VENV:-}" && -x "$REFERENCE_VENV/bin/python" ]]; then
+    BASE_PYTHON="$REFERENCE_VENV/bin/python"
+  elif [[ -x /home/kenke/miniconda3/envs/eva02_trt/bin/python ]]; then
     BASE_PYTHON=/home/kenke/miniconda3/envs/eva02_trt/bin/python
   elif command -v python3.10 >/dev/null 2>&1; then
     BASE_PYTHON="$(command -v python3.10)"
@@ -40,7 +51,7 @@ print(site.getsitepackages()[0])
 PY
 )"
 
-if [[ -d "$REFERENCE_VENV/lib/python3.10/site-packages" ]]; then
+if [[ -n "${REFERENCE_VENV:-}" && -d "$REFERENCE_VENV/lib/python3.10/site-packages" ]]; then
   REF_SITE="$(cd "$REFERENCE_VENV/lib/python3.10/site-packages" && pwd)"
   echo "$REF_SITE" > "$SITE_DIR/_dinov3_reference_runtime.pth"
   echo "[SETUP] reference site-packages: $REF_SITE"
