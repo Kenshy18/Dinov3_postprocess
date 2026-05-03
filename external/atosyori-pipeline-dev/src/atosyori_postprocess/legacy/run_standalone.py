@@ -2789,6 +2789,18 @@ infer_RAW_CUT_DOWNSCALE_W = 96
 infer_RAW_CUT_DOWNSCALE_H = 54
 infer_RAW_CUT_HYBRID_FFMPEG_CANDIDATE_THRESH = 18.0
 infer_RAW_CUT_HYBRID_WINDOW_RADIUS = 3
+infer_RAW_CUT_METHOD_DEFAULT = 'high_precision'
+infer_RAW_CUT_METHODS = ('legacy_diff', 'high_precision')
+infer_RAW_CUT_HP_MIN_DIFF = 18.0
+infer_RAW_CUT_HP_NORMAL_DIFF = 30.0
+infer_RAW_CUT_HP_STRONG_DIFF = 45.0
+infer_RAW_CUT_HP_HARD_DIFF = 70.0
+infer_RAW_CUT_HP_COLOR_CORR_MAX = 0.96
+infer_RAW_CUT_HP_STRONG_COLOR_CORR_MAX = 0.98
+infer_RAW_CUT_HP_SSIM_MAX = 0.45
+infer_RAW_CUT_HP_STRONG_SSIM_MAX = 0.55
+infer_RAW_CUT_HP_MIN_GAP_FRAMES = 45
+infer_K1_COST_NORM_AREA_FLOOR = 1.0
 infer_RAW_PROGRESS_EVERY = 3000
 infer_K2_V5_INFER_CONFIG = {'image_size': 192, 'base_width': 32, 'slot_dim': 256, 'decoder_layers': 3, 'num_heads': 8, 'render_sharpness': 28.0}
 
@@ -2799,7 +2811,9 @@ def infer_build_parser() -> argparse.ArgumentParser:
     input_group.add_argument('--input-jsonl', type=Path, help='Raw AI detection JSONL. Runs built-in NMS, cut detection, tracking, and short-track removal before ellipse approximation.')
     parser.add_argument('--input-video', type=Path, default=None, help='Source video used for raw AI cut detection. Required for --input-jsonl unless a same-stem video is found next to the JSONL.')
     parser.add_argument('--raw-cut-detect', action=argparse.BooleanOptionalAction, default=True, help='Enable cut detection during built-in raw AI preprocessing. Enabled by default.')
+    parser.add_argument('--raw-cut-method', choices=infer_RAW_CUT_METHODS, default=infer_RAW_CUT_METHOD_DEFAULT, help='Cut detector used during raw AI preprocessing.')
     parser.add_argument('--raw-remove-short-tracks-max-frames', type=int, default=10, help='Remove raw AI tracks with duration <= this many frames before ellipse approximation.')
+    parser.add_argument('--raw-det-score-min', type=float, default=infer_RAW_DET_SCORE_MIN, help='Minimum raw AI detector score retained during JSONL preprocessing.')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--k1-recall-target', type=float, default=0.99)
     parser.add_argument('--k1-exact-refine-rounds', type=int, default=1)
@@ -2814,13 +2828,17 @@ def infer_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--k2-cudnn-benchmark', type=str, default='off', choices=('on', 'off'), help='cuDNN benchmark can speed repeated shapes but adds first-batch autotune overhead.')
     parser.add_argument('--k2-tf32', type=str, default='default', choices=('default', 'on', 'off'), help='Control TF32 for K2 CUDA matmul/cuDNN paths.')
     parser.add_argument('--routing-mode', type=str, default='track_dp', choices=('threshold_only', 'threshold_soft', 'threshold_hysteresis', 'track_dp', 'band'), help="K1/K2 routing mode. 'threshold_only' uses per-row K1 cost only. 'threshold_soft' applies weak temporal smoothing near the threshold. 'threshold_hysteresis' uses explicit enter/exit thresholds plus entry confirmation. 'track_dp' performs track-level non-learned DP with asymmetric switching and soft run penalties. 'band' uses the original track expansion logic.")
+    parser.add_argument('--k1-cost-routing', type=str, default='normalized', choices=('raw', 'normalized'), help='Cost scale used for K1/K2 routing. Debug columns still keep both raw and normalized costs.')
     parser.add_argument('--threshold', type=int, default=5000)
     parser.add_argument('--threshold-edge', type=int, default=-1)
+    parser.add_argument('--threshold-norm', type=float, default=0.18)
+    parser.add_argument('--threshold-edge-norm', type=float, default=-1.0)
     parser.add_argument('--k2-soft-ema-alpha', type=float, default=0.8)
     parser.add_argument('--k2-soft-band-ratio', type=float, default=0.03)
     parser.add_argument('--k2-soft-exit-ratio', type=float, default=-1.0)
     parser.add_argument('--k2-soft-strong-ratio', type=float, default=0.1)
     parser.add_argument('--k2-soft-k1-keep-cost', type=int, default=-1)
+    parser.add_argument('--k2-soft-k1-keep-cost-norm', type=float, default=-1.0)
     parser.add_argument('--k2-soft-reset-gap', type=int, default=2)
     parser.add_argument('--k2-soft-merge-islands-max-len', type=int, default=0)
     parser.add_argument('--k2-soft-merge-policy', type=str, default='symmetric', choices=('symmetric', 'prefer_k2'))
@@ -2828,6 +2846,10 @@ def infer_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--k2-hyst-enter-edge', type=int, default=-1)
     parser.add_argument('--k2-hyst-exit', type=int, default=4000)
     parser.add_argument('--k2-hyst-exit-edge', type=int, default=-1)
+    parser.add_argument('--k2-hyst-enter-norm', type=float, default=0.20)
+    parser.add_argument('--k2-hyst-enter-edge-norm', type=float, default=-1.0)
+    parser.add_argument('--k2-hyst-exit-norm', type=float, default=0.14)
+    parser.add_argument('--k2-hyst-exit-edge-norm', type=float, default=-1.0)
     parser.add_argument('--k2-hyst-confirm-frames', type=int, default=2)
     parser.add_argument('--k2-hyst-reset-gap', type=int, default=2)
     parser.add_argument('--k2-dp-error-weight', type=float, default=1.0)
@@ -2846,6 +2868,8 @@ def infer_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--k2-dp-merge-short-k2-max-len', type=int, default=12)
     parser.add_argument('--k2-dp-merge-short-k2-keep-cost', type=int, default=10000)
     parser.add_argument('--k2-dp-force-k2-cost', type=int, default=10000)
+    parser.add_argument('--k2-dp-merge-short-k2-keep-cost-norm', type=float, default=0.35)
+    parser.add_argument('--k2-dp-force-k2-cost-norm', type=float, default=0.35)
     parser.add_argument('--k2-band-radius', type=int, default=3)
     parser.add_argument('--k2-band-error-percentile', type=float, default=92.0)
     parser.add_argument('--k2-band-instability-percentile', type=float, default=90.0)
@@ -3395,6 +3419,99 @@ def infer_read_cut_small_frames(video_path: Path, frame_numbers: list[int]) -> d
         cap.release()
     return smalls
 
+def infer_read_cut_probe_frames(video_path: Path, frame_numbers: list[int]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    if not frame_numbers:
+        return {}
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f'Failed to open input video for high precision cut verification: {video_path}')
+    current_cap_frame: int | None = None
+    max_sequential_frame_skip = 16
+    frames: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    try:
+        for frame_idx in sorted(set(int(v) for v in frame_numbers if int(v) >= 0)):
+            if current_cap_frame is None:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                current_cap_frame = frame_idx
+            elif frame_idx < current_cap_frame:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                current_cap_frame = frame_idx
+            elif frame_idx > current_cap_frame:
+                gap = frame_idx - current_cap_frame
+                if gap <= max_sequential_frame_skip:
+                    while current_cap_frame < frame_idx:
+                        ok_skip, _skip_frame = cap.read()
+                        if not ok_skip:
+                            raise RuntimeError(f'Failed to skip video frame before high precision cut verification frame {frame_idx}')
+                        current_cap_frame += 1
+                else:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    current_cap_frame = frame_idx
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                raise RuntimeError(f'Failed to read video frame for high precision cut verification: frame={frame_idx}')
+            current_cap_frame = frame_idx + 1
+            small_bgr = cv2.resize(
+                frame,
+                (infer_RAW_CUT_DOWNSCALE_W, infer_RAW_CUT_DOWNSCALE_H),
+                interpolation=cv2.INTER_AREA,
+            )
+            small_gray = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2GRAY)
+            frames[int(frame_idx)] = (small_gray, small_bgr)
+    finally:
+        cap.release()
+    return frames
+
+def infer_cut_hist_correlation_gray(previous: np.ndarray, current: np.ndarray) -> float:
+    prev_hist = cv2.calcHist([previous], [0], None, [32], [0, 256])
+    curr_hist = cv2.calcHist([current], [0], None, [32], [0, 256])
+    prev_hist = cv2.normalize(prev_hist, prev_hist).flatten().astype('float32')
+    curr_hist = cv2.normalize(curr_hist, curr_hist).flatten().astype('float32')
+    return float(cv2.compareHist(prev_hist, curr_hist, cv2.HISTCMP_CORREL))
+
+def infer_cut_hist_correlation_bgr(previous: np.ndarray, current: np.ndarray) -> float:
+    prev_hist = cv2.calcHist([previous], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+    curr_hist = cv2.calcHist([current], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+    prev_hist = cv2.normalize(prev_hist, prev_hist).flatten().astype('float32')
+    curr_hist = cv2.normalize(curr_hist, curr_hist).flatten().astype('float32')
+    return float(cv2.compareHist(prev_hist, curr_hist, cv2.HISTCMP_CORREL))
+
+def infer_cut_ssim_gray(previous: np.ndarray, current: np.ndarray) -> float:
+    prev = previous.astype(np.float32)
+    curr = current.astype(np.float32)
+    c1 = 6.5025
+    c2 = 58.5225
+    kernel = (7, 7)
+    sigma = 1.5
+    prev_mu = cv2.GaussianBlur(prev, kernel, sigma)
+    curr_mu = cv2.GaussianBlur(curr, kernel, sigma)
+    prev_mu_sq = prev_mu * prev_mu
+    curr_mu_sq = curr_mu * curr_mu
+    prev_curr_mu = prev_mu * curr_mu
+    prev_sigma = cv2.GaussianBlur(prev * prev, kernel, sigma) - prev_mu_sq
+    curr_sigma = cv2.GaussianBlur(curr * curr, kernel, sigma) - curr_mu_sq
+    prev_curr_sigma = cv2.GaussianBlur(prev * curr, kernel, sigma) - prev_curr_mu
+    ssim_map = ((2.0 * prev_curr_mu + c1) * (2.0 * prev_curr_sigma + c2)) / (
+        (prev_mu_sq + curr_mu_sq + c1) * (prev_sigma + curr_sigma + c2)
+    )
+    return float(np.mean(ssim_map))
+
+def infer_high_precision_cut_candidate_score(diff_mean: float, color_corr: float, ssim: float) -> float:
+    color_change = max(0.0, 1.0 - float(color_corr))
+    structure_change = max(0.0, 1.0 - float(ssim))
+    return float(diff_mean) * (1.0 + 0.7 * color_change + 0.5 * structure_change)
+
+def infer_is_high_precision_cut(diff_mean: float, color_corr: float, ssim: float) -> bool:
+    if diff_mean < infer_RAW_CUT_HP_MIN_DIFF:
+        return False
+    if diff_mean >= infer_RAW_CUT_HP_HARD_DIFF:
+        return True
+    if diff_mean >= infer_RAW_CUT_HP_STRONG_DIFF:
+        return color_corr <= infer_RAW_CUT_HP_STRONG_COLOR_CORR_MAX and ssim <= infer_RAW_CUT_HP_STRONG_SSIM_MAX
+    if diff_mean >= infer_RAW_CUT_HP_NORMAL_DIFF:
+        return color_corr <= infer_RAW_CUT_HP_COLOR_CORR_MAX and ssim <= infer_RAW_CUT_HP_SSIM_MAX
+    return False
+
 def infer_detect_cut_frames_for_indices_hybrid(frame_indices: list[int], video_path: Path) -> list[int]:
     # The hybrid path is exact for the common dense-frame JSONL route: ffmpeg
     # only narrows down candidate neighborhoods, and OpenCV performs the final
@@ -3434,24 +3551,72 @@ def infer_detect_cut_frames_for_indices_hybrid(frame_indices: list[int], video_p
         cut_frames.append(int(frame_idx))
     return cut_frames
 
-def infer_detect_cut_frames_for_jsonl(jsonl_path: Path, video_path: Path) -> tuple[list[int], float, str]:
+def infer_detect_cut_frames_for_indices_high_precision(frame_indices: list[int], video_path: Path) -> list[int]:
+    if len(frame_indices) < 2:
+        return []
+    if any(int(b) - int(a) != 1 for a, b in zip(frame_indices, frame_indices[1:], strict=False)):
+        raise RuntimeError('high precision cut detection requires consecutive JSONL frame indices')
+    candidate_frames = infer_ffmpeg_cut_candidate_frames(video_path)
+    radius = int(infer_RAW_CUT_HYBRID_WINDOW_RADIUS)
+    frame_set = set(int(v) for v in frame_indices)
+    verify_frames: set[int] = set()
+    candidate_eval_frames: set[int] = set()
+    for candidate in candidate_frames:
+        for frame_idx in range(int(candidate) - radius, int(candidate) + radius + 1):
+            if frame_idx not in frame_set or frame_idx <= 0:
+                continue
+            candidate_eval_frames.add(frame_idx)
+            verify_frames.add(frame_idx)
+            verify_frames.add(frame_idx - 1)
+    probe_frames = infer_read_cut_probe_frames(video_path, sorted(verify_frames))
+    exact_candidates: list[tuple[int, float]] = []
+    for frame_idx in sorted(candidate_eval_frames):
+        previous = probe_frames.get(frame_idx - 1)
+        current = probe_frames.get(frame_idx)
+        if previous is None or current is None:
+            continue
+        previous_gray, previous_bgr = previous
+        current_gray, current_bgr = current
+        diff_mean = float(np.mean(cv2.absdiff(current_gray, previous_gray)))
+        color_corr = infer_cut_hist_correlation_bgr(previous_bgr, current_bgr)
+        ssim = infer_cut_ssim_gray(previous_gray, current_gray)
+        if infer_is_high_precision_cut(diff_mean, color_corr, ssim):
+            exact_candidates.append((int(frame_idx), infer_high_precision_cut_candidate_score(diff_mean, color_corr, ssim)))
+    cut_frames: list[tuple[int, float]] = []
+    min_gap = int(infer_RAW_CUT_HP_MIN_GAP_FRAMES)
+    for frame_idx, score in exact_candidates:
+        if cut_frames and frame_idx - cut_frames[-1][0] <= min_gap:
+            continue
+        cut_frames.append((int(frame_idx), float(score)))
+    return [frame_idx for frame_idx, _score in cut_frames]
+
+def infer_detect_cut_frames_for_jsonl(jsonl_path: Path, video_path: Path, *, method: str=infer_RAW_CUT_METHOD_DEFAULT) -> tuple[list[int], float, str]:
     """Detect cuts before tracking without changing downstream decisions."""
     start_time = time.perf_counter()
     frame_indices = infer_load_raw_frame_indices(jsonl_path)
+    method_value = str(method)
     try:
-        cut_frames = infer_detect_cut_frames_for_indices_hybrid(frame_indices, video_path)
-        method = 'ffmpeg_candidates_opencv_verify'
+        if method_value == 'legacy_diff':
+            cut_frames = infer_detect_cut_frames_for_indices_hybrid(frame_indices, video_path)
+            used_method = 'ffmpeg_candidates_opencv_verify'
+        elif method_value == 'high_precision':
+            cut_frames = infer_detect_cut_frames_for_indices_high_precision(frame_indices, video_path)
+            used_method = 'ffmpeg_candidates_opencv_high_precision'
+        else:
+            raise ValueError(f'Unsupported raw cut method: {method_value}')
     except Exception as exc:
-        print(f'raw_preprocess: hybrid cut detection fallback to exact OpenCV scan: {exc}', flush=True)
+        print(f'raw_preprocess: {method_value} cut detection fallback to exact OpenCV scan: {exc}', flush=True)
         cut_frames = infer_detect_cut_frames_for_indices_exact(frame_indices, video_path)
-        method = 'opencv_exact'
-    return cut_frames, float(time.perf_counter() - start_time), method
+        used_method = 'opencv_exact'
+    return cut_frames, float(time.perf_counter() - start_time), used_method
 
-def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Path, video_path: Path | None, *, remove_short_tracks_max_frames: int, enable_cut_detect: bool) -> dict[str, object]:
+def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Path, video_path: Path | None, *, remove_short_tracks_max_frames: int, enable_cut_detect: bool, raw_det_score_min: float=infer_RAW_DET_SCORE_MIN, raw_cut_method: str=infer_RAW_CUT_METHOD_DEFAULT) -> dict[str, object]:
     tracks: dict[int, infer_RawTrack] = {}
     next_tid = 1
     total_rows = 0
-    seen_tids: dict[str, str] = {}
+    track_label_counts: dict[str, dict[str, int]] = {}
+    track_label_first_seen: dict[tuple[str, str], int] = {}
+    label_seen_order = 0
     current_scene_id = 0
     cut_frames: list[int] = []
     cuts_detected = 0
@@ -3469,7 +3634,7 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
     if enable_cut_detect:
         if video_path is None:
             raise FileNotFoundError('Cut detection requires an input video, but none was provided.')
-        detected_cut_frames, cut_detection_elapsed_sec, cut_detection_method = infer_detect_cut_frames_for_jsonl(jsonl_path, video_path)
+        detected_cut_frames, cut_detection_elapsed_sec, cut_detection_method = infer_detect_cut_frames_for_jsonl(jsonl_path, video_path, method=raw_cut_method)
         precomputed_cut_frames = set(detected_cut_frames)
 
     def read_video_frame(target_frame_idx: int) -> tuple[bool, np.ndarray | None]:
@@ -3533,7 +3698,7 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
                         cuts_detected += 1
                         cut_frames.append(frame_idx)
                         active_track_ids.clear()
-            detections = [det for det in detections if float(det.get('score') or 0.0) >= infer_RAW_DET_SCORE_MIN]
+            detections = [det for det in detections if float(det.get('score') or 0.0) >= float(raw_det_score_min)]
             detections = infer_raw_apply_nms(detections)
             det_features = [infer_raw_compute_features(det) for det in detections]
             if active_track_ids:
@@ -3572,7 +3737,12 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
                 track_id = str(det_to_track[det_idx])
                 label = str(det.get('class_name', ''))
                 mask_rows_to_insert.append((int(frame_idx), track_id, json.dumps(polygons, ensure_ascii=False), label))
-                seen_tids[track_id] = label
+                label_counts = track_label_counts.setdefault(track_id, {})
+                label_counts[label] = int(label_counts.get(label, 0)) + 1
+                label_key = (track_id, label)
+                if label_key not in track_label_first_seen:
+                    track_label_first_seen[label_key] = label_seen_order
+                    label_seen_order += 1
                 total_rows += 1
             if mask_rows_to_insert:
                 all_mask_rows_to_insert.extend(mask_rows_to_insert)
@@ -3587,15 +3757,29 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
     keep_tids = sorted((tid for tid in track_counts if tid not in remove_tids), key=lambda value: int(value))
     id_map = {old: str(new) for new, old in enumerate(keep_tids, start=1)}
     removed_rows = sum(track_counts[tid] for tid in remove_tids)
+    def majority_track_label(track_id: str) -> str:
+        counts = track_label_counts.get(track_id, {})
+        if not counts:
+            return ''
+        return max(
+            counts.items(),
+            key=lambda item: (int(item[1]), -int(track_label_first_seen.get((track_id, item[0]), 0))),
+        )[0]
+    track_majority_labels = {track_id: majority_track_label(track_id) for track_id in keep_tids}
+    mixed_label_tracks = sum(1 for track_id in keep_tids if len(track_label_counts.get(track_id, {})) > 1)
+    relabeled_mask_rows = sum(
+        1
+        for _frame, track_id, _polygons_json, label in all_mask_rows_to_insert
+        if track_id in id_map and str(label) != str(track_majority_labels.get(track_id, ''))
+    )
     final_mask_rows_to_insert = [
-        (frame, id_map[track_id], polygons_json, label)
+        (frame, id_map[track_id], polygons_json, track_majority_labels[track_id])
         for frame, track_id, polygons_json, label in all_mask_rows_to_insert
         if track_id in id_map
     ]
     final_track_rows_to_insert = [
-        (new_tid, seen_tids[old_tid])
+        (new_tid, track_majority_labels[old_tid])
         for old_tid, new_tid in id_map.items()
-        if old_tid in seen_tids
     ]
     if final_mask_rows_to_insert:
         cur.executemany("\n                    INSERT OR REPLACE INTO masks(\n                        frame, track_id, polygons, shape_type, dilate_px, feather_px, mosaic_block, mosaic_alias, label\n                    )\n                    VALUES (?, ?, ?, 'polygon', 0, 0, 0, 0, ?)\n                    ", final_mask_rows_to_insert)
@@ -3607,7 +3791,7 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
     final_tracks = len(id_map)
     final_rows = len(final_mask_rows_to_insert)
     conn.close()
-    return {'input_jsonl': str(jsonl_path), 'tracked_sqlite': str(sqlite_path), 'rows_before_prune': int(total_rows), 'rows_after_prune': final_rows, 'removed_short_tracks': int(len(remove_tids)), 'removed_rows': int(removed_rows), 'tracks_after_prune': final_tracks, 'cuts_detected': int(cuts_detected), 'scenes': int(current_scene_id + 1), 'cut_detect_enabled': bool(enable_cut_detect), 'cut_detection_method': str(cut_detection_method), 'cut_detection_elapsed_sec': float(cut_detection_elapsed_sec), 'remove_short_tracks_max_frames': int(remove_short_tracks_max_frames), 'elapsed_sec': float(time.time() - start_time)}
+    return {'input_jsonl': str(jsonl_path), 'tracked_sqlite': str(sqlite_path), 'rows_before_prune': int(total_rows), 'rows_after_prune': final_rows, 'removed_short_tracks': int(len(remove_tids)), 'removed_rows': int(removed_rows), 'tracks_after_prune': final_tracks, 'mixed_label_tracks': int(mixed_label_tracks), 'relabeled_mask_rows': int(relabeled_mask_rows), 'track_label_policy': 'majority_vote_per_track', 'cuts_detected': int(cuts_detected), 'scenes': int(current_scene_id + 1), 'cut_detect_enabled': bool(enable_cut_detect), 'raw_cut_method': str(raw_cut_method), 'cut_detection_method': str(cut_detection_method), 'cut_detection_elapsed_sec': float(cut_detection_elapsed_sec), 'remove_short_tracks_max_frames': int(remove_short_tracks_max_frames), 'raw_det_score_min': float(raw_det_score_min), 'elapsed_sec': float(time.time() - start_time)}
 
 def infer_prepare_input_sqlite(args: argparse.Namespace) -> tuple[Path, dict[str, object] | None]:
     if args.input_sqlite is not None:
@@ -3624,7 +3808,7 @@ def infer_prepare_input_sqlite(args: argparse.Namespace) -> tuple[Path, dict[str
     preprocess_dir = args.output_dir / 'preprocess'
     preprocess_dir.mkdir(parents=True, exist_ok=True)
     tracked_sqlite = preprocess_dir / f'{args.input_jsonl.stem}.tracked.sqlite'
-    preprocess_summary = infer_build_tracked_sqlite_from_raw_jsonl(args.input_jsonl, tracked_sqlite, input_video, remove_short_tracks_max_frames=int(args.raw_remove_short_tracks_max_frames), enable_cut_detect=bool(args.raw_cut_detect))
+    preprocess_summary = infer_build_tracked_sqlite_from_raw_jsonl(args.input_jsonl, tracked_sqlite, input_video, remove_short_tracks_max_frames=int(args.raw_remove_short_tracks_max_frames), enable_cut_detect=bool(args.raw_cut_detect), raw_det_score_min=float(args.raw_det_score_min), raw_cut_method=str(getattr(args, 'raw_cut_method', infer_RAW_CUT_METHOD_DEFAULT)))
     print(json.dumps(preprocess_summary, indent=2, ensure_ascii=False), flush=True)
     return (tracked_sqlite, preprocess_summary)
 
@@ -3638,7 +3822,9 @@ def preprocess_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--input-video', type=Path, default=None)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--raw-cut-detect', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--raw-cut-method', choices=infer_RAW_CUT_METHODS, default=infer_RAW_CUT_METHOD_DEFAULT)
     parser.add_argument('--raw-remove-short-tracks-max-frames', type=int, default=10)
+    parser.add_argument('--raw-det-score-min', type=float, default=infer_RAW_DET_SCORE_MIN)
     return parser
 
 def preprocess_main() -> None:
@@ -3676,12 +3862,44 @@ def infer_filter_rows(rows: list[tuple[int, str, str]], max_rows: int, max_track
         filtered = filtered[:max_rows]
     return filtered
 
+def infer_compute_weighted_error_norm(weighted_error: float, gt_area: float) -> float:
+    return float(weighted_error) / max(float(gt_area), float(infer_K1_COST_NORM_AREA_FLOOR))
+
+def infer_add_weighted_error_norm(metric_row: dict[str, object]) -> dict[str, object]:
+    out = dict(metric_row)
+    out['weighted_error_norm'] = infer_compute_weighted_error_norm(
+        float(out.get('weighted_error', 0.0)),
+        float(out.get('gt_area', 0.0)),
+    )
+    return out
+
+def infer_prepare_k1_routing_metrics_lookup(k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, cost_field: str) -> dict[tuple[int, str], dict[str, object]]:
+    if cost_field == 'weighted_error':
+        return k1_metrics_lookup
+    routing_lookup: dict[tuple[int, str], dict[str, object]] = {}
+    for key, row in k1_metrics_lookup.items():
+        route_cost = row.get(cost_field)
+        if route_cost in (None, ''):
+            if cost_field == 'weighted_error_norm':
+                route_cost = infer_compute_weighted_error_norm(
+                    float(row.get('weighted_error', 0.0)),
+                    float(row.get('gt_area', 0.0)),
+                )
+            else:
+                route_cost = row.get('weighted_error', 0.0)
+        routing_row = dict(row)
+        routing_row['weighted_error_raw'] = row.get('weighted_error', 0.0)
+        routing_row['weighted_error'] = float(route_cost)
+        routing_row['weighted_error_routing_field'] = str(cost_field)
+        routing_lookup[key] = routing_row
+    return routing_lookup
+
 def infer_write_metrics_csv(metric_rows: list[dict[str, object]], output_path: Path) -> None:
-    fieldnames = ['frame', 'track_id', 'mode', 'candidate_name', 'gt_area', 'pred_area', 'intersection', 'union', 'recall', 'precision', 'iou', 'weighted_error', 'ellipse_params', 'branch']
+    fieldnames = ['frame', 'track_id', 'mode', 'candidate_name', 'gt_area', 'pred_area', 'intersection', 'union', 'recall', 'precision', 'iou', 'weighted_error', 'weighted_error_norm', 'ellipse_params', 'branch']
     with output_path.open('w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(metric_rows)
+        writer.writerows([infer_add_weighted_error_norm(row) for row in metric_rows])
 
 def infer_evaluate_mixed_metric_rows(metric_rows: list[dict[str, object]], *, total_gt_rows: int, total_sub_rows: int) -> dict[str, float]:
     total_intersection = total_union = total_gt_area = total_pred_area = 0
@@ -3744,6 +3962,7 @@ def infer_solve_subset(rows_with_index: list[tuple[int, int, str, str]], payload
                 metric_row = dict(metric_row)
                 metric_row['branch'] = branch_name
                 metric_row['mode'] = 'k1'
+                metric_row = infer_add_weighted_error_norm(metric_row)
                 solved_rows.append((original_idx, row_value))
                 solved_metrics.append((original_idx, metric_row))
                 if completed % 1000 == 0 or completed == len(tasks):
@@ -3753,7 +3972,7 @@ def infer_solve_subset(rows_with_index: list[tuple[int, int, str, str]], payload
         for completed, (original_idx, frame, track_id, polygons_json) in enumerate(rows_with_index, start=1):
             subset_idx = completed - 1
             pred_json, exact, candidate_name, ellipses = fst.solve_k1_row(polygons_json, recall_target=float(recall_target), exact_refine_rounds=int(exact_refine_rounds), prepared_payload=payloads[subset_idx], gt_polys=gt_polys[subset_idx])
-            metric_row = {'frame': int(frame), 'track_id': str(track_id), 'mode': 'k1', 'candidate_name': candidate_name, 'gt_area': int(exact['gt_area']), 'pred_area': int(exact['pred_area']), 'intersection': int(exact['intersection']), 'union': int(exact['union']), 'recall': float(exact['recall']), 'precision': float(exact['precision']), 'iou': float(exact['iou']), 'weighted_error': int(exact['weighted_error']), 'ellipse_params': json.dumps(fst.serialize_ellipses(ellipses), ensure_ascii=True), 'branch': branch_name}
+            metric_row = infer_add_weighted_error_norm({'frame': int(frame), 'track_id': str(track_id), 'mode': 'k1', 'candidate_name': candidate_name, 'gt_area': int(exact['gt_area']), 'pred_area': int(exact['pred_area']), 'intersection': int(exact['intersection']), 'union': int(exact['union']), 'recall': float(exact['recall']), 'precision': float(exact['precision']), 'iou': float(exact['iou']), 'weighted_error': int(exact['weighted_error']), 'ellipse_params': json.dumps(fst.serialize_ellipses(ellipses), ensure_ascii=True), 'branch': branch_name})
             solved_rows.append((original_idx, (int(frame), str(track_id), pred_json)))
             solved_metrics.append((original_idx, metric_row))
             if completed % 1000 == 0 or completed == len(rows_with_index):
@@ -3761,7 +3980,7 @@ def infer_solve_subset(rows_with_index: list[tuple[int, int, str, str]], payload
     elapsed = time.perf_counter() - started
     return (solved_rows, solved_metrics, elapsed)
 
-def infer_build_k2_solve_band_edge_aware(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], k1_ellipses_lookup: dict[tuple[int, str], list[tuple[float, float, float, float, float]]], *, threshold_default: int, threshold_edge: int, edge_keys: set[tuple[int, str]], radius: int, error_percentile: float, instability_percentile: float, instability_floor: float) -> tuple[set[tuple[int, str]], dict[str, object]]:
+def infer_build_k2_solve_band_edge_aware(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], k1_ellipses_lookup: dict[tuple[int, str], list[tuple[float, float, float, float, float]]], *, threshold_default: float, threshold_edge: float, edge_keys: set[tuple[int, str]], radius: int, error_percentile: float, instability_percentile: float, instability_floor: float) -> tuple[set[tuple[int, str]], dict[str, object]]:
     selected: set[tuple[int, str]] = set()
     summary_tracks: list[dict[str, object]] = []
     for track_id, track_rows in rows_by_track.items():
@@ -3793,7 +4012,7 @@ def infer_build_k2_solve_band_edge_aware(rows_by_track: dict[str, list[tuple[int
                 if abs(int(frame) - src_frame) <= radius:
                     selected.add((int(frame), str(track_id_value)))
         summary_tracks.append({'track_id': track_id, 'frame_count': len(track_rows), 'seed_count': len(seed_indices), 'expanded_count': int(sum((1 for key in keys if key in selected))), 'error_cut': float(high_error_cut), 'instability_cut': float(instability_cut) if np.isfinite(instability_cut) else None})
-    summary = {'threshold': int(threshold_default), 'threshold_edge': int(threshold_edge), 'radius': int(radius), 'selected_count': len(selected), 'tracks': summary_tracks}
+    summary = {'threshold': float(threshold_default), 'threshold_edge': float(threshold_edge), 'radius': int(radius), 'selected_count': len(selected), 'tracks': summary_tracks}
     return (selected, summary)
 
 def infer_build_track_local_instability_scores(track_rows: list[tuple[int, str, str, int]], k1_ellipses_lookup: dict[tuple[int, str], list[tuple[float, float, float, float, float]]]) -> list[float]:
@@ -3818,7 +4037,7 @@ def infer_build_track_local_instability_scores(track_rows: list[tuple[int, str, 
         instability_scores[idx] = float(max(prev_score, next_score))
     return instability_scores
 
-def infer_build_k2_track_dp_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], k1_ellipses_lookup: dict[tuple[int, str], list[tuple[float, float, float, float, float]]], *, threshold_default: int, threshold_edge: int, edge_keys: set[tuple[int, str]], error_weight: float, instability_weight: float, edge_bonus: float, k2_bias: float, switch_12: float, switch_21: float, short_k1_gamma: float, short_k2_gamma: float, short_k1_tau: float, short_k2_tau: float, short_len_cap: int, reset_gap: int, merge_short_k1_max_len: int, merge_short_k2_max_len: int, merge_short_k2_keep_cost: int) -> tuple[set[tuple[int, str]], dict[str, object]]:
+def infer_build_k2_track_dp_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], k1_ellipses_lookup: dict[tuple[int, str], list[tuple[float, float, float, float, float]]], *, threshold_default: float, threshold_edge: float, edge_keys: set[tuple[int, str]], error_weight: float, instability_weight: float, edge_bonus: float, k2_bias: float, switch_12: float, switch_21: float, short_k1_gamma: float, short_k2_gamma: float, short_k1_tau: float, short_k2_tau: float, short_len_cap: int, reset_gap: int, merge_short_k1_max_len: int, merge_short_k2_max_len: int, merge_short_k2_keep_cost: float) -> tuple[set[tuple[int, str]], dict[str, object]]:
     selected: set[tuple[int, str]] = set()
     summary_tracks: list[dict[str, object]] = []
     total_chunk_count = 0
@@ -3835,7 +4054,7 @@ def infer_build_k2_track_dp_selection(rows_by_track: dict[str, list[tuple[int, s
     max_gap = max(0, int(reset_gap))
     merge_short_k1_limit = max(0, int(merge_short_k1_max_len))
     merge_short_k2_limit = max(0, int(merge_short_k2_max_len))
-    k2_to_k1_keep_cost = int(merge_short_k2_keep_cost)
+    k2_to_k1_keep_cost = float(merge_short_k2_keep_cost)
 
     def duration_penalty(mode_idx: int, run_len_bucket: int) -> float:
         gamma = float(short_k1_gamma if mode_idx == 0 else short_k2_gamma)
@@ -3959,7 +4178,7 @@ def infer_build_k2_track_dp_selection(rows_by_track: dict[str, list[tuple[int, s
                         merged_short_k1_rows += run_len
                         changed = True
                     elif out[i] and run_len <= merge_short_k2_limit:
-                        max_k1_cost = max((int(k1_metrics_lookup[key]['weighted_error']) for key in keys_local[i:j]))
+                        max_k1_cost = max((float(k1_metrics_lookup[key]['weighted_error']) for key in keys_local[i:j]))
                         if k2_to_k1_keep_cost < 0 or max_k1_cost <= k2_to_k1_keep_cost:
                             for k in range(i, j):
                                 out[k] = False
@@ -3996,7 +4215,7 @@ def infer_build_k2_track_dp_selection(rows_by_track: dict[str, list[tuple[int, s
                         merged_short_k1_rows += run_len
                         changed = True
                     elif out[i] and run_len <= merge_short_k2_limit:
-                        max_k1_cost = max((int(k1_metrics_lookup[key]['weighted_error']) for key in keys_local[i:j]))
+                        max_k1_cost = max((float(k1_metrics_lookup[key]['weighted_error']) for key in keys_local[i:j]))
                         if k2_to_k1_keep_cost < 0 or max_k1_cost <= k2_to_k1_keep_cost:
                             for k in range(i, j):
                                 out[k] = False
@@ -4056,10 +4275,10 @@ def infer_build_k2_track_dp_selection(rows_by_track: dict[str, list[tuple[int, s
         total_merged_short_k2_runs += track_merged_short_k2_runs
         total_merged_short_k2_rows += track_merged_short_k2_rows
         summary_tracks.append({'track_id': track_id, 'frame_count': len(track_rows), 'chunk_count': int(chunk_count), 'seed_count': int(sum((1 for key in keys if float(k1_metrics_lookup[key]['weighted_error']) >= float(threshold_edge if key in edge_keys else threshold_default)))), 'expanded_count': int(selected_in_track), 'switch_count': int(track_switch_count), 'short_k1_runs': int(track_short_k1_runs), 'short_k2_runs': int(track_short_k2_runs), 'merged_short_k1_runs': int(track_merged_short_k1_runs), 'merged_short_k1_rows': int(track_merged_short_k1_rows), 'merged_short_k2_runs': int(track_merged_short_k2_runs), 'merged_short_k2_rows': int(track_merged_short_k2_rows), 'error_cut': None, 'instability_cut': None})
-    summary = {'routing_mode': 'track_dp', 'threshold': int(threshold_default), 'threshold_edge': int(threshold_edge), 'selected_count': len(selected), 'error_weight': float(error_weight), 'instability_weight': float(instability_weight), 'edge_bonus': float(edge_bonus), 'k2_bias': float(k2_bias), 'switch_12': float(switch_12), 'switch_21': float(switch_21), 'short_k1_gamma': float(short_k1_gamma), 'short_k2_gamma': float(short_k2_gamma), 'short_k1_tau': float(short_k1_tau), 'short_k2_tau': float(short_k2_tau), 'short_len_cap': int(bucket_cap), 'reset_gap': int(max_gap), 'merge_short_k1_max_len': int(merge_short_k1_limit), 'merge_short_k2_max_len': int(merge_short_k2_limit), 'merge_short_k2_keep_cost': int(k2_to_k1_keep_cost), 'chunk_count': int(total_chunk_count), 'switch_count': int(total_switch_count), 'short_k1_penalty_runs': int(total_short_k1_penalty_runs), 'short_k2_penalty_runs': int(total_short_k2_penalty_runs), 'merged_short_k1_runs': int(total_merged_short_k1_runs), 'merged_short_k1_rows': int(total_merged_short_k1_rows), 'merged_short_k2_runs': int(total_merged_short_k2_runs), 'merged_short_k2_rows': int(total_merged_short_k2_rows), 'tracks': summary_tracks}
+    summary = {'routing_mode': 'track_dp', 'threshold': float(threshold_default), 'threshold_edge': float(threshold_edge), 'selected_count': len(selected), 'error_weight': float(error_weight), 'instability_weight': float(instability_weight), 'edge_bonus': float(edge_bonus), 'k2_bias': float(k2_bias), 'switch_12': float(switch_12), 'switch_21': float(switch_21), 'short_k1_gamma': float(short_k1_gamma), 'short_k2_gamma': float(short_k2_gamma), 'short_k1_tau': float(short_k1_tau), 'short_k2_tau': float(short_k2_tau), 'short_len_cap': int(bucket_cap), 'reset_gap': int(max_gap), 'merge_short_k1_max_len': int(merge_short_k1_limit), 'merge_short_k2_max_len': int(merge_short_k2_limit), 'merge_short_k2_keep_cost': float(k2_to_k1_keep_cost), 'chunk_count': int(total_chunk_count), 'switch_count': int(total_switch_count), 'short_k1_penalty_runs': int(total_short_k1_penalty_runs), 'short_k2_penalty_runs': int(total_short_k2_penalty_runs), 'merged_short_k1_runs': int(total_merged_short_k1_runs), 'merged_short_k1_rows': int(total_merged_short_k1_rows), 'merged_short_k2_runs': int(total_merged_short_k2_runs), 'merged_short_k2_rows': int(total_merged_short_k2_rows), 'tracks': summary_tracks}
     return (selected, summary)
 
-def infer_build_k2_threshold_only_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, threshold_default: int, threshold_edge: int, edge_keys: set[tuple[int, str]]) -> tuple[set[tuple[int, str]], dict[str, object]]:
+def infer_build_k2_threshold_only_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, threshold_default: float, threshold_edge: float, edge_keys: set[tuple[int, str]]) -> tuple[set[tuple[int, str]], dict[str, object]]:
     selected: set[tuple[int, str]] = set()
     summary_tracks: list[dict[str, object]] = []
     for track_id, track_rows in rows_by_track.items():
@@ -4072,10 +4291,10 @@ def infer_build_k2_threshold_only_selection(rows_by_track: dict[str, list[tuple[
                 selected.add(key)
                 selected_in_track += 1
         summary_tracks.append({'track_id': track_id, 'frame_count': len(track_rows), 'seed_count': int(selected_in_track), 'expanded_count': int(selected_in_track), 'error_cut': None, 'instability_cut': None})
-    summary = {'routing_mode': 'threshold_only', 'threshold': int(threshold_default), 'threshold_edge': int(threshold_edge), 'selected_count': len(selected), 'tracks': summary_tracks}
+    summary = {'routing_mode': 'threshold_only', 'threshold': float(threshold_default), 'threshold_edge': float(threshold_edge), 'selected_count': len(selected), 'tracks': summary_tracks}
     return (selected, summary)
 
-def infer_build_k2_threshold_soft_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, threshold_default: int, threshold_edge: int, edge_keys: set[tuple[int, str]], ema_alpha: float, band_ratio: float, exit_ratio: float, strong_ratio: float, k1_keep_cost: int, reset_gap: int, merge_islands_max_len: int, merge_policy: str) -> tuple[set[tuple[int, str]], dict[str, object]]:
+def infer_build_k2_threshold_soft_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, threshold_default: float, threshold_edge: float, edge_keys: set[tuple[int, str]], ema_alpha: float, band_ratio: float, exit_ratio: float, strong_ratio: float, k1_keep_cost: float, reset_gap: int, merge_islands_max_len: int, merge_policy: str) -> tuple[set[tuple[int, str]], dict[str, object]]:
     selected: set[tuple[int, str]] = set()
     summary_tracks: list[dict[str, object]] = []
     total_soft_hold = 0
@@ -4086,7 +4305,7 @@ def infer_build_k2_threshold_soft_selection(rows_by_track: dict[str, list[tuple[
     band = max(0.0, float(band_ratio))
     exit_band = band if float(exit_ratio) < 0.0 else max(0.0, float(exit_ratio))
     strong = max(band, float(strong_ratio))
-    k1_keep_cost_threshold = int(k1_keep_cost)
+    k1_keep_cost_threshold = float(k1_keep_cost)
     max_gap = max(0, int(reset_gap))
     merge_limit = max(0, int(merge_islands_max_len))
     merge_policy_value = str(merge_policy)
@@ -4162,7 +4381,7 @@ def infer_build_k2_threshold_soft_selection(rows_by_track: dict[str, list[tuple[
                 else:
                     final_pick = True
                 if not final_pick and k1_keep_cost_threshold >= 0:
-                    err_now = int(k1_metrics_lookup[key]['weighted_error'])
+                    err_now = float(k1_metrics_lookup[key]['weighted_error'])
                     if err_now > k1_keep_cost_threshold:
                         final_pick = True
                         if raw_pick != final_pick:
@@ -4191,10 +4410,10 @@ def infer_build_k2_threshold_soft_selection(rows_by_track: dict[str, list[tuple[
         total_merged_islands += merged_islands_in_track
         total_merged_rows += merged_rows_in_track
         summary_tracks.append({'track_id': track_id, 'frame_count': len(track_rows), 'seed_count': int(sum((1 for flag in raw_selected if flag))), 'expanded_count': int(selected_in_track), 'soft_hold_count': int(soft_hold_in_track), 'soft_flip_count': int(soft_flip_in_track), 'merged_island_count': int(merged_islands_in_track), 'merged_island_rows': int(merged_rows_in_track), 'error_cut': None, 'instability_cut': None})
-    summary = {'routing_mode': 'threshold_soft', 'threshold': int(threshold_default), 'threshold_edge': int(threshold_edge), 'selected_count': len(selected), 'ema_alpha': float(alpha), 'band_ratio': float(band), 'exit_ratio': float(exit_band), 'strong_ratio': float(strong), 'k1_keep_cost': int(k1_keep_cost_threshold), 'reset_gap': int(max_gap), 'merge_policy': merge_policy_value, 'soft_hold_count': int(total_soft_hold), 'soft_flip_count': int(total_soft_flip), 'merged_island_count': int(total_merged_islands), 'merged_island_rows': int(total_merged_rows), 'tracks': summary_tracks}
+    summary = {'routing_mode': 'threshold_soft', 'threshold': float(threshold_default), 'threshold_edge': float(threshold_edge), 'selected_count': len(selected), 'ema_alpha': float(alpha), 'band_ratio': float(band), 'exit_ratio': float(exit_band), 'strong_ratio': float(strong), 'k1_keep_cost': float(k1_keep_cost_threshold), 'reset_gap': int(max_gap), 'merge_policy': merge_policy_value, 'soft_hold_count': int(total_soft_hold), 'soft_flip_count': int(total_soft_flip), 'merged_island_count': int(total_merged_islands), 'merged_island_rows': int(total_merged_rows), 'tracks': summary_tracks}
     return (selected, summary)
 
-def infer_build_k2_threshold_hysteresis_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, enter_default: int, enter_edge: int, exit_default: int, exit_edge: int, edge_keys: set[tuple[int, str]], confirm_frames: int, reset_gap: int) -> tuple[set[tuple[int, str]], dict[str, object]]:
+def infer_build_k2_threshold_hysteresis_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, enter_default: float, enter_edge: float, exit_default: float, exit_edge: float, edge_keys: set[tuple[int, str]], confirm_frames: int, reset_gap: int) -> tuple[set[tuple[int, str]], dict[str, object]]:
     selected: set[tuple[int, str]] = set()
     summary_tracks: list[dict[str, object]] = []
     effective_confirm = max(1, int(confirm_frames))
@@ -4213,9 +4432,9 @@ def infer_build_k2_threshold_hysteresis_selection(rows_by_track: dict[str, list[
             if prev_frame is not None and frame - prev_frame > max_gap:
                 in_k2 = False
                 pending_enter = []
-            err = int(k1_metrics_lookup[key]['weighted_error'])
-            enter_threshold = int(enter_edge if key in edge_keys else enter_default)
-            exit_threshold = int(exit_edge if key in edge_keys else exit_default)
+            err = float(k1_metrics_lookup[key]['weighted_error'])
+            enter_threshold = float(enter_edge if key in edge_keys else enter_default)
+            exit_threshold = float(exit_edge if key in edge_keys else exit_default)
             if in_k2:
                 if err <= exit_threshold:
                     in_k2 = False
@@ -4239,11 +4458,11 @@ def infer_build_k2_threshold_hysteresis_selection(rows_by_track: dict[str, list[
             if flag:
                 selected.add(key)
         total_pending_promotions += promoted_in_track
-        summary_tracks.append({'track_id': track_id, 'frame_count': len(track_rows), 'seed_count': int(sum((1 for key in keys if int(k1_metrics_lookup[key]['weighted_error']) >= int(enter_edge if key in edge_keys else enter_default)))), 'expanded_count': int(sum((1 for flag in flags if flag))), 'promoted_by_confirm': int(promoted_in_track), 'error_cut': None, 'instability_cut': None})
-    summary = {'routing_mode': 'threshold_hysteresis', 'enter_threshold': int(enter_default), 'enter_threshold_edge': int(enter_edge), 'exit_threshold': int(exit_default), 'exit_threshold_edge': int(exit_edge), 'confirm_frames': int(effective_confirm), 'reset_gap': int(max_gap), 'selected_count': len(selected), 'promoted_by_confirm': int(total_pending_promotions), 'tracks': summary_tracks}
+        summary_tracks.append({'track_id': track_id, 'frame_count': len(track_rows), 'seed_count': int(sum((1 for key in keys if float(k1_metrics_lookup[key]['weighted_error']) >= float(enter_edge if key in edge_keys else enter_default)))), 'expanded_count': int(sum((1 for flag in flags if flag))), 'promoted_by_confirm': int(promoted_in_track), 'error_cut': None, 'instability_cut': None})
+    summary = {'routing_mode': 'threshold_hysteresis', 'enter_threshold': float(enter_default), 'enter_threshold_edge': float(enter_edge), 'exit_threshold': float(exit_default), 'exit_threshold_edge': float(exit_edge), 'confirm_frames': int(effective_confirm), 'reset_gap': int(max_gap), 'selected_count': len(selected), 'promoted_by_confirm': int(total_pending_promotions), 'tracks': summary_tracks}
     return (selected, summary)
 
-def infer_cleanup_selected_k2_inner_islands(rows_by_track: dict[str, list[tuple[int, str, str, int]]], selected_keys: set[tuple[int, str]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, max_len: int, keep_cost: int) -> tuple[set[tuple[int, str]], dict[str, int]]:
+def infer_cleanup_selected_k2_inner_islands(rows_by_track: dict[str, list[tuple[int, str, str, int]]], selected_keys: set[tuple[int, str]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, max_len: int, keep_cost: float) -> tuple[set[tuple[int, str]], dict[str, int]]:
     limit = max(0, int(max_len))
     if limit <= 0:
         return (set(selected_keys), {'removed_runs': 0, 'removed_rows': 0, 'removed_exact_runs': 0, 'removed_exact_rows': 0, 'removed_track_order_runs': 0, 'removed_track_order_rows': 0, 'removed_exact_singleton_runs': 0, 'removed_exact_singleton_rows': 0})
@@ -4270,8 +4489,8 @@ def infer_cleanup_selected_k2_inner_islands(rows_by_track: dict[str, list[tuple[
             left_ok = i > 0 and (not flags[i - 1]) and (frames[i] - frames[i - 1] == 1)
             right_ok = j < len(flags) and (not flags[j]) and (frames[j] - frames[j - 1] == 1)
             if left_ok and right_ok and (run_len <= limit):
-                max_k1_cost = max((int(k1_metrics_lookup[key]['weighted_error']) for key in keys[i:j]))
-                if keep_cost < 0 or max_k1_cost <= int(keep_cost):
+                max_k1_cost = max((float(k1_metrics_lookup[key]['weighted_error']) for key in keys[i:j]))
+                if keep_cost < 0 or max_k1_cost <= float(keep_cost):
                     for key in keys[i:j]:
                         cleaned.discard(key)
                     removed_exact_runs += 1
@@ -4292,8 +4511,8 @@ def infer_cleanup_selected_k2_inner_islands(rows_by_track: dict[str, list[tuple[
             left_ok = i > 0 and (not flags[i - 1])
             right_ok = j < len(flags) and (not flags[j])
             if left_ok and right_ok and (run_len <= limit):
-                max_k1_cost = max((int(k1_metrics_lookup[key]['weighted_error']) for key in keys[i:j]))
-                if keep_cost < 0 or max_k1_cost <= int(keep_cost):
+                max_k1_cost = max((float(k1_metrics_lookup[key]['weighted_error']) for key in keys[i:j]))
+                if keep_cost < 0 or max_k1_cost <= float(keep_cost):
                     for key in keys[i:j]:
                         cleaned.discard(key)
                     removed_track_order_runs += 1
@@ -4314,8 +4533,8 @@ def infer_cleanup_selected_k2_inner_islands(rows_by_track: dict[str, list[tuple[
             run_len = j - i
             if run_len == 1:
                 key = keys[i]
-                max_k1_cost = int(k1_metrics_lookup[key]['weighted_error'])
-                if keep_cost < 0 or max_k1_cost <= int(keep_cost):
+                max_k1_cost = float(k1_metrics_lookup[key]['weighted_error'])
+                if keep_cost < 0 or max_k1_cost <= float(keep_cost):
                     cleaned.discard(key)
                     removed_exact_singleton_runs += 1
                     removed_exact_singleton_rows += 1
@@ -4353,8 +4572,8 @@ def infer_promote_short_k1_runs_to_k2(rows_by_track: dict[str, list[tuple[int, s
             i = j
     return (promoted, {'promoted_runs': int(promoted_runs), 'promoted_rows': int(promoted_rows)})
 
-def infer_force_select_high_cost_rows(rows_by_track: dict[str, list[tuple[int, str, str, int]]], selected_keys: set[tuple[int, str]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, min_cost: int) -> tuple[set[tuple[int, str]], dict[str, int]]:
-    threshold = int(min_cost)
+def infer_force_select_high_cost_rows(rows_by_track: dict[str, list[tuple[int, str, str, int]]], selected_keys: set[tuple[int, str]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, min_cost: float) -> tuple[set[tuple[int, str]], dict[str, int]]:
+    threshold = float(min_cost)
     if threshold < 0:
         return (set(selected_keys), {'forced_runs': 0, 'forced_rows': 0})
     forced = set(selected_keys)
@@ -4365,14 +4584,14 @@ def infer_force_select_high_cost_rows(rows_by_track: dict[str, list[tuple[int, s
         i = 0
         while i < len(keys):
             key = keys[i]
-            is_high_cost = int(k1_metrics_lookup[key]['weighted_error']) > threshold
+            is_high_cost = float(k1_metrics_lookup[key]['weighted_error']) > threshold
             if key in forced or not is_high_cost:
                 i += 1
                 continue
             j = i + 1
             while j < len(keys):
                 key_j = keys[j]
-                if key_j in forced or int(k1_metrics_lookup[key_j]['weighted_error']) <= threshold:
+                if key_j in forced or float(k1_metrics_lookup[key_j]['weighted_error']) <= threshold:
                     break
                 j += 1
             for key_run in keys[i:j]:
@@ -4526,7 +4745,7 @@ def infer_infer_k2_v5(selected_rows: list[tuple[int, int, str, str]], payloads: 
                     pred_json = json.dumps([poly.astype(np.float64).tolist() for poly in pred_polys], ensure_ascii=True)
                     exact = fst.compute_exact_metrics_from_polygons(batch_gt_polys[local_idx], pred_polys)
                     exact['weighted_error'] = int(fst.compute_weighted_error(exact))
-                    metric_row = {'frame': int(frame), 'track_id': str(track_id), 'mode': 'k2', 'candidate_name': 'v5_slot_set_spd', 'gt_area': int(exact['gt_area']), 'pred_area': int(exact['pred_area']), 'intersection': int(exact['intersection']), 'union': int(exact['union']), 'recall': float(exact['recall']), 'precision': float(exact['precision']), 'iou': float(exact['iou']), 'weighted_error': int(exact['weighted_error']), 'ellipse_params': json.dumps(fst.serialize_ellipses(pred_abs), ensure_ascii=True), 'branch': 'k2_v5'}
+                    metric_row = infer_add_weighted_error_norm({'frame': int(frame), 'track_id': str(track_id), 'mode': 'k2', 'candidate_name': 'v5_slot_set_spd', 'gt_area': int(exact['gt_area']), 'pred_area': int(exact['pred_area']), 'intersection': int(exact['intersection']), 'union': int(exact['union']), 'recall': float(exact['recall']), 'precision': float(exact['precision']), 'iou': float(exact['iou']), 'weighted_error': int(exact['weighted_error']), 'ellipse_params': json.dumps(fst.serialize_ellipses(pred_abs), ensure_ascii=True), 'branch': 'k2_v5'})
                     solved_rows.append((original_idx, (int(frame), str(track_id), pred_json)))
                     solved_metrics.append((original_idx, metric_row))
                 stage_timings['postprocess_exact'] += time.perf_counter() - stage_start
@@ -4621,25 +4840,51 @@ def infer_main() -> None:
         k1_metrics_lookup[key] = row
         k1_ellipses_lookup[key] = [tuple(map(float, e)) for e in json.loads(str(row['ellipse_params']))]
     k2_band_start = time.perf_counter()
-    effective_threshold_edge = int(args.threshold if int(args.threshold_edge) < 0 else args.threshold_edge)
+    use_normalized_k1_cost = str(args.k1_cost_routing) == 'normalized'
+    routing_cost_field = 'weighted_error_norm' if use_normalized_k1_cost else 'weighted_error'
+    routing_metrics_lookup = infer_prepare_k1_routing_metrics_lookup(k1_metrics_lookup, cost_field=routing_cost_field)
+    if use_normalized_k1_cost:
+        threshold_default = float(args.threshold_norm)
+        effective_threshold_edge = float(args.threshold_norm if float(args.threshold_edge_norm) < 0.0 else args.threshold_edge_norm)
+        soft_k1_keep_cost = float(args.k2_soft_k1_keep_cost_norm)
+        hyst_enter = float(args.k2_hyst_enter_norm)
+        hyst_enter_edge = float(args.k2_hyst_enter_norm if float(args.k2_hyst_enter_edge_norm) < 0.0 else args.k2_hyst_enter_edge_norm)
+        hyst_exit = float(args.k2_hyst_exit_norm)
+        hyst_exit_edge = float(args.k2_hyst_exit_norm if float(args.k2_hyst_exit_edge_norm) < 0.0 else args.k2_hyst_exit_edge_norm)
+        dp_merge_short_k2_keep_cost = float(args.k2_dp_merge_short_k2_keep_cost_norm)
+        dp_force_k2_cost = float(args.k2_dp_force_k2_cost_norm)
+    else:
+        threshold_default = float(args.threshold)
+        effective_threshold_edge = float(args.threshold if int(args.threshold_edge) < 0 else args.threshold_edge)
+        soft_k1_keep_cost = float(args.k2_soft_k1_keep_cost)
+        hyst_enter = float(args.k2_hyst_enter)
+        hyst_enter_edge = float(args.k2_hyst_enter if int(args.k2_hyst_enter_edge) < 0 else args.k2_hyst_enter_edge)
+        hyst_exit = float(args.k2_hyst_exit)
+        hyst_exit_edge = float(args.k2_hyst_exit if int(args.k2_hyst_exit_edge) < 0 else args.k2_hyst_exit_edge)
+        dp_merge_short_k2_keep_cost = float(args.k2_dp_merge_short_k2_keep_cost)
+        dp_force_k2_cost = float(args.k2_dp_force_k2_cost)
     if str(args.routing_mode) == 'threshold_only':
-        selected_keys, k2_band_summary = infer_build_k2_threshold_only_selection(rows_by_track=rows_by_track, k1_metrics_lookup=k1_metrics_lookup, threshold_default=int(args.threshold), threshold_edge=effective_threshold_edge, edge_keys=edge_keys)
+        selected_keys, k2_band_summary = infer_build_k2_threshold_only_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, threshold_default=threshold_default, threshold_edge=effective_threshold_edge, edge_keys=edge_keys)
     elif str(args.routing_mode) == 'threshold_soft':
-        selected_keys, k2_band_summary = infer_build_k2_threshold_soft_selection(rows_by_track=rows_by_track, k1_metrics_lookup=k1_metrics_lookup, threshold_default=int(args.threshold), threshold_edge=effective_threshold_edge, edge_keys=edge_keys, ema_alpha=float(args.k2_soft_ema_alpha), band_ratio=float(args.k2_soft_band_ratio), exit_ratio=float(args.k2_soft_exit_ratio), strong_ratio=float(args.k2_soft_strong_ratio), k1_keep_cost=int(args.k2_soft_k1_keep_cost), reset_gap=int(args.k2_soft_reset_gap), merge_islands_max_len=int(args.k2_soft_merge_islands_max_len), merge_policy=str(args.k2_soft_merge_policy))
+        selected_keys, k2_band_summary = infer_build_k2_threshold_soft_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, threshold_default=threshold_default, threshold_edge=effective_threshold_edge, edge_keys=edge_keys, ema_alpha=float(args.k2_soft_ema_alpha), band_ratio=float(args.k2_soft_band_ratio), exit_ratio=float(args.k2_soft_exit_ratio), strong_ratio=float(args.k2_soft_strong_ratio), k1_keep_cost=soft_k1_keep_cost, reset_gap=int(args.k2_soft_reset_gap), merge_islands_max_len=int(args.k2_soft_merge_islands_max_len), merge_policy=str(args.k2_soft_merge_policy))
     elif str(args.routing_mode) == 'threshold_hysteresis':
-        effective_enter_edge = int(args.k2_hyst_enter if int(args.k2_hyst_enter_edge) < 0 else args.k2_hyst_enter_edge)
-        effective_exit_edge = int(args.k2_hyst_exit if int(args.k2_hyst_exit_edge) < 0 else args.k2_hyst_exit_edge)
-        selected_keys, k2_band_summary = infer_build_k2_threshold_hysteresis_selection(rows_by_track=rows_by_track, k1_metrics_lookup=k1_metrics_lookup, enter_default=int(args.k2_hyst_enter), enter_edge=effective_enter_edge, exit_default=int(args.k2_hyst_exit), exit_edge=effective_exit_edge, edge_keys=edge_keys, confirm_frames=int(args.k2_hyst_confirm_frames), reset_gap=int(args.k2_hyst_reset_gap))
+        selected_keys, k2_band_summary = infer_build_k2_threshold_hysteresis_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, enter_default=hyst_enter, enter_edge=hyst_enter_edge, exit_default=hyst_exit, exit_edge=hyst_exit_edge, edge_keys=edge_keys, confirm_frames=int(args.k2_hyst_confirm_frames), reset_gap=int(args.k2_hyst_reset_gap))
     elif str(args.routing_mode) == 'track_dp':
-        selected_keys, k2_band_summary = infer_build_k2_track_dp_selection(rows_by_track=rows_by_track, k1_metrics_lookup=k1_metrics_lookup, k1_ellipses_lookup=k1_ellipses_lookup, threshold_default=int(args.threshold), threshold_edge=effective_threshold_edge, edge_keys=edge_keys, error_weight=float(args.k2_dp_error_weight), instability_weight=float(args.k2_dp_instability_weight), edge_bonus=float(args.k2_dp_edge_bonus), k2_bias=float(args.k2_dp_k2_bias), switch_12=float(args.k2_dp_switch_12), switch_21=float(args.k2_dp_switch_21), short_k1_gamma=float(args.k2_dp_short_k1_gamma), short_k2_gamma=float(args.k2_dp_short_k2_gamma), short_k1_tau=float(args.k2_dp_short_k1_tau), short_k2_tau=float(args.k2_dp_short_k2_tau), short_len_cap=int(args.k2_dp_short_len_cap), reset_gap=int(args.k2_dp_reset_gap), merge_short_k1_max_len=int(args.k2_dp_merge_short_k1_max_len), merge_short_k2_max_len=int(args.k2_dp_merge_short_k2_max_len), merge_short_k2_keep_cost=int(args.k2_dp_merge_short_k2_keep_cost))
-    elif effective_threshold_edge == int(args.threshold):
+        selected_keys, k2_band_summary = infer_build_k2_track_dp_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, k1_ellipses_lookup=k1_ellipses_lookup, threshold_default=threshold_default, threshold_edge=effective_threshold_edge, edge_keys=edge_keys, error_weight=float(args.k2_dp_error_weight), instability_weight=float(args.k2_dp_instability_weight), edge_bonus=float(args.k2_dp_edge_bonus), k2_bias=float(args.k2_dp_k2_bias), switch_12=float(args.k2_dp_switch_12), switch_21=float(args.k2_dp_switch_21), short_k1_gamma=float(args.k2_dp_short_k1_gamma), short_k2_gamma=float(args.k2_dp_short_k2_gamma), short_k1_tau=float(args.k2_dp_short_k1_tau), short_k2_tau=float(args.k2_dp_short_k2_tau), short_len_cap=int(args.k2_dp_short_len_cap), reset_gap=int(args.k2_dp_reset_gap), merge_short_k1_max_len=int(args.k2_dp_merge_short_k1_max_len), merge_short_k2_max_len=int(args.k2_dp_merge_short_k2_max_len), merge_short_k2_keep_cost=dp_merge_short_k2_keep_cost)
+    elif (not use_normalized_k1_cost) and effective_threshold_edge == threshold_default:
         selected_keys, k2_band_summary = fst.build_k2_solve_band(rows_by_track=rows_by_track, k1_metrics_lookup=k1_metrics_lookup, k1_ellipses_lookup=k1_ellipses_lookup, threshold=int(args.threshold), radius=int(args.k2_band_radius), error_percentile=float(args.k2_band_error_percentile), instability_percentile=float(args.k2_band_instability_percentile), instability_floor=float(args.k2_band_instability_floor))
     else:
-        selected_keys, k2_band_summary = infer_build_k2_solve_band_edge_aware(rows_by_track=rows_by_track, k1_metrics_lookup=k1_metrics_lookup, k1_ellipses_lookup=k1_ellipses_lookup, threshold_default=int(args.threshold), threshold_edge=effective_threshold_edge, edge_keys=edge_keys, radius=int(args.k2_band_radius), error_percentile=float(args.k2_band_error_percentile), instability_percentile=float(args.k2_band_instability_percentile), instability_floor=float(args.k2_band_instability_floor))
+        selected_keys, k2_band_summary = infer_build_k2_solve_band_edge_aware(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, k1_ellipses_lookup=k1_ellipses_lookup, threshold_default=threshold_default, threshold_edge=effective_threshold_edge, edge_keys=edge_keys, radius=int(args.k2_band_radius), error_percentile=float(args.k2_band_error_percentile), instability_percentile=float(args.k2_band_instability_percentile), instability_floor=float(args.k2_band_instability_floor))
     if isinstance(k2_band_summary, dict):
         k2_band_summary.setdefault('routing_mode', str(args.routing_mode))
+        k2_band_summary['k1_cost_routing'] = str(args.k1_cost_routing)
+        k2_band_summary['routing_cost_field'] = routing_cost_field
+        k2_band_summary['threshold_raw'] = float(args.threshold)
+        k2_band_summary['threshold_edge_raw'] = float(args.threshold if int(args.threshold_edge) < 0 else args.threshold_edge)
+        k2_band_summary['threshold_norm'] = float(args.threshold_norm)
+        k2_band_summary['threshold_edge_norm'] = float(args.threshold_norm if float(args.threshold_edge_norm) < 0.0 else args.threshold_edge_norm)
     if str(args.routing_mode) == 'track_dp' and int(args.k2_dp_merge_short_k2_max_len) > 0:
-        selected_keys, removed_inner_k2_summary = infer_cleanup_selected_k2_inner_islands(rows_by_track=rows_by_track, selected_keys=selected_keys, k1_metrics_lookup=k1_metrics_lookup, max_len=int(args.k2_dp_merge_short_k2_max_len), keep_cost=int(args.k2_dp_merge_short_k2_keep_cost))
+        selected_keys, removed_inner_k2_summary = infer_cleanup_selected_k2_inner_islands(rows_by_track=rows_by_track, selected_keys=selected_keys, k1_metrics_lookup=routing_metrics_lookup, max_len=int(args.k2_dp_merge_short_k2_max_len), keep_cost=dp_merge_short_k2_keep_cost)
         if isinstance(k2_band_summary, dict):
             k2_band_summary['selected_count'] = len(selected_keys)
             k2_band_summary['post_removed_inner_k2_runs'] = int(removed_inner_k2_summary['removed_runs'])
@@ -4656,8 +4901,8 @@ def infer_main() -> None:
             k2_band_summary['selected_count'] = len(selected_keys)
             k2_band_summary['post_promoted_short_k1_runs'] = int(promoted_short_k1_summary['promoted_runs'])
             k2_band_summary['post_promoted_short_k1_rows'] = int(promoted_short_k1_summary['promoted_rows'])
-    if str(args.routing_mode) == 'track_dp' and int(args.k2_dp_force_k2_cost) >= 0:
-        selected_keys, forced_high_cost_summary = infer_force_select_high_cost_rows(rows_by_track=rows_by_track, selected_keys=selected_keys, k1_metrics_lookup=k1_metrics_lookup, min_cost=int(args.k2_dp_force_k2_cost))
+    if str(args.routing_mode) == 'track_dp' and dp_force_k2_cost >= 0:
+        selected_keys, forced_high_cost_summary = infer_force_select_high_cost_rows(rows_by_track=rows_by_track, selected_keys=selected_keys, k1_metrics_lookup=routing_metrics_lookup, min_cost=dp_force_k2_cost)
         if isinstance(k2_band_summary, dict):
             k2_band_summary['selected_count'] = len(selected_keys)
             k2_band_summary['post_forced_high_cost_k2_runs'] = int(forced_high_cost_summary['forced_runs'])
@@ -4695,7 +4940,7 @@ def infer_main() -> None:
     write_metrics_sec = time.perf_counter() - write_metrics_start
     total_sec = time.perf_counter() - t0
     total_unique_frames = len({int(frame) for frame, _, _ in source_rows})
-    summary = {'input_sqlite': str(input_sqlite_path), 'input_jsonl': str(args.input_jsonl) if args.input_jsonl is not None else None, 'output_dir': str(args.output_dir), 'config': {'raw_cut_detect': bool(args.raw_cut_detect), 'raw_remove_short_tracks_max_frames': int(args.raw_remove_short_tracks_max_frames), 'k1_recall_target': float(args.k1_recall_target), 'k1_exact_refine_rounds': int(args.k1_exact_refine_rounds), 'k1_workers_argument': int(args.k1_workers), 'k2_run_dir': str(args.k2_run_dir), 'k2_device': str(args.k2_device), 'k2_batch_size': int(args.k2_batch_size), 'k2_prep_workers': int(args.k2_prep_workers), 'k2_precision': str(args.k2_precision), 'k2_forward_mode': str(args.k2_forward_mode), 'k2_profile_stages': bool(args.k2_profile_stages), 'k2_cudnn_benchmark': str(args.k2_cudnn_benchmark), 'k2_tf32': str(args.k2_tf32), 'routing_mode': str(args.routing_mode), 'threshold': int(args.threshold), 'threshold_edge': effective_threshold_edge, 'k2_hyst_enter': int(args.k2_hyst_enter), 'k2_hyst_enter_edge': int(args.k2_hyst_enter if int(args.k2_hyst_enter_edge) < 0 else args.k2_hyst_enter_edge), 'k2_hyst_exit': int(args.k2_hyst_exit), 'k2_hyst_exit_edge': int(args.k2_hyst_exit if int(args.k2_hyst_exit_edge) < 0 else args.k2_hyst_exit_edge), 'k2_hyst_confirm_frames': int(args.k2_hyst_confirm_frames), 'k2_hyst_reset_gap': int(args.k2_hyst_reset_gap), 'k2_dp_error_weight': float(args.k2_dp_error_weight), 'k2_dp_instability_weight': float(args.k2_dp_instability_weight), 'k2_dp_edge_bonus': float(args.k2_dp_edge_bonus), 'k2_dp_k2_bias': float(args.k2_dp_k2_bias), 'k2_dp_switch_12': float(args.k2_dp_switch_12), 'k2_dp_switch_21': float(args.k2_dp_switch_21), 'k2_dp_short_k1_gamma': float(args.k2_dp_short_k1_gamma), 'k2_dp_short_k2_gamma': float(args.k2_dp_short_k2_gamma), 'k2_dp_short_k1_tau': float(args.k2_dp_short_k1_tau), 'k2_dp_short_k2_tau': float(args.k2_dp_short_k2_tau), 'k2_dp_short_len_cap': int(args.k2_dp_short_len_cap), 'k2_dp_reset_gap': int(args.k2_dp_reset_gap), 'k2_dp_merge_short_k1_max_len': int(args.k2_dp_merge_short_k1_max_len), 'k2_dp_merge_short_k2_max_len': int(args.k2_dp_merge_short_k2_max_len), 'k2_dp_merge_short_k2_keep_cost': int(args.k2_dp_merge_short_k2_keep_cost), 'k2_dp_force_k2_cost': int(args.k2_dp_force_k2_cost), 'k2_band_radius': int(args.k2_band_radius), 'k2_band_error_percentile': float(args.k2_band_error_percentile), 'k2_band_instability_percentile': float(args.k2_band_instability_percentile), 'k2_band_instability_floor': float(args.k2_band_instability_floor), 'max_rows': int(args.max_rows), 'max_tracks': int(args.max_tracks)}, 'counts': {'total_rows': len(source_rows), 'total_unique_frames': total_unique_frames, 'edge_rows': len(edge_rows), 'nonedge_rows': len(nonedge_rows), 'k2_selected_rows': len(selected_rows), 'k1_final_rows': len(source_rows) - len(selected_rows)}, 'workers': {'edge': workers_edge, 'nonedge': workers_nonedge}, 'timing_sec': {'load_rows': load_rows_sec, 'parse_polygons_all': parse_polygons_sec, 'prepare_payloads_all': prepare_payloads_sec, 'classify_edge_all': classify_edge_sec, 'preprocess_loop_total': preprocess_loop_sec, 'split_rows': split_rows_sec, 'edge_solve': edge_solve_sec, 'nonedge_solve': nonedge_solve_sec, 'merge_k1': merge_k1_sec, 'k2_band_select': k2_band_sec, 'k2_v5_solve': k2_solve_sec, 'merge_final': merge_final_sec, 'evaluate_submission': eval_sec, 'write_sqlite': write_sqlite_sec, 'write_metrics_csv': write_metrics_sec, 'end_to_end_total': total_sec}, 'throughput': {'end_to_end_rows_per_sec': len(source_rows) / max(total_sec, 1e-09), 'end_to_end_unique_frames_per_sec': total_unique_frames / max(total_sec, 1e-09), 'k2_v5_rows_per_sec': len(selected_rows) / max(k2_solve_sec, 1e-09) if selected_rows else 0.0}, 'raw_preprocess': raw_preprocess_summary, 'metrics': aggregate, 'k2_band_summary': k2_band_summary, 'k2_v5_model': model_info}
+    summary = {'input_sqlite': str(input_sqlite_path), 'input_jsonl': str(args.input_jsonl) if args.input_jsonl is not None else None, 'output_dir': str(args.output_dir), 'config': {'raw_cut_detect': bool(args.raw_cut_detect), 'raw_cut_method': str(getattr(args, 'raw_cut_method', infer_RAW_CUT_METHOD_DEFAULT)), 'raw_remove_short_tracks_max_frames': int(args.raw_remove_short_tracks_max_frames), 'raw_det_score_min': float(args.raw_det_score_min), 'k1_recall_target': float(args.k1_recall_target), 'k1_exact_refine_rounds': int(args.k1_exact_refine_rounds), 'k1_workers_argument': int(args.k1_workers), 'k2_run_dir': str(args.k2_run_dir), 'k2_device': str(args.k2_device), 'k2_batch_size': int(args.k2_batch_size), 'k2_prep_workers': int(args.k2_prep_workers), 'k2_precision': str(args.k2_precision), 'k2_forward_mode': str(args.k2_forward_mode), 'k2_profile_stages': bool(args.k2_profile_stages), 'k2_cudnn_benchmark': str(args.k2_cudnn_benchmark), 'k2_tf32': str(args.k2_tf32), 'routing_mode': str(args.routing_mode), 'threshold': int(args.threshold), 'threshold_edge': effective_threshold_edge, 'k2_hyst_enter': int(args.k2_hyst_enter), 'k2_hyst_enter_edge': int(args.k2_hyst_enter if int(args.k2_hyst_enter_edge) < 0 else args.k2_hyst_enter_edge), 'k2_hyst_exit': int(args.k2_hyst_exit), 'k2_hyst_exit_edge': int(args.k2_hyst_exit if int(args.k2_hyst_exit_edge) < 0 else args.k2_hyst_exit_edge), 'k2_hyst_confirm_frames': int(args.k2_hyst_confirm_frames), 'k2_hyst_reset_gap': int(args.k2_hyst_reset_gap), 'k2_dp_error_weight': float(args.k2_dp_error_weight), 'k2_dp_instability_weight': float(args.k2_dp_instability_weight), 'k2_dp_edge_bonus': float(args.k2_dp_edge_bonus), 'k2_dp_k2_bias': float(args.k2_dp_k2_bias), 'k2_dp_switch_12': float(args.k2_dp_switch_12), 'k2_dp_switch_21': float(args.k2_dp_switch_21), 'k2_dp_short_k1_gamma': float(args.k2_dp_short_k1_gamma), 'k2_dp_short_k2_gamma': float(args.k2_dp_short_k2_gamma), 'k2_dp_short_k1_tau': float(args.k2_dp_short_k1_tau), 'k2_dp_short_k2_tau': float(args.k2_dp_short_k2_tau), 'k2_dp_short_len_cap': int(args.k2_dp_short_len_cap), 'k2_dp_reset_gap': int(args.k2_dp_reset_gap), 'k2_dp_merge_short_k1_max_len': int(args.k2_dp_merge_short_k1_max_len), 'k2_dp_merge_short_k2_max_len': int(args.k2_dp_merge_short_k2_max_len), 'k2_dp_merge_short_k2_keep_cost': int(args.k2_dp_merge_short_k2_keep_cost), 'k2_dp_force_k2_cost': int(args.k2_dp_force_k2_cost), 'k2_band_radius': int(args.k2_band_radius), 'k2_band_error_percentile': float(args.k2_band_error_percentile), 'k2_band_instability_percentile': float(args.k2_band_instability_percentile), 'k2_band_instability_floor': float(args.k2_band_instability_floor), 'max_rows': int(args.max_rows), 'max_tracks': int(args.max_tracks)}, 'counts': {'total_rows': len(source_rows), 'total_unique_frames': total_unique_frames, 'edge_rows': len(edge_rows), 'nonedge_rows': len(nonedge_rows), 'k2_selected_rows': len(selected_rows), 'k1_final_rows': len(source_rows) - len(selected_rows)}, 'workers': {'edge': workers_edge, 'nonedge': workers_nonedge}, 'timing_sec': {'load_rows': load_rows_sec, 'parse_polygons_all': parse_polygons_sec, 'prepare_payloads_all': prepare_payloads_sec, 'classify_edge_all': classify_edge_sec, 'preprocess_loop_total': preprocess_loop_sec, 'split_rows': split_rows_sec, 'edge_solve': edge_solve_sec, 'nonedge_solve': nonedge_solve_sec, 'merge_k1': merge_k1_sec, 'k2_band_select': k2_band_sec, 'k2_v5_solve': k2_solve_sec, 'merge_final': merge_final_sec, 'evaluate_submission': eval_sec, 'write_sqlite': write_sqlite_sec, 'write_metrics_csv': write_metrics_sec, 'end_to_end_total': total_sec}, 'throughput': {'end_to_end_rows_per_sec': len(source_rows) / max(total_sec, 1e-09), 'end_to_end_unique_frames_per_sec': total_unique_frames / max(total_sec, 1e-09), 'k2_v5_rows_per_sec': len(selected_rows) / max(k2_solve_sec, 1e-09) if selected_rows else 0.0}, 'raw_preprocess': raw_preprocess_summary, 'metrics': aggregate, 'k2_band_summary': k2_band_summary, 'k2_v5_model': model_info}
     summary_path = args.output_dir / 'summary.json'
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding='utf-8')
     print(json.dumps(summary, indent=2, ensure_ascii=False))
@@ -6326,14 +6571,207 @@ def kftrackk_build_stream_segments_track_k(args: argparse.Namespace, rows: list[
             streams.append(stream)
     return streams
 
+def kftrackk_interpolated_state(stream: base.StreamSegment, key_q: np.ndarray, chosen: list[int]) -> np.ndarray:
+    interp_q = base.interpolate_from_key_values(key_q, chosen, len(stream.frame_numbers))
+    return base.q_to_state(interp_q, scale=stream.transform_scale, theta_scale=stream.theta_scale)
+
+def kftrackk_recall_info(recall: float, weights: np.ndarray, target: float, inflate_log_delta: float, attained: bool) -> dict[str, float | bool]:
+    return {'dense_recall_before': float(recall), 'dense_recall_after': float(recall), 'inflate_log_delta': float(inflate_log_delta), 'dense_recall_target': float(target), 'dense_recall_attained': bool(attained), 'source_area_sum': float(np.sum(weights))}
+
+def kftrackk_apply_uniform_key_inflation(key_q: np.ndarray, delta: float) -> np.ndarray:
+    out = key_q.copy()
+    out[:, 2] += float(delta)
+    out[:, 3] += float(delta)
+    return out
+
+def kftrackk_approx_union_frame_recall(source_slots: list[np.ndarray], pred_slots: list[np.ndarray], disk_samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return kftrackk_union_recall_from_source_samples(kftrackk_source_sample_payloads(source_slots, disk_samples), pred_slots)
+
+def kftrackk_source_sample_payloads(source_slots: list[np.ndarray], disk_samples: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    payloads: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    if not source_slots or len(source_slots[0]) == 0:
+        return payloads
+    sx = disk_samples[:, 0][None, :]
+    sy = disk_samples[:, 1][None, :]
+    for source_states in source_slots:
+        src_theta = np.deg2rad(source_states[:, 4])[:, None]
+        src_cos = np.cos(src_theta)
+        src_sin = np.sin(src_theta)
+        local_x = sx * source_states[:, 2][:, None]
+        local_y = sy * source_states[:, 3][:, None]
+        world_x = source_states[:, 0][:, None] + src_cos * local_x - src_sin * local_y
+        world_y = source_states[:, 1][:, None] + src_sin * local_x + src_cos * local_y
+        slot_weights = np.maximum(source_states[:, 2] * source_states[:, 3], 1e-06)
+        payloads.append((world_x, world_y, slot_weights))
+    return payloads
+
+def kftrackk_union_recall_from_source_samples(payloads: list[tuple[np.ndarray, np.ndarray, np.ndarray]], pred_slots: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    if not payloads:
+        return (np.ones(0, dtype=np.float64), np.zeros(0, dtype=np.float64))
+    n = int(payloads[0][0].shape[0])
+    covered = np.zeros(n, dtype=np.float64)
+    weights = np.zeros(n, dtype=np.float64)
+    for world_x, world_y, slot_weights in payloads:
+        inside = np.zeros(world_x.shape, dtype=bool)
+        for pred_states in pred_slots:
+            inside |= dense_base.ellipse_membership(world_x, world_y, pred_states)
+        covered += inside.mean(axis=1).astype(np.float64) * slot_weights
+        weights += slot_weights
+    per_frame = np.divide(covered, weights, out=np.ones_like(covered), where=weights > 0.0)
+    return (per_frame, weights)
+
+def kftrackk_union_recall_score(source_slots: list[np.ndarray], pred_slots: list[np.ndarray], disk_samples: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    per_frame, weights = kftrackk_approx_union_frame_recall(source_slots, pred_slots, disk_samples)
+    recall = float(np.average(per_frame, weights=np.maximum(weights, 1e-06))) if len(per_frame) else 1.0
+    return (recall, per_frame, weights)
+
+def kftrackk_pred_slots_with_inflation(items: list[dict[str, object]], deltas: tuple[float, float]) -> list[np.ndarray]:
+    pred_slots: list[np.ndarray] = []
+    for item, delta in zip(items, deltas, strict=True):
+        pred_slots.append(
+            kftrackk_interpolated_state(
+                item['stream'],
+                kftrackk_apply_uniform_key_inflation(item['key_q'], float(delta)),
+                item['chosen'],
+            )
+        )
+    return pred_slots
+
+def kftrackk_union_inflation_cost(base_area_sums: np.ndarray, deltas: tuple[float, float]) -> float:
+    delta_arr = np.asarray(deltas, dtype=np.float64)
+    return float(np.sum(base_area_sums * np.maximum(np.exp(2.0 * delta_arr) - 1.0, 0.0)))
+
+def kftrackk_find_joint_union_inflation(
+    items: list[dict[str, object]],
+    source_slots: list[np.ndarray],
+    target: float,
+    args: argparse.Namespace,
+    disk_samples: np.ndarray,
+) -> tuple[tuple[float, float], float, bool]:
+    max_delta = max(0.0, float(args.dense_recall_max_inflate_log))
+    search_iters = max(1, int(args.dense_recall_search_iters))
+    source_payloads = kftrackk_source_sample_payloads(source_slots, disk_samples)
+    base_pred_slots = [kftrackk_interpolated_state(item['stream'], item['key_q'], item['chosen']) for item in items]
+    base_area_sums = np.asarray([float(np.sum(np.maximum(slot[:, 2] * slot[:, 3], 1e-06))) for slot in base_pred_slots], dtype=np.float64)
+
+    def inflated_pred_slots(deltas: tuple[float, float]) -> list[np.ndarray]:
+        pred_slots: list[np.ndarray] = []
+        for slot, delta in zip(base_pred_slots, deltas, strict=True):
+            out = slot.copy()
+            scale = math.exp(float(delta))
+            out[:, 2] *= scale
+            out[:, 3] *= scale
+            pred_slots.append(out)
+        return pred_slots
+
+    def evaluate(deltas: tuple[float, float]) -> float:
+        per_frame, weights = kftrackk_union_recall_from_source_samples(source_payloads, inflated_pred_slots(deltas))
+        recall = float(np.average(per_frame, weights=np.maximum(weights, 1e-06))) if len(per_frame) else 1.0
+        return float(recall)
+
+    def remember(best: tuple[tuple[float, float], float, float] | None, deltas: tuple[float, float], recall: float) -> tuple[tuple[float, float], float, float]:
+        cost = kftrackk_union_inflation_cost(base_area_sums, deltas)
+        candidate = (deltas, float(recall), float(cost))
+        if best is None:
+            return candidate
+        if candidate[2] < best[2] - 1e-09:
+            return candidate
+        if abs(candidate[2] - best[2]) <= 1e-09 and candidate[1] > best[1]:
+            return candidate
+        return best
+
+    high_recall = evaluate((max_delta, max_delta))
+    if high_recall < target or max_delta <= 0.0:
+        return ((max_delta, max_delta), float(high_recall), False)
+
+    best: tuple[tuple[float, float], float, float] | None = None
+
+    low = 0.0
+    high = max_delta
+    for _ in range(search_iters):
+        mid = 0.5 * (low + high)
+        recall = evaluate((mid, mid))
+        if recall >= target:
+            high = mid
+            best = remember(best, (mid, mid), recall)
+        else:
+            low = mid
+    uniform_delta = high
+    uniform_recall = evaluate((uniform_delta, uniform_delta))
+    best = remember(best, (uniform_delta, uniform_delta), uniform_recall)
+
+    def minimal_partner_delta(slot_index: int, fixed_delta: float) -> tuple[tuple[float, float], float] | None:
+        endpoint = (float(fixed_delta), max_delta) if slot_index == 0 else (max_delta, float(fixed_delta))
+        if evaluate(endpoint) < target:
+            return None
+        low_partner = 0.0
+        high_partner = max_delta
+        best_recall = target
+        for _ in range(search_iters):
+            mid = 0.5 * (low_partner + high_partner)
+            deltas = (float(fixed_delta), mid) if slot_index == 0 else (mid, float(fixed_delta))
+            recall = evaluate(deltas)
+            if recall >= target:
+                high_partner = mid
+                best_recall = recall
+            else:
+                low_partner = mid
+        deltas = (float(fixed_delta), high_partner) if slot_index == 0 else (high_partner, float(fixed_delta))
+        return (deltas, float(best_recall))
+
+    def scan_fixed_deltas(lo: float, hi: float, count: int) -> None:
+        nonlocal best
+        if count <= 1:
+            grid = np.asarray([0.5 * (lo + hi)], dtype=np.float64)
+        else:
+            grid = np.linspace(float(lo), float(hi), int(count), dtype=np.float64)
+        for fixed in grid:
+            for slot_index in (0, 1):
+                result = minimal_partner_delta(slot_index, float(fixed))
+                if result is not None:
+                    best = remember(best, result[0], result[1])
+
+    coarse_count = min(17, max(7, search_iters // 2 + 1))
+    scan_fixed_deltas(0.0, max_delta, coarse_count)
+    if best is not None:
+        best_delta0, best_delta1 = best[0]
+        step = max_delta / max(coarse_count - 1, 1)
+        scan_fixed_deltas(max(0.0, best_delta0 - step), min(max_delta, best_delta0 + step), 9)
+        scan_fixed_deltas(max(0.0, best_delta1 - step), min(max_delta, best_delta1 + step), 9)
+
+    if best is None:
+        return ((max_delta, max_delta), float(high_recall), False)
+    return (best[0], float(best[1]), True)
+
+def kftrackk_enforce_union_frame_recall_target(items: list[dict[str, object]], args: argparse.Namespace, disk_samples: np.ndarray) -> None:
+    items.sort(key=lambda item: int(getattr(item['stream'], 'slot_id')))
+    streams = [item['stream'] for item in items]
+    source_slots = [stream.raw_states for stream in streams]
+    target = float(args.dense_recall_target)
+    pred_slots = [kftrackk_interpolated_state(item['stream'], item['key_q'], item['chosen']) for item in items]
+    base_recall, _per_frame, _weights = kftrackk_union_recall_score(source_slots, pred_slots, disk_samples)
+    if target <= 0.0 or base_recall >= target or any(len(item['chosen']) == 0 for item in items):
+        for item, stream in zip(items, streams, strict=True):
+            slot_weights = np.maximum(stream.raw_states[:, 2] * stream.raw_states[:, 3], 1e-06)
+            item['dense_info'] = kftrackk_recall_info(base_recall, slot_weights, target, 0.0, base_recall >= target)
+        return
+    deltas, repaired_recall, attained = kftrackk_find_joint_union_inflation(items, source_slots, target, args, disk_samples)
+    for item, stream, delta in zip(items, streams, deltas, strict=True):
+        item['key_q'] = kftrackk_apply_uniform_key_inflation(item['key_q'], float(delta))
+        slot_weights = np.maximum(stream.raw_states[:, 2] * stream.raw_states[:, 3], 1e-06)
+        dense_info = kftrackk_recall_info(base_recall, slot_weights, target, float(delta), bool(attained))
+        dense_info['dense_recall_after'] = float(repaired_recall)
+        item['dense_info'] = dense_info
+
 def kftrackk_optimize_streams_track_k_dense_recall(streams: list[base.StreamSegment], penalty: float, args: argparse.Namespace) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], dict[str, float]]:
     keyframe_rows: list[dict[str, object]] = []
     dense_rows: list[dict[str, object]] = []
     segment_rows: list[dict[str, object]] = []
     disk_samples = dense_base.unit_disk_samples(int(args.dense_recall_samples))
     timings = {'stream_loop_total': 0.0, 'anchor_setup': 0.0, 'decode_dp': 0.0, 'refine_local': 0.0, 'value_refine': 0.0, 'dense_recall_enforce': 0.0, 'interpolate_and_state': 0.0, 'emit_rows': 0.0}
+    total_t0 = time.perf_counter()
+    work_items: list[dict[str, object]] = []
     for stream in streams:
-        stream_t0 = time.perf_counter()
         assert stream.smoothed_q is not None
         frame_modes: list[str] = list(getattr(stream, 'frame_modes'))
         ellipse_count = int(getattr(stream, 'ellipse_count', 1))
@@ -6360,9 +6798,37 @@ def kftrackk_optimize_streams_track_k_dense_recall(streams: list[base.StreamSegm
             elif str(args.value_refine) == 'residual_nudge':
                 key_q = base.refine_keyframe_values_residual_nudge(target_q=target_q, base_key_q=key_q, keyframes=chosen, weights=fit_weights, damping=float(args.value_refine_damping))
         timings['value_refine'] += time.perf_counter() - t0
-        t0 = time.perf_counter()
-        key_q, dense_info = dense_base.enforce_dense_recall_target(stream=stream, key_q=key_q, chosen=chosen, args=args, disk_samples=disk_samples)
-        timings['dense_recall_enforce'] += time.perf_counter() - t0
+        work_items.append({'stream': stream, 'frame_modes': frame_modes, 'ellipse_count': ellipse_count, 'fit_weights': fit_weights, 'target_q': target_q, 'chosen': chosen, 'objective': objective, 'key_q': key_q})
+    t0 = time.perf_counter()
+    k2_groups: dict[tuple[str, int, tuple[int, ...]], list[dict[str, object]]] = {}
+    for item in work_items:
+        stream = item['stream']
+        if int(item['ellipse_count']) == 2:
+            key = (str(stream.track_id), int(stream.run_id), tuple(int(frame) for frame in stream.frame_numbers.tolist()))
+            k2_groups.setdefault(key, []).append(item)
+    handled: set[int] = set()
+    for group_items in k2_groups.values():
+        if len(group_items) == 2:
+            kftrackk_enforce_union_frame_recall_target(group_items, args, disk_samples)
+            handled.update(id(item) for item in group_items)
+    for item in work_items:
+        if id(item) in handled:
+            continue
+        stream = item['stream']
+        key_q, dense_info = dense_base.enforce_dense_recall_target(stream=stream, key_q=item['key_q'], chosen=item['chosen'], args=args, disk_samples=disk_samples)
+        item['key_q'] = key_q
+        item['dense_info'] = dense_info
+    timings['dense_recall_enforce'] += time.perf_counter() - t0
+    for item in work_items:
+        stream = item['stream']
+        frame_modes = item['frame_modes']
+        ellipse_count = int(item['ellipse_count'])
+        fit_weights = item['fit_weights']
+        target_q = item['target_q']
+        chosen = item['chosen']
+        objective = float(item['objective'])
+        key_q = item['key_q']
+        dense_info = item['dense_info']
         t0 = time.perf_counter()
         interp_q = base.interpolate_from_key_values(key_q, chosen, len(stream.frame_numbers))
         dense_state = base.q_to_state(interp_q, scale=stream.transform_scale, theta_scale=stream.theta_scale)
@@ -6378,7 +6844,7 @@ def kftrackk_optimize_streams_track_k_dense_recall(streams: list[base.StreamSegm
         for local_idx, frame in enumerate(stream.frame_numbers):
             dense_rows.append({'stream_id': stream.stream_id, 'track_id': stream.track_id, 'mode': frame_modes[local_idx], 'run_id': stream.run_id, 'slot_id': stream.slot_id, 'ellipse_count': ellipse_count, 'frame': int(frame), 'ellipse': dense_state[local_idx].tolist(), 'is_keyframe': int(local_idx in chosen_set)})
         timings['emit_rows'] += time.perf_counter() - t0
-        timings['stream_loop_total'] += time.perf_counter() - stream_t0
+    timings['stream_loop_total'] = time.perf_counter() - total_t0
     return (keyframe_rows, dense_rows, segment_rows, timings)
 
 def kftrackk_merge_dense_rows_to_union_track_k(dense_rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -6829,7 +7295,15 @@ def render_load_metric_data(csv_path: Path) -> tuple[dict[tuple[int, str], dict[
             track_id = str(row['track_id'])
             has_keyframe = int(float(row.get('has_keyframe', 0)))
             key = (frame, track_id)
-            lookup[key] = {'mode': str(row.get('mode', '')), 'candidate_name': str(row.get('candidate_name', '')), 'recall': float(row.get('recall', 0.0)), 'precision': float(row.get('precision', 0.0)), 'iou': float(row.get('iou', 0.0)), 'weighted_error': int(float(row.get('weighted_error', 0.0))), 'has_keyframe': has_keyframe}
+            weighted_error = float(row.get('weighted_error', 0.0) or 0.0)
+            gt_area = float(row.get('gt_area', 0.0) or 0.0)
+            weighted_error_norm_raw = row.get('weighted_error_norm')
+            weighted_error_norm = (
+                float(weighted_error_norm_raw)
+                if weighted_error_norm_raw not in (None, '')
+                else infer_compute_weighted_error_norm(weighted_error, gt_area)
+            )
+            lookup[key] = {'mode': str(row.get('mode', '')), 'candidate_name': str(row.get('candidate_name', '')), 'recall': float(row.get('recall', 0.0)), 'precision': float(row.get('precision', 0.0)), 'iou': float(row.get('iou', 0.0)), 'weighted_error': int(weighted_error), 'weighted_error_norm': float(weighted_error_norm), 'gt_area': float(gt_area), 'has_keyframe': has_keyframe}
             if has_keyframe:
                 keyframes_by_track[track_id].append(frame)
     for frames in keyframes_by_track.values():
@@ -6854,9 +7328,12 @@ def render_draw_track_annotation(img: np.ndarray, anchor: tuple[int, int], track
     mode = str(metric_row['mode']).upper()
     score_line = f"T{track_id} {mode} IoU:{float(metric_row['iou']):.3f} R:{float(metric_row['recall']):.3f} P:{float(metric_row['precision']):.3f}"
     if k1_weighted_error is None:
-        aux_line = f"K1cost:NA/{int(k1_threshold)} {str(metric_row['candidate_name'])}"
+        aux_line = f"K1cost:NA/{int(k1_threshold)} n:NA {str(metric_row['candidate_name'])}"
     else:
-        aux_line = f"K1cost:{int(k1_weighted_error)}/{int(k1_threshold)} {str(metric_row['candidate_name'])}"
+        gt_area = float(metric_row.get('gt_area', 0.0) or 0.0)
+        norm = float(metric_row.get('weighted_error_norm', infer_compute_weighted_error_norm(float(k1_weighted_error), gt_area)))
+        norm_threshold = infer_compute_weighted_error_norm(float(k1_threshold), gt_area)
+        aux_line = f"K1cost:{int(k1_weighted_error)}/{int(k1_threshold)} n:{norm:.3f}/{norm_threshold:.3f} {str(metric_row['candidate_name'])}"
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.48
     thickness = 1
@@ -7108,7 +7585,9 @@ def pipeline_parse_args() -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument('--raw-cut-detect', action=argparse.BooleanOptionalAction, default=True, help=argparse.SUPPRESS)
+    parser.add_argument('--raw-cut-method', choices=infer_RAW_CUT_METHODS, default=infer_RAW_CUT_METHOD_DEFAULT, help=argparse.SUPPRESS)
     parser.add_argument('--raw-remove-short-tracks-max-frames', type=int, default=10, help=argparse.SUPPRESS)
+    parser.add_argument('--raw-det-score-min', type=float, default=infer_RAW_DET_SCORE_MIN, help=argparse.SUPPRESS)
     parser.add_argument(
         '--default-shape-mode',
         choices=pipeline_VALID_SHAPE_MODES,
@@ -7140,6 +7619,9 @@ def pipeline_parse_args() -> argparse.Namespace:
     parser.add_argument('--endpoint-extend', action=argparse.BooleanOptionalAction, default=True, help=argparse.SUPPRESS)
     parser.add_argument('--endpoint-extend-frames', type=int, default=2, help=argparse.SUPPRESS)
     parser.add_argument('--endpoint-extend-max-speed-px', type=float, default=1000.0, help=argparse.SUPPRESS)
+    parser.add_argument('--endpoint-extend-edge-only', action=argparse.BooleanOptionalAction, default=True, help=argparse.SUPPRESS)
+    parser.add_argument('--endpoint-extend-edge-margin-px', type=float, default=3.0, help=argparse.SUPPRESS)
+    parser.add_argument('--endpoint-extend-edge-confirm-frames', type=int, default=3, help=argparse.SUPPRESS)
     parser.add_argument('--k1-recall-target', type=float, default=0.99, help=argparse.SUPPRESS)
     parser.add_argument('--k1-exact-refine-rounds', type=int, default=1, help=argparse.SUPPRESS)
     parser.add_argument('--k1-workers', type=int, default=4, help=argparse.SUPPRESS)
@@ -7153,8 +7635,18 @@ def pipeline_parse_args() -> argparse.Namespace:
     parser.add_argument('--k2-cudnn-benchmark', type=str, default='off', choices=('on', 'off'), help=argparse.SUPPRESS)
     parser.add_argument('--k2-tf32', type=str, default='default', choices=('default', 'on', 'off'), help=argparse.SUPPRESS)
     parser.add_argument('--routing-mode', type=str, default='track_dp', help=argparse.SUPPRESS)
+    parser.add_argument('--k1-cost-routing', type=str, default='normalized', choices=('raw', 'normalized'), help=argparse.SUPPRESS)
     parser.add_argument('--threshold', type=int, default=5000, help=argparse.SUPPRESS)
     parser.add_argument('--threshold-edge', type=int, default=-1, help=argparse.SUPPRESS)
+    parser.add_argument('--threshold-norm', type=float, default=0.18, help=argparse.SUPPRESS)
+    parser.add_argument('--threshold-edge-norm', type=float, default=-1.0, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-soft-k1-keep-cost-norm', type=float, default=-1.0, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-hyst-enter-norm', type=float, default=0.20, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-hyst-enter-edge-norm', type=float, default=-1.0, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-hyst-exit-norm', type=float, default=0.14, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-hyst-exit-edge-norm', type=float, default=-1.0, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-dp-merge-short-k2-keep-cost-norm', type=float, default=0.35, help=argparse.SUPPRESS)
+    parser.add_argument('--k2-dp-force-k2-cost-norm', type=float, default=0.35, help=argparse.SUPPRESS)
     parser.add_argument('--polygon-num-workers', type=int, default=min(16, os.cpu_count() or 1), help='Worker count passed to the embedded polygon keyframe optimizer.')
     parser.add_argument(
         '--polygon-adaptive-anchor-counts',
@@ -7604,6 +8096,75 @@ def pipeline_polygon_bbox(polygons: list[np.ndarray]) -> tuple[float, float, flo
     )
 
 
+def pipeline_bbox_edge_sides(
+    bbox: tuple[float, float, float, float] | None,
+    *,
+    width: int,
+    height: int,
+    margin_px: float,
+) -> set[str]:
+    if bbox is None:
+        return set()
+    x0, y0, x1, y1 = bbox
+    margin = max(0.0, float(margin_px))
+    sides: set[str] = set()
+    if float(x0) <= margin:
+        sides.add('left')
+    if float(x1) >= float(width - 1) - margin:
+        sides.add('right')
+    if float(y0) <= margin:
+        sides.add('top')
+    if float(y1) >= float(height - 1) - margin:
+        sides.add('bottom')
+    return sides
+
+
+def pipeline_polygons_json_edge_sides(
+    polygons_json: str,
+    *,
+    width: int,
+    height: int,
+    margin_px: float,
+) -> set[str]:
+    try:
+        polygons = fst_parse_polygons(str(polygons_json))
+    except Exception:
+        return set()
+    return pipeline_bbox_edge_sides(
+        pipeline_polygon_bbox(polygons),
+        width=int(width),
+        height=int(height),
+        margin_px=float(margin_px),
+    )
+
+
+def pipeline_endpoint_edge_confirm_from_jsons(
+    polygons_jsons: list[str],
+    *,
+    width: int,
+    height: int,
+    margin_px: float,
+    confirm_frames: int,
+) -> tuple[bool, list[str], str]:
+    required = max(1, int(confirm_frames))
+    if len(polygons_jsons) < required:
+        return False, [], 'missing_confirm_frames'
+    common_sides: set[str] | None = None
+    for polygons_json in polygons_jsons[:required]:
+        sides = pipeline_polygons_json_edge_sides(
+            polygons_json,
+            width=int(width),
+            height=int(height),
+            margin_px=float(margin_px),
+        )
+        if not sides:
+            return False, [], 'not_near_edge'
+        common_sides = set(sides) if common_sides is None else common_sides & sides
+        if not common_sides:
+            return False, [], 'edge_side_mismatch'
+    return True, sorted(common_sides), 'ok'
+
+
 def pipeline_polygon_border_expand_one(
     poly: np.ndarray,
     *,
@@ -7813,6 +8374,36 @@ def pipeline_load_cut_frames(sqlite_path: Path) -> set[int]:
         conn.close()
 
 
+def pipeline_load_mask_polygon_lookup(sqlite_path: Path) -> dict[tuple[str, int], str]:
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        table_names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'masks' not in table_names:
+            return {}
+        columns = [str(row[1]) for row in conn.execute('PRAGMA table_info(masks)')]
+        if not {'frame', 'track_id', 'polygons'}.issubset(set(columns)):
+            return {}
+        return {
+            (str(track_id), int(frame)): str(polygons_json)
+            for frame, track_id, polygons_json in conn.execute('SELECT frame, track_id, polygons FROM masks')
+        }
+    finally:
+        conn.close()
+
+
+def pipeline_polygons_json_touches_k1_edge(polygons_json: str) -> bool:
+    try:
+        polygons = fst.parse_polygons(str(polygons_json))
+        if not polygons:
+            return False
+        payload = fst.prepare_local_raster_payload_from_polygons(polygons)
+        gt_mask, _origin = fst.rasterize_local_mask_from_payload(payload)
+        touches = fst.detect_edge_touches(gt_mask)
+        return bool(any(touches.values()))
+    except Exception:
+        return False
+
+
 def pipeline_crosses_cut(frame_a: int, frame_b: int, cuts: set[int]) -> bool:
     lo, hi = sorted((int(frame_a), int(frame_b)))
     return any(lo < int(cut) <= hi for cut in cuts)
@@ -7986,68 +8577,96 @@ def pipeline_endpoint_extend_prediction_sqlite(
             first, second = rows_sorted[0], rows_sorted[1]
             first_polys = fst_parse_polygons(str(first[polygons_idx]))
             second_polys = fst_parse_polygons(str(second[polygons_idx]))
-            first_delta = max(1, int(second[frame_idx]) - int(first[frame_idx]))
-            first_speed = pipeline_max_vertex_speed(first_polys, second_polys, first_delta)
-            if first_speed <= max_speed_px and pipeline_polygons_compatible(first_polys, second_polys):
-                inserted_count = 0
-                for step in range(1, steps + 1):
-                    target_frame = int(first[frame_idx]) - step
-                    if target_frame < 0:
-                        skipped['before_out_of_video'] += 1
-                        continue
-                    if video_frames is not None and target_frame >= video_frames:
-                        skipped['before_out_of_video'] += 1
-                        continue
-                    if (track_id, target_frame) in existing:
-                        skipped['before_existing'] += 1
-                        continue
-                    if pipeline_crosses_cut(target_frame, int(first[frame_idx]), cuts):
-                        skipped['before_cut'] += 1
-                        continue
-                    extrapolated = pipeline_extrapolate_polygons(first_polys, second_polys, step, before=True, frame_delta=first_delta)
-                    mutable = list(first)
-                    mutable[frame_idx] = int(target_frame)
-                    mutable[polygons_idx] = json.dumps([poly.astype(np.float32).tolist() for poly in extrapolated], ensure_ascii=False)
-                    inserted_rows.append(tuple(mutable))
-                    existing.add((track_id, target_frame))
-                    inserted_count += 1
-                if inserted_count:
-                    events.append({'track_id': track_id, 'side': 'before', 'source_frames': [int(first[frame_idx]), int(second[frame_idx])], 'inserted': int(inserted_count), 'max_vertex_speed': float(first_speed)})
-            else:
-                skipped['before_incompatible_or_too_fast'] += 1
+            before_edge_ok = True
+            before_edge_sides: list[str] = []
+            if bool(args.endpoint_extend_edge_only):
+                edge_ok, before_edge_sides, reason = pipeline_endpoint_edge_confirm_from_jsons(
+                    [str(row[polygons_idx]) for row in rows_sorted[:max(1, int(args.endpoint_extend_edge_confirm_frames))]],
+                    width=int(args.polygon_border_width),
+                    height=int(args.polygon_border_height),
+                    margin_px=float(args.endpoint_extend_edge_margin_px),
+                    confirm_frames=int(args.endpoint_extend_edge_confirm_frames),
+                )
+                if not edge_ok:
+                    skipped[f'before_edge_confirm_{reason}'] += 1
+                    before_edge_ok = False
+            if before_edge_ok:
+                first_delta = max(1, int(second[frame_idx]) - int(first[frame_idx]))
+                first_speed = pipeline_max_vertex_speed(first_polys, second_polys, first_delta)
+                if first_speed <= max_speed_px and pipeline_polygons_compatible(first_polys, second_polys):
+                    inserted_count = 0
+                    for step in range(1, steps + 1):
+                        target_frame = int(first[frame_idx]) - step
+                        if target_frame < 0:
+                            skipped['before_out_of_video'] += 1
+                            continue
+                        if video_frames is not None and target_frame >= video_frames:
+                            skipped['before_out_of_video'] += 1
+                            continue
+                        if (track_id, target_frame) in existing:
+                            skipped['before_existing'] += 1
+                            continue
+                        if pipeline_crosses_cut(target_frame, int(first[frame_idx]), cuts):
+                            skipped['before_cut'] += 1
+                            continue
+                        extrapolated = pipeline_extrapolate_polygons(first_polys, second_polys, step, before=True, frame_delta=first_delta)
+                        mutable = list(first)
+                        mutable[frame_idx] = int(target_frame)
+                        mutable[polygons_idx] = json.dumps([poly.astype(np.float32).tolist() for poly in extrapolated], ensure_ascii=False)
+                        inserted_rows.append(tuple(mutable))
+                        existing.add((track_id, target_frame))
+                        inserted_count += 1
+                    if inserted_count:
+                        events.append({'track_id': track_id, 'side': 'before', 'source_frames': [int(first[frame_idx]), int(second[frame_idx])], 'inserted': int(inserted_count), 'max_vertex_speed': float(first_speed), 'edge_sides': before_edge_sides})
+                else:
+                    skipped['before_incompatible_or_too_fast'] += 1
 
             prev_last, last = rows_sorted[-2], rows_sorted[-1]
             prev_polys = fst_parse_polygons(str(prev_last[polygons_idx]))
             last_polys = fst_parse_polygons(str(last[polygons_idx]))
-            last_delta = max(1, int(last[frame_idx]) - int(prev_last[frame_idx]))
-            last_speed = pipeline_max_vertex_speed(prev_polys, last_polys, last_delta)
-            if last_speed <= max_speed_px and pipeline_polygons_compatible(prev_polys, last_polys):
-                inserted_count = 0
-                for step in range(1, steps + 1):
-                    target_frame = int(last[frame_idx]) + step
-                    if target_frame < 0:
-                        skipped['after_out_of_video'] += 1
-                        continue
-                    if video_frames is not None and target_frame >= video_frames:
-                        skipped['after_out_of_video'] += 1
-                        continue
-                    if (track_id, target_frame) in existing:
-                        skipped['after_existing'] += 1
-                        continue
-                    if pipeline_crosses_cut(int(last[frame_idx]), target_frame, cuts):
-                        skipped['after_cut'] += 1
-                        continue
-                    extrapolated = pipeline_extrapolate_polygons(prev_polys, last_polys, step, before=False, frame_delta=last_delta)
-                    mutable = list(last)
-                    mutable[frame_idx] = int(target_frame)
-                    mutable[polygons_idx] = json.dumps([poly.astype(np.float32).tolist() for poly in extrapolated], ensure_ascii=False)
-                    inserted_rows.append(tuple(mutable))
-                    existing.add((track_id, target_frame))
-                    inserted_count += 1
-                if inserted_count:
-                    events.append({'track_id': track_id, 'side': 'after', 'source_frames': [int(prev_last[frame_idx]), int(last[frame_idx])], 'inserted': int(inserted_count), 'max_vertex_speed': float(last_speed)})
-            else:
-                skipped['after_incompatible_or_too_fast'] += 1
+            after_edge_ok = True
+            after_edge_sides: list[str] = []
+            if bool(args.endpoint_extend_edge_only):
+                edge_ok, after_edge_sides, reason = pipeline_endpoint_edge_confirm_from_jsons(
+                    [str(row[polygons_idx]) for row in rows_sorted[-max(1, int(args.endpoint_extend_edge_confirm_frames)):]],
+                    width=int(args.polygon_border_width),
+                    height=int(args.polygon_border_height),
+                    margin_px=float(args.endpoint_extend_edge_margin_px),
+                    confirm_frames=int(args.endpoint_extend_edge_confirm_frames),
+                )
+                if not edge_ok:
+                    skipped[f'after_edge_confirm_{reason}'] += 1
+                    after_edge_ok = False
+            if after_edge_ok:
+                last_delta = max(1, int(last[frame_idx]) - int(prev_last[frame_idx]))
+                last_speed = pipeline_max_vertex_speed(prev_polys, last_polys, last_delta)
+                if last_speed <= max_speed_px and pipeline_polygons_compatible(prev_polys, last_polys):
+                    inserted_count = 0
+                    for step in range(1, steps + 1):
+                        target_frame = int(last[frame_idx]) + step
+                        if target_frame < 0:
+                            skipped['after_out_of_video'] += 1
+                            continue
+                        if video_frames is not None and target_frame >= video_frames:
+                            skipped['after_out_of_video'] += 1
+                            continue
+                        if (track_id, target_frame) in existing:
+                            skipped['after_existing'] += 1
+                            continue
+                        if pipeline_crosses_cut(int(last[frame_idx]), target_frame, cuts):
+                            skipped['after_cut'] += 1
+                            continue
+                        extrapolated = pipeline_extrapolate_polygons(prev_polys, last_polys, step, before=False, frame_delta=last_delta)
+                        mutable = list(last)
+                        mutable[frame_idx] = int(target_frame)
+                        mutable[polygons_idx] = json.dumps([poly.astype(np.float32).tolist() for poly in extrapolated], ensure_ascii=False)
+                        inserted_rows.append(tuple(mutable))
+                        existing.add((track_id, target_frame))
+                        inserted_count += 1
+                    if inserted_count:
+                        events.append({'track_id': track_id, 'side': 'after', 'source_frames': [int(prev_last[frame_idx]), int(last[frame_idx])], 'inserted': int(inserted_count), 'max_vertex_speed': float(last_speed), 'edge_sides': after_edge_sides})
+                else:
+                    skipped['after_incompatible_or_too_fast'] += 1
 
         if inserted_rows:
             dst_cur.executemany(f'INSERT INTO masks({select_cols}) VALUES ({placeholders})', inserted_rows)
@@ -8078,6 +8697,9 @@ def pipeline_endpoint_extend_prediction_sqlite(
         'video_frame_count': video_frames,
         'extend_frames': int(steps),
         'max_speed_px': float(max_speed_px),
+        'edge_only': bool(args.endpoint_extend_edge_only),
+        'edge_margin_px': float(args.endpoint_extend_edge_margin_px),
+        'edge_confirm_frames': int(args.endpoint_extend_edge_confirm_frames),
         'source_rows': int(len(source_rows)),
         'inserted_rows': int(len(inserted_rows)),
         'inserted_before': int(before_count),
@@ -8113,6 +8735,7 @@ def pipeline_endpoint_extend_ellipse_metrics(
     max_speed_px = float(args.endpoint_extend_max_speed_px)
     video_frames = pipeline_video_frame_count(video_path)
     cuts = pipeline_load_cut_frames(cuts_source_sqlite)
+    eval_polygon_lookup = pipeline_load_mask_polygon_lookup(eval_sqlite) if bool(args.endpoint_extend_edge_only) else {}
 
     with input_metrics_csv.open('r', newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
@@ -8131,21 +8754,44 @@ def pipeline_endpoint_extend_ellipse_metrics(
     events: list[dict[str, object]] = []
     skipped: dict[str, int] = defaultdict(int)
 
-    def try_insert(track_id: str, endpoint: dict[str, str], neighbor: dict[str, str], *, before: bool) -> None:
+    def try_insert(track_id: str, endpoint: dict[str, str], neighbor: dict[str, str], *, before: bool, confirm_rows: list[dict[str, str]]) -> None:
         endpoint_frame = int(endpoint['frame'])
         neighbor_frame = int(neighbor['frame'])
         frame_delta = max(1, abs(neighbor_frame - endpoint_frame))
         endpoint_ellipses = json.loads(endpoint['ellipse_params'])
         neighbor_ellipses = json.loads(neighbor['ellipse_params'])
         speed = pipeline_max_ellipse_speed(endpoint_ellipses, neighbor_ellipses, frame_delta)
+        side = 'before' if before else 'after'
+        edge_sides: list[str] = []
+        if bool(args.endpoint_extend_edge_only):
+            polygons_jsons: list[str] = []
+            missing_mask = False
+            for confirm_row in confirm_rows[:max(1, int(args.endpoint_extend_edge_confirm_frames))]:
+                polygons_json = eval_polygon_lookup.get((track_id, int(confirm_row['frame'])))
+                if polygons_json is None:
+                    missing_mask = True
+                    break
+                polygons_jsons.append(str(polygons_json))
+            if missing_mask:
+                skipped[f'{side}_edge_confirm_missing_mask'] += 1
+                return
+            edge_ok, edge_sides, reason = pipeline_endpoint_edge_confirm_from_jsons(
+                polygons_jsons,
+                width=int(args.polygon_border_width),
+                height=int(args.polygon_border_height),
+                margin_px=float(args.endpoint_extend_edge_margin_px),
+                confirm_frames=int(args.endpoint_extend_edge_confirm_frames),
+            )
+            if not edge_ok:
+                skipped[f'{side}_edge_confirm_{reason}'] += 1
+                return
         if speed > max_speed_px or not pipeline_ellipses_compatible(endpoint_ellipses, neighbor_ellipses):
-            skipped[f'{"before" if before else "after"}_incompatible_or_too_fast'] += 1
+            skipped[f'{side}_incompatible_or_too_fast'] += 1
             return
         inserted_count = 0
         source_pair = [endpoint_frame, neighbor_frame] if before else [neighbor_frame, endpoint_frame]
         for step in range(1, steps + 1):
             target_frame = endpoint_frame - step if before else endpoint_frame + step
-            side = 'before' if before else 'after'
             if target_frame < 0:
                 skipped[f'{side}_out_of_video'] += 1
                 continue
@@ -8172,14 +8818,15 @@ def pipeline_endpoint_extend_ellipse_metrics(
             existing.add((track_id, target_frame))
             inserted_count += 1
         if inserted_count:
-            events.append({'track_id': track_id, 'side': 'before' if before else 'after', 'source_frames': source_pair, 'inserted': int(inserted_count), 'max_ellipse_speed': float(speed)})
+            events.append({'track_id': track_id, 'side': side, 'source_frames': source_pair, 'inserted': int(inserted_count), 'max_ellipse_speed': float(speed), 'edge_sides': edge_sides})
 
     for track_id, track_rows in by_track.items():
         rows_sorted = sorted(track_rows, key=lambda row: int(row['frame']))
         if len(rows_sorted) < 2 or steps <= 0:
             continue
-        try_insert(track_id, rows_sorted[0], rows_sorted[1], before=True)
-        try_insert(track_id, rows_sorted[-1], rows_sorted[-2], before=False)
+        confirm_count = max(1, int(args.endpoint_extend_edge_confirm_frames))
+        try_insert(track_id, rows_sorted[0], rows_sorted[1], before=True, confirm_rows=rows_sorted[:confirm_count])
+        try_insert(track_id, rows_sorted[-1], rows_sorted[-2], before=False, confirm_rows=rows_sorted[-confirm_count:])
 
     all_rows = rows + inserted_rows
     all_rows.sort(key=lambda row: (int(row['frame']), int(str(row['track_id']))))
@@ -8246,6 +8893,9 @@ def pipeline_endpoint_extend_ellipse_metrics(
         'video_frame_count': video_frames,
         'extend_frames': int(steps),
         'max_speed_px': float(max_speed_px),
+        'edge_only': bool(args.endpoint_extend_edge_only),
+        'edge_margin_px': float(args.endpoint_extend_edge_margin_px),
+        'edge_confirm_frames': int(args.endpoint_extend_edge_confirm_frames),
         'source_rows': int(len(rows)),
         'inserted_rows': int(len(inserted_rows)),
         'inserted_before': int(before_count),
@@ -8283,17 +8933,46 @@ def pipeline_build_fallback_k1_cost_csv(metrics_csv: Path, output_csv: Path) -> 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with metrics_csv.open('r', encoding='utf-8', newline='') as src, output_csv.open('w', encoding='utf-8', newline='') as dst:
         reader = csv.DictReader(src)
-        writer = csv.DictWriter(dst, fieldnames=['frame', 'track_id', 'weighted_error'])
+        writer = csv.DictWriter(dst, fieldnames=['frame', 'track_id', 'weighted_error', 'gt_area', 'weighted_error_norm'])
         writer.writeheader()
         for row in reader:
+            weighted_error = int(float(row.get('weighted_error', 0.0)))
+            gt_area = float(row.get('gt_area', 0.0) or 0.0)
+            weighted_error_norm = row.get('weighted_error_norm')
+            if weighted_error_norm in (None, ''):
+                weighted_error_norm = infer_compute_weighted_error_norm(weighted_error, gt_area)
             writer.writerow(
                 {
                     'frame': int(row['frame']),
                     'track_id': str(row['track_id']),
-                    'weighted_error': int(float(row.get('weighted_error', 0.0))),
+                    'weighted_error': weighted_error,
+                    'gt_area': int(gt_area),
+                    'weighted_error_norm': float(weighted_error_norm),
                 }
             )
     return output_csv
+
+
+def pipeline_load_k1_cost_detail_lookup(csv_path: Path) -> dict[tuple[int, str], dict[str, float]]:
+    lookup: dict[tuple[int, str], dict[str, float]] = {}
+    with csv_path.open('r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = (int(row['frame']), str(row['track_id']))
+            weighted_error = float(row.get('weighted_error', 0.0) or 0.0)
+            gt_area = float(row.get('gt_area', 0.0) or 0.0)
+            weighted_error_norm_raw = row.get('weighted_error_norm')
+            weighted_error_norm = (
+                float(weighted_error_norm_raw)
+                if weighted_error_norm_raw not in (None, '')
+                else infer_compute_weighted_error_norm(weighted_error, gt_area)
+            )
+            lookup[key] = {
+                'weighted_error': float(weighted_error),
+                'gt_area': float(gt_area),
+                'weighted_error_norm': float(weighted_error_norm),
+            }
+    return lookup
 
 
 def pipeline_merge_prediction_sqlites(input_sqlites: list[Path], output_sqlite: Path, reference_sqlite: Path | None = None) -> Path:
@@ -8309,6 +8988,103 @@ def pipeline_merge_prediction_sqlites(input_sqlites: list[Path], output_sqlite: 
     merged_rows.sort(key=lambda row: (row[0], int(row[1])))
     fst.write_sqlite(merged_rows, output_sqlite, reference_sqlite=reference_sqlite)
     return output_sqlite
+
+
+def pipeline_add_k1_cost_columns_to_sqlite(
+    sqlite_path: Path,
+    *,
+    reference_sqlite: Path,
+    k1_cost_csv: Path,
+    threshold_default: int,
+    threshold_edge: int,
+    threshold_default_norm: float,
+    threshold_edge_norm: float,
+    cost_routing: str,
+) -> dict[str, object]:
+    k1_cost_lookup = fst.load_k1_cost_lookup(k1_cost_csv)
+    k1_cost_detail_lookup = pipeline_load_k1_cost_detail_lookup(k1_cost_csv)
+    reference_polygons = pipeline_load_mask_polygon_lookup(reference_sqlite)
+    threshold_default_int = int(threshold_default)
+    threshold_edge_int = int(threshold_edge)
+    threshold_default_norm_float = float(threshold_default_norm)
+    threshold_edge_norm_float = float(threshold_edge_norm)
+    use_normalized_threshold = str(cost_routing) == 'normalized'
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        cur = conn.cursor()
+        columns = [str(row[1]) for row in cur.execute('PRAGMA table_info(masks)')]
+        if 'k1_cost' not in columns:
+            cur.execute('ALTER TABLE masks ADD COLUMN k1_cost INTEGER')
+        if 'k1_cost_threshold' not in columns:
+            cur.execute('ALTER TABLE masks ADD COLUMN k1_cost_threshold INTEGER')
+        if 'k1_cost_gt_area' not in columns:
+            cur.execute('ALTER TABLE masks ADD COLUMN k1_cost_gt_area REAL')
+        if 'k1_cost_norm' not in columns:
+            cur.execute('ALTER TABLE masks ADD COLUMN k1_cost_norm REAL')
+        if 'k1_cost_norm_threshold' not in columns:
+            cur.execute('ALTER TABLE masks ADD COLUMN k1_cost_norm_threshold REAL')
+
+        rows = [
+            (int(frame), str(track_id), str(polygons_json))
+            for frame, track_id, polygons_json in cur.execute('SELECT frame, track_id, polygons FROM masks')
+        ]
+        updates: list[tuple[int | None, int | None, float | None, float | None, float | None, int, str]] = []
+        found_cost = 0
+        missing_cost = 0
+        edge_threshold_rows = 0
+        default_threshold_rows = 0
+        for frame, track_id, polygons_json in rows:
+            key = (int(frame), str(track_id))
+            cost = k1_cost_lookup.get(key)
+            detail = k1_cost_detail_lookup.get(key)
+            if cost is None:
+                missing_cost += 1
+            else:
+                found_cost += 1
+            edge_source_json = reference_polygons.get((str(track_id), int(frame)), polygons_json)
+            is_edge = pipeline_polygons_json_touches_k1_edge(edge_source_json)
+            raw_threshold = threshold_edge_int if is_edge else threshold_default_int
+            norm_threshold_config = threshold_edge_norm_float if is_edge else threshold_default_norm_float
+            if is_edge:
+                edge_threshold_rows += 1
+            else:
+                default_threshold_rows += 1
+            gt_area = None if detail is None else float(detail.get('gt_area', 0.0))
+            cost_norm = None if detail is None else float(detail.get('weighted_error_norm', 0.0))
+            if use_normalized_threshold:
+                threshold_norm = norm_threshold_config
+                threshold = None if gt_area is None else int(round(float(threshold_norm) * max(float(gt_area), float(infer_K1_COST_NORM_AREA_FLOOR))))
+            else:
+                threshold = raw_threshold
+                threshold_norm = (
+                    None
+                    if gt_area is None
+                    else infer_compute_weighted_error_norm(float(threshold), float(gt_area))
+                )
+            updates.append((None if cost is None else int(cost), threshold, gt_area, cost_norm, threshold_norm, int(frame), str(track_id)))
+        if updates:
+            cur.executemany(
+                'UPDATE masks SET k1_cost = ?, k1_cost_threshold = ?, k1_cost_gt_area = ?, k1_cost_norm = ?, k1_cost_norm_threshold = ? WHERE frame = ? AND track_id = ?',
+                updates,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        'sqlite': str(sqlite_path),
+        'k1_cost_csv': str(k1_cost_csv),
+        'threshold_default': int(threshold_default_int),
+        'threshold_edge': int(threshold_edge_int),
+        'threshold_default_norm': float(threshold_default_norm_float),
+        'threshold_edge_norm': float(threshold_edge_norm_float),
+        'cost_routing': str(cost_routing),
+        'row_count': int(len(updates)),
+        'k1_cost_rows': int(found_cost),
+        'missing_k1_cost_rows': int(missing_cost),
+        'edge_threshold_rows': int(edge_threshold_rows),
+        'default_threshold_rows': int(default_threshold_rows),
+        'columns': ['k1_cost', 'k1_cost_threshold', 'k1_cost_gt_area', 'k1_cost_norm', 'k1_cost_norm_threshold'],
+    }
 
 
 def pipeline_evaluate_pred_sqlite_exact(tracked_sqlite: Path, pred_sqlite: Path, output_dir: Path, *, track_mode_lookup: dict[str, str] | None=None) -> dict[str, object]:
@@ -8478,6 +9254,10 @@ def pipeline_build_settings_summary(args: argparse.Namespace, intervals: list[in
         'endpoint_extend_stage': 'post_branch_approximation_pre_keyframe',
         'endpoint_extend_frames': int(args.endpoint_extend_frames),
         'endpoint_extend_max_speed_px': float(args.endpoint_extend_max_speed_px),
+        'endpoint_extend_edge_only': bool(args.endpoint_extend_edge_only),
+        'endpoint_extend_edge_margin_px': float(args.endpoint_extend_edge_margin_px),
+        'endpoint_extend_edge_confirm_frames': int(args.endpoint_extend_edge_confirm_frames),
+        'raw_det_score_min': float(args.raw_det_score_min),
         'polygon_num_workers': int(args.polygon_num_workers),
         'polygon_adaptive_anchor_counts': (
             None if args.polygon_adaptive_anchor_counts is None else bool(args.polygon_adaptive_anchor_counts)
@@ -8491,6 +9271,14 @@ def pipeline_build_settings_summary(args: argparse.Namespace, intervals: list[in
         'k2_profile_stages': bool(args.k2_profile_stages),
         'k2_cudnn_benchmark': str(args.k2_cudnn_benchmark),
         'k2_tf32': str(args.k2_tf32),
+        'routing_mode': str(args.routing_mode),
+        'k1_cost_routing': str(args.k1_cost_routing),
+        'threshold': int(args.threshold),
+        'threshold_edge': int(args.threshold_edge),
+        'threshold_norm': float(args.threshold_norm),
+        'threshold_edge_norm': float(args.threshold_edge_norm),
+        'k2_dp_merge_short_k2_keep_cost_norm': float(args.k2_dp_merge_short_k2_keep_cost_norm),
+        'k2_dp_force_k2_cost_norm': float(args.k2_dp_force_k2_cost_norm),
     }
 
 
@@ -8532,10 +9320,10 @@ def pipeline_build_zero_k1_cost_csv_from_sqlite(source_sqlite: Path, output_csv:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     rows = render_load_rows(source_sqlite)
     with output_csv.open('w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['frame', 'track_id', 'weighted_error'])
+        writer = csv.DictWriter(f, fieldnames=['frame', 'track_id', 'weighted_error', 'gt_area', 'weighted_error_norm'])
         writer.writeheader()
         for frame, track_id, _polygons_json in rows:
-            writer.writerow({'frame': int(frame), 'track_id': str(track_id), 'weighted_error': 0})
+            writer.writerow({'frame': int(frame), 'track_id': str(track_id), 'weighted_error': 0, 'gt_area': 0, 'weighted_error_norm': 0.0})
     return output_csv
 
 
@@ -8573,11 +9361,13 @@ def pipeline_merge_k1_cost_csvs(input_csvs: list[Path], output_csv: Path) -> Pat
                         'frame': int(row['frame']),
                         'track_id': str(row['track_id']),
                         'weighted_error': int(float(row.get('weighted_error', 0.0))),
+                        'gt_area': int(float(row.get('gt_area', 0.0) or 0.0)),
+                        'weighted_error_norm': float(row.get('weighted_error_norm', 0.0) or 0.0),
                     }
                 )
     merged_rows.sort(key=lambda row: (int(row['frame']), int(str(row['track_id']))))
     with output_csv.open('w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['frame', 'track_id', 'weighted_error'])
+        writer = csv.DictWriter(f, fieldnames=['frame', 'track_id', 'weighted_error', 'gt_area', 'weighted_error_norm'])
         writer.writeheader()
         writer.writerows(merged_rows)
     return output_csv
@@ -8607,6 +9397,8 @@ def pipeline_ensure_preprocess(args: argparse.Namespace, pipeline_dir: Path) -> 
             '--input-jsonl', str(args.input_jsonl),
             '--output-dir', str(preprocess_output_dir),
             '--raw-remove-short-tracks-max-frames', str(args.raw_remove_short_tracks_max_frames),
+            '--raw-det-score-min', str(args.raw_det_score_min),
+            '--raw-cut-method', str(args.raw_cut_method),
         ],
     )
     cmd.append('--raw-cut-detect' if args.raw_cut_detect else '--no-raw-cut-detect')
@@ -8652,9 +9444,21 @@ def pipeline_ensure_inference(args: argparse.Namespace, pipeline_dir: Path, *, s
             '--k2-cudnn-benchmark', str(args.k2_cudnn_benchmark),
             '--k2-tf32', str(args.k2_tf32),
             '--routing-mode', str(args.routing_mode),
+            '--k1-cost-routing', str(args.k1_cost_routing),
             '--threshold', str(args.threshold),
             '--threshold-edge', str(args.threshold_edge),
+            '--threshold-norm', str(args.threshold_norm),
+            '--threshold-edge-norm', str(args.threshold_edge_norm),
+            '--k2-soft-k1-keep-cost-norm', str(args.k2_soft_k1_keep_cost_norm),
+            '--k2-hyst-enter-norm', str(args.k2_hyst_enter_norm),
+            '--k2-hyst-enter-edge-norm', str(args.k2_hyst_enter_edge_norm),
+            '--k2-hyst-exit-norm', str(args.k2_hyst_exit_norm),
+            '--k2-hyst-exit-edge-norm', str(args.k2_hyst_exit_edge_norm),
+            '--k2-dp-merge-short-k2-keep-cost-norm', str(args.k2_dp_merge_short_k2_keep_cost_norm),
+            '--k2-dp-force-k2-cost-norm', str(args.k2_dp_force_k2_cost_norm),
             '--raw-remove-short-tracks-max-frames', str(args.raw_remove_short_tracks_max_frames),
+            '--raw-det-score-min', str(args.raw_det_score_min),
+            '--raw-cut-method', str(args.raw_cut_method),
         ],
     )
     if bool(args.k2_profile_stages):
@@ -9234,6 +10038,21 @@ def pipeline_main() -> None:
         else:
             timings['merge_pred_sqlite'] = {'reused': True, 'wall_seconds': 0.0}
 
+        t0 = time.perf_counter()
+        effective_threshold_edge = int(args.threshold if int(args.threshold_edge) < 0 else args.threshold_edge)
+        effective_threshold_edge_norm = float(args.threshold_norm if float(args.threshold_edge_norm) < 0.0 else args.threshold_edge_norm)
+        k1_cost_annotation_summary = pipeline_add_k1_cost_columns_to_sqlite(
+            merged_pred_sqlite_path,
+            reference_sqlite=tracked_sqlite,
+            k1_cost_csv=k1_cost_csv,
+            threshold_default=int(args.threshold),
+            threshold_edge=effective_threshold_edge,
+            threshold_default_norm=float(args.threshold_norm),
+            threshold_edge_norm=effective_threshold_edge_norm,
+            cost_routing=str(args.k1_cost_routing),
+        )
+        timings['annotate_k1_cost'] = {'wall_seconds': float(time.perf_counter() - t0)}
+
         merged_exact_dir = merged_dir / 'exact'
         merged_exact_summary_path = merged_exact_dir / 'summary.json'
         if not merged_exact_summary_path.exists() or args.force:
@@ -9273,6 +10092,7 @@ def pipeline_main() -> None:
             'group_target_ratios': group_target_ratios,
             'mode': mode_summary,
             'group_results': group_results,
+            'k1_cost_annotation_summary': k1_cost_annotation_summary,
             'exact_summary': merged_exact_summary,
             'paths': {
                 'merged_pred_sqlite': str(merged_pred_sqlite_path),

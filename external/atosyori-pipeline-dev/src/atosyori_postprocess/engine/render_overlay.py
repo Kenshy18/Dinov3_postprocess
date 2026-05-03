@@ -32,6 +32,7 @@ render_TEXT_BG = (18, 18, 18)
 render_TEXT_FG = (245, 245, 245)
 render_MODE_K1_COLOR = (0, 255, 0)
 render_MODE_K2_COLOR = (255, 0, 255)
+render_K1_COST_NORM_AREA_FLOOR = 1.0
 
 def render_build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Render overlay video for exact K1 + K2 V5 output.')
@@ -69,7 +70,15 @@ def render_load_metric_data(csv_path: Path) -> tuple[dict[tuple[int, str], dict[
             track_id = str(row['track_id'])
             has_keyframe = int(float(row.get('has_keyframe', 0)))
             key = (frame, track_id)
-            lookup[key] = {'mode': str(row.get('mode', '')), 'candidate_name': str(row.get('candidate_name', '')), 'recall': float(row.get('recall', 0.0)), 'precision': float(row.get('precision', 0.0)), 'iou': float(row.get('iou', 0.0)), 'weighted_error': int(float(row.get('weighted_error', 0.0))), 'has_keyframe': has_keyframe}
+            weighted_error = float(row.get('weighted_error', 0.0) or 0.0)
+            gt_area = float(row.get('gt_area', 0.0) or 0.0)
+            weighted_error_norm_raw = row.get('weighted_error_norm')
+            weighted_error_norm = (
+                float(weighted_error_norm_raw)
+                if weighted_error_norm_raw not in (None, '')
+                else weighted_error / max(gt_area, render_K1_COST_NORM_AREA_FLOOR)
+            )
+            lookup[key] = {'mode': str(row.get('mode', '')), 'candidate_name': str(row.get('candidate_name', '')), 'recall': float(row.get('recall', 0.0)), 'precision': float(row.get('precision', 0.0)), 'iou': float(row.get('iou', 0.0)), 'weighted_error': int(weighted_error), 'weighted_error_norm': float(weighted_error_norm), 'gt_area': float(gt_area), 'has_keyframe': has_keyframe}
             if has_keyframe:
                 keyframes_by_track[track_id].append(frame)
     for frames in keyframes_by_track.values():
@@ -94,9 +103,12 @@ def render_draw_track_annotation(img: np.ndarray, anchor: tuple[int, int], track
     mode = str(metric_row['mode']).upper()
     score_line = f"T{track_id} {mode} IoU:{float(metric_row['iou']):.3f} R:{float(metric_row['recall']):.3f} P:{float(metric_row['precision']):.3f}"
     if k1_weighted_error is None:
-        aux_line = f"K1cost:NA/{int(k1_threshold)} {str(metric_row['candidate_name'])}"
+        aux_line = f"K1cost:NA/{int(k1_threshold)} n:NA {str(metric_row['candidate_name'])}"
     else:
-        aux_line = f"K1cost:{int(k1_weighted_error)}/{int(k1_threshold)} {str(metric_row['candidate_name'])}"
+        gt_area = float(metric_row.get('gt_area', 0.0) or 0.0)
+        norm = float(metric_row.get('weighted_error_norm', float(k1_weighted_error) / max(gt_area, render_K1_COST_NORM_AREA_FLOOR)))
+        norm_threshold = float(k1_threshold) / max(gt_area, render_K1_COST_NORM_AREA_FLOOR)
+        aux_line = f"K1cost:{int(k1_weighted_error)}/{int(k1_threshold)} n:{norm:.3f}/{norm_threshold:.3f} {str(metric_row['candidate_name'])}"
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.48
     thickness = 1

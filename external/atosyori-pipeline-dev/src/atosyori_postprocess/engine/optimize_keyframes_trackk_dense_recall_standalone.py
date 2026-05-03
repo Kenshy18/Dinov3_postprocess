@@ -117,14 +117,207 @@ def kftrackk_build_stream_segments_track_k(args: argparse.Namespace, rows: list[
             streams.append(stream)
     return streams
 
+def kftrackk_interpolated_state(stream: base.StreamSegment, key_q: np.ndarray, chosen: list[int]) -> np.ndarray:
+    interp_q = base.interpolate_from_key_values(key_q, chosen, len(stream.frame_numbers))
+    return base.q_to_state(interp_q, scale=stream.transform_scale, theta_scale=stream.theta_scale)
+
+def kftrackk_recall_info(recall: float, weights: np.ndarray, target: float, inflate_log_delta: float, attained: bool) -> dict[str, float | bool]:
+    return {'dense_recall_before': float(recall), 'dense_recall_after': float(recall), 'inflate_log_delta': float(inflate_log_delta), 'dense_recall_target': float(target), 'dense_recall_attained': bool(attained), 'source_area_sum': float(np.sum(weights))}
+
+def kftrackk_apply_uniform_key_inflation(key_q: np.ndarray, delta: float) -> np.ndarray:
+    out = key_q.copy()
+    out[:, 2] += float(delta)
+    out[:, 3] += float(delta)
+    return out
+
+def kftrackk_approx_union_frame_recall(source_slots: list[np.ndarray], pred_slots: list[np.ndarray], disk_samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return kftrackk_union_recall_from_source_samples(kftrackk_source_sample_payloads(source_slots, disk_samples), pred_slots)
+
+def kftrackk_source_sample_payloads(source_slots: list[np.ndarray], disk_samples: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    payloads: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    if not source_slots or len(source_slots[0]) == 0:
+        return payloads
+    sx = disk_samples[:, 0][None, :]
+    sy = disk_samples[:, 1][None, :]
+    for source_states in source_slots:
+        src_theta = np.deg2rad(source_states[:, 4])[:, None]
+        src_cos = np.cos(src_theta)
+        src_sin = np.sin(src_theta)
+        local_x = sx * source_states[:, 2][:, None]
+        local_y = sy * source_states[:, 3][:, None]
+        world_x = source_states[:, 0][:, None] + src_cos * local_x - src_sin * local_y
+        world_y = source_states[:, 1][:, None] + src_sin * local_x + src_cos * local_y
+        slot_weights = np.maximum(source_states[:, 2] * source_states[:, 3], 1e-06)
+        payloads.append((world_x, world_y, slot_weights))
+    return payloads
+
+def kftrackk_union_recall_from_source_samples(payloads: list[tuple[np.ndarray, np.ndarray, np.ndarray]], pred_slots: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    if not payloads:
+        return (np.ones(0, dtype=np.float64), np.zeros(0, dtype=np.float64))
+    n = int(payloads[0][0].shape[0])
+    covered = np.zeros(n, dtype=np.float64)
+    weights = np.zeros(n, dtype=np.float64)
+    for world_x, world_y, slot_weights in payloads:
+        inside = np.zeros(world_x.shape, dtype=bool)
+        for pred_states in pred_slots:
+            inside |= dense_base.ellipse_membership(world_x, world_y, pred_states)
+        covered += inside.mean(axis=1).astype(np.float64) * slot_weights
+        weights += slot_weights
+    per_frame = np.divide(covered, weights, out=np.ones_like(covered), where=weights > 0.0)
+    return (per_frame, weights)
+
+def kftrackk_union_recall_score(source_slots: list[np.ndarray], pred_slots: list[np.ndarray], disk_samples: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    per_frame, weights = kftrackk_approx_union_frame_recall(source_slots, pred_slots, disk_samples)
+    recall = float(np.average(per_frame, weights=np.maximum(weights, 1e-06))) if len(per_frame) else 1.0
+    return (recall, per_frame, weights)
+
+def kftrackk_pred_slots_with_inflation(items: list[dict[str, object]], deltas: tuple[float, float]) -> list[np.ndarray]:
+    pred_slots: list[np.ndarray] = []
+    for item, delta in zip(items, deltas, strict=True):
+        pred_slots.append(
+            kftrackk_interpolated_state(
+                item['stream'],
+                kftrackk_apply_uniform_key_inflation(item['key_q'], float(delta)),
+                item['chosen'],
+            )
+        )
+    return pred_slots
+
+def kftrackk_union_inflation_cost(base_area_sums: np.ndarray, deltas: tuple[float, float]) -> float:
+    delta_arr = np.asarray(deltas, dtype=np.float64)
+    return float(np.sum(base_area_sums * np.maximum(np.exp(2.0 * delta_arr) - 1.0, 0.0)))
+
+def kftrackk_find_joint_union_inflation(
+    items: list[dict[str, object]],
+    source_slots: list[np.ndarray],
+    target: float,
+    args: argparse.Namespace,
+    disk_samples: np.ndarray,
+) -> tuple[tuple[float, float], float, bool]:
+    max_delta = max(0.0, float(args.dense_recall_max_inflate_log))
+    search_iters = max(1, int(args.dense_recall_search_iters))
+    source_payloads = kftrackk_source_sample_payloads(source_slots, disk_samples)
+    base_pred_slots = [kftrackk_interpolated_state(item['stream'], item['key_q'], item['chosen']) for item in items]
+    base_area_sums = np.asarray([float(np.sum(np.maximum(slot[:, 2] * slot[:, 3], 1e-06))) for slot in base_pred_slots], dtype=np.float64)
+
+    def inflated_pred_slots(deltas: tuple[float, float]) -> list[np.ndarray]:
+        pred_slots: list[np.ndarray] = []
+        for slot, delta in zip(base_pred_slots, deltas, strict=True):
+            out = slot.copy()
+            scale = math.exp(float(delta))
+            out[:, 2] *= scale
+            out[:, 3] *= scale
+            pred_slots.append(out)
+        return pred_slots
+
+    def evaluate(deltas: tuple[float, float]) -> float:
+        per_frame, weights = kftrackk_union_recall_from_source_samples(source_payloads, inflated_pred_slots(deltas))
+        recall = float(np.average(per_frame, weights=np.maximum(weights, 1e-06))) if len(per_frame) else 1.0
+        return float(recall)
+
+    def remember(best: tuple[tuple[float, float], float, float] | None, deltas: tuple[float, float], recall: float) -> tuple[tuple[float, float], float, float]:
+        cost = kftrackk_union_inflation_cost(base_area_sums, deltas)
+        candidate = (deltas, float(recall), float(cost))
+        if best is None:
+            return candidate
+        if candidate[2] < best[2] - 1e-09:
+            return candidate
+        if abs(candidate[2] - best[2]) <= 1e-09 and candidate[1] > best[1]:
+            return candidate
+        return best
+
+    high_recall = evaluate((max_delta, max_delta))
+    if high_recall < target or max_delta <= 0.0:
+        return ((max_delta, max_delta), float(high_recall), False)
+
+    best: tuple[tuple[float, float], float, float] | None = None
+
+    low = 0.0
+    high = max_delta
+    for _ in range(search_iters):
+        mid = 0.5 * (low + high)
+        recall = evaluate((mid, mid))
+        if recall >= target:
+            high = mid
+            best = remember(best, (mid, mid), recall)
+        else:
+            low = mid
+    uniform_delta = high
+    uniform_recall = evaluate((uniform_delta, uniform_delta))
+    best = remember(best, (uniform_delta, uniform_delta), uniform_recall)
+
+    def minimal_partner_delta(slot_index: int, fixed_delta: float) -> tuple[tuple[float, float], float] | None:
+        endpoint = (float(fixed_delta), max_delta) if slot_index == 0 else (max_delta, float(fixed_delta))
+        if evaluate(endpoint) < target:
+            return None
+        low_partner = 0.0
+        high_partner = max_delta
+        best_recall = target
+        for _ in range(search_iters):
+            mid = 0.5 * (low_partner + high_partner)
+            deltas = (float(fixed_delta), mid) if slot_index == 0 else (mid, float(fixed_delta))
+            recall = evaluate(deltas)
+            if recall >= target:
+                high_partner = mid
+                best_recall = recall
+            else:
+                low_partner = mid
+        deltas = (float(fixed_delta), high_partner) if slot_index == 0 else (high_partner, float(fixed_delta))
+        return (deltas, float(best_recall))
+
+    def scan_fixed_deltas(lo: float, hi: float, count: int) -> None:
+        nonlocal best
+        if count <= 1:
+            grid = np.asarray([0.5 * (lo + hi)], dtype=np.float64)
+        else:
+            grid = np.linspace(float(lo), float(hi), int(count), dtype=np.float64)
+        for fixed in grid:
+            for slot_index in (0, 1):
+                result = minimal_partner_delta(slot_index, float(fixed))
+                if result is not None:
+                    best = remember(best, result[0], result[1])
+
+    coarse_count = min(17, max(7, search_iters // 2 + 1))
+    scan_fixed_deltas(0.0, max_delta, coarse_count)
+    if best is not None:
+        best_delta0, best_delta1 = best[0]
+        step = max_delta / max(coarse_count - 1, 1)
+        scan_fixed_deltas(max(0.0, best_delta0 - step), min(max_delta, best_delta0 + step), 9)
+        scan_fixed_deltas(max(0.0, best_delta1 - step), min(max_delta, best_delta1 + step), 9)
+
+    if best is None:
+        return ((max_delta, max_delta), float(high_recall), False)
+    return (best[0], float(best[1]), True)
+
+def kftrackk_enforce_union_frame_recall_target(items: list[dict[str, object]], args: argparse.Namespace, disk_samples: np.ndarray) -> None:
+    items.sort(key=lambda item: int(getattr(item['stream'], 'slot_id')))
+    streams = [item['stream'] for item in items]
+    source_slots = [stream.raw_states for stream in streams]
+    target = float(args.dense_recall_target)
+    pred_slots = [kftrackk_interpolated_state(item['stream'], item['key_q'], item['chosen']) for item in items]
+    base_recall, _per_frame, _weights = kftrackk_union_recall_score(source_slots, pred_slots, disk_samples)
+    if target <= 0.0 or base_recall >= target or any(len(item['chosen']) == 0 for item in items):
+        for item, stream in zip(items, streams, strict=True):
+            slot_weights = np.maximum(stream.raw_states[:, 2] * stream.raw_states[:, 3], 1e-06)
+            item['dense_info'] = kftrackk_recall_info(base_recall, slot_weights, target, 0.0, base_recall >= target)
+        return
+    deltas, repaired_recall, attained = kftrackk_find_joint_union_inflation(items, source_slots, target, args, disk_samples)
+    for item, stream, delta in zip(items, streams, deltas, strict=True):
+        item['key_q'] = kftrackk_apply_uniform_key_inflation(item['key_q'], float(delta))
+        slot_weights = np.maximum(stream.raw_states[:, 2] * stream.raw_states[:, 3], 1e-06)
+        dense_info = kftrackk_recall_info(base_recall, slot_weights, target, float(delta), bool(attained))
+        dense_info['dense_recall_after'] = float(repaired_recall)
+        item['dense_info'] = dense_info
+
 def kftrackk_optimize_streams_track_k_dense_recall(streams: list[base.StreamSegment], penalty: float, args: argparse.Namespace) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], dict[str, float]]:
     keyframe_rows: list[dict[str, object]] = []
     dense_rows: list[dict[str, object]] = []
     segment_rows: list[dict[str, object]] = []
     disk_samples = dense_base.unit_disk_samples(int(args.dense_recall_samples))
     timings = {'stream_loop_total': 0.0, 'anchor_setup': 0.0, 'decode_dp': 0.0, 'refine_local': 0.0, 'value_refine': 0.0, 'dense_recall_enforce': 0.0, 'interpolate_and_state': 0.0, 'emit_rows': 0.0}
+    total_t0 = time.perf_counter()
+    work_items: list[dict[str, object]] = []
     for stream in streams:
-        stream_t0 = time.perf_counter()
         assert stream.smoothed_q is not None
         frame_modes: list[str] = list(getattr(stream, 'frame_modes'))
         ellipse_count = int(getattr(stream, 'ellipse_count', 1))
@@ -151,9 +344,37 @@ def kftrackk_optimize_streams_track_k_dense_recall(streams: list[base.StreamSegm
             elif str(args.value_refine) == 'residual_nudge':
                 key_q = base.refine_keyframe_values_residual_nudge(target_q=target_q, base_key_q=key_q, keyframes=chosen, weights=fit_weights, damping=float(args.value_refine_damping))
         timings['value_refine'] += time.perf_counter() - t0
-        t0 = time.perf_counter()
-        key_q, dense_info = dense_base.enforce_dense_recall_target(stream=stream, key_q=key_q, chosen=chosen, args=args, disk_samples=disk_samples)
-        timings['dense_recall_enforce'] += time.perf_counter() - t0
+        work_items.append({'stream': stream, 'frame_modes': frame_modes, 'ellipse_count': ellipse_count, 'fit_weights': fit_weights, 'target_q': target_q, 'chosen': chosen, 'objective': objective, 'key_q': key_q})
+    t0 = time.perf_counter()
+    k2_groups: dict[tuple[str, int, tuple[int, ...]], list[dict[str, object]]] = {}
+    for item in work_items:
+        stream = item['stream']
+        if int(item['ellipse_count']) == 2:
+            key = (str(stream.track_id), int(stream.run_id), tuple(int(frame) for frame in stream.frame_numbers.tolist()))
+            k2_groups.setdefault(key, []).append(item)
+    handled: set[int] = set()
+    for group_items in k2_groups.values():
+        if len(group_items) == 2:
+            kftrackk_enforce_union_frame_recall_target(group_items, args, disk_samples)
+            handled.update(id(item) for item in group_items)
+    for item in work_items:
+        if id(item) in handled:
+            continue
+        stream = item['stream']
+        key_q, dense_info = dense_base.enforce_dense_recall_target(stream=stream, key_q=item['key_q'], chosen=item['chosen'], args=args, disk_samples=disk_samples)
+        item['key_q'] = key_q
+        item['dense_info'] = dense_info
+    timings['dense_recall_enforce'] += time.perf_counter() - t0
+    for item in work_items:
+        stream = item['stream']
+        frame_modes = item['frame_modes']
+        ellipse_count = int(item['ellipse_count'])
+        fit_weights = item['fit_weights']
+        target_q = item['target_q']
+        chosen = item['chosen']
+        objective = float(item['objective'])
+        key_q = item['key_q']
+        dense_info = item['dense_info']
         t0 = time.perf_counter()
         interp_q = base.interpolate_from_key_values(key_q, chosen, len(stream.frame_numbers))
         dense_state = base.q_to_state(interp_q, scale=stream.transform_scale, theta_scale=stream.theta_scale)
@@ -169,7 +390,7 @@ def kftrackk_optimize_streams_track_k_dense_recall(streams: list[base.StreamSegm
         for local_idx, frame in enumerate(stream.frame_numbers):
             dense_rows.append({'stream_id': stream.stream_id, 'track_id': stream.track_id, 'mode': frame_modes[local_idx], 'run_id': stream.run_id, 'slot_id': stream.slot_id, 'ellipse_count': ellipse_count, 'frame': int(frame), 'ellipse': dense_state[local_idx].tolist(), 'is_keyframe': int(local_idx in chosen_set)})
         timings['emit_rows'] += time.perf_counter() - t0
-        timings['stream_loop_total'] += time.perf_counter() - stream_t0
+    timings['stream_loop_total'] = time.perf_counter() - total_t0
     return (keyframe_rows, dense_rows, segment_rows, timings)
 
 def kftrackk_merge_dense_rows_to_union_track_k(dense_rows: list[dict[str, object]]) -> list[dict[str, object]]:
