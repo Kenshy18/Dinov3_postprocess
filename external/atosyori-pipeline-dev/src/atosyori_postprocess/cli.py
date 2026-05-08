@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     input_group.add_argument("--input-jsonl", type=Path)
     run_parser.add_argument("--input-video", type=Path)
     run_parser.add_argument("--output-dir", type=Path, required=True)
-    run_parser.add_argument("--intervals", default="3,6,9")
+    run_parser.add_argument("--intervals", default="3")
     run_parser.add_argument("--default-shape-mode", choices=("ellipse", "polygon"))
     run_parser.add_argument("--class-policy-json", type=Path)
     run_parser.add_argument("--model-root", type=Path)

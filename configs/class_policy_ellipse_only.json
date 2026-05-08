@@ -1,7 +1,7 @@
 {
   "default": {
     "shape_mode": "ellipse",
-    "target_interval": 6,
-    "dense_recall_target": 0.98
+    "target_interval": 3,
+    "dense_recall_target": 0.96
   }
 }

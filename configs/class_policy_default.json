@@ -1,24 +1,29 @@
 {
   "default": {
     "shape_mode": "ellipse",
-    "target_interval": 6,
-    "dense_recall_target": 0.98
+    "target_interval": 3,
+    "dense_recall_target": 0.96
   },
   "classes": {
     "男性器": {
-      "shape_mode": "polygon",
+      "shape_mode": "ellipse",
       "target_interval": 3,
-      "polygon_recall_min": 0.97
+      "dense_recall_target": 0.96
     },
     "女性器": {
       "shape_mode": "ellipse",
-      "target_interval": 6,
-      "dense_recall_target": 0.98
+      "target_interval": 3,
+      "dense_recall_target": 0.96
     },
     "結合部分": {
       "shape_mode": "ellipse",
-      "target_interval": 6,
-      "dense_recall_target": 0.98
+      "target_interval": 3,
+      "dense_recall_target": 0.96
+    },
+    "結合": {
+      "shape_mode": "ellipse",
+      "target_interval": 3,
+      "dense_recall_target": 0.96
     }
   }
 }

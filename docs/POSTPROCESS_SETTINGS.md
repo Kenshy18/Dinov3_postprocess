@@ -1,18 +1,20 @@
 # Postprocess Settings
 
-This document records the postprocess defaults and the current debug/reproduction profile. Keep it updated when command-line defaults or production run arguments change.
+This document records the postprocess defaults. Keep it updated when command-line defaults or production run arguments change.
 
-## Current Debug Profile
+## Current Default Profile
 
-The latest white-can debug run uses all ellipse approximation, keyframes every 3 frames, recall target 0.96, K1N sequence routing, original-mask embedding, and endpoint extrapolation with a 10-frame linear-fit window and 5 extrapolated frames.
+The checked-in default profile uses all ellipse approximation, keyframes every 3 frames, recall target 0.96, K1N sequence routing, original-mask embedding, and endpoint extrapolation with a 10-frame linear-fit window and 5 extrapolated frames.
 
-Use this class policy:
+The default class policy is:
 
 ```text
-configs/class_policy_all_ellipse_int3_recall096.json
+configs/class_policy_default.json
 ```
 
-Postprocess-only command template:
+`configs/class_policy_all_ellipse_int3_recall096.json` is kept as an explicit named copy of the same profile for experiments that should not depend on the moving default policy.
+
+Minimal postprocess-only command template:
 
 ```bash
 PYTHONPATH=external/atosyori-pipeline-dev/src \
@@ -20,34 +22,13 @@ PYTHONPATH=external/atosyori-pipeline-dev/src \
   --input-sqlite "<tracked.sqlite>" \
   --input-video "<video.mp4>" \
   --output-dir "<output-dir>" \
-  --intervals 3 \
-  --default-shape-mode ellipse \
-  --class-policy-json configs/class_policy_all_ellipse_int3_recall096.json \
   --model-root checkpoints/postprocess \
   --k2-device cuda \
   --polygon-predictor-device auto \
   --no-render-overlays \
   --force \
   -- \
-  --reuse-inference-output-dir "<existing-inference-output-dir>" \
-  --dense-recall-target 0.96 \
-  --embed-original-masks \
-  --no-endpoint-extend-edge-only \
-  --endpoint-extend-motion-frames 10 \
-  --endpoint-extend-frames 5 \
-  --routing-mode k1n_sequence \
-  --k1-cost-routing normalized \
-  --threshold-norm 0.18 \
-  --threshold-edge-norm 0.18 \
-  --k1n-seq-exit-norm 0.13 \
-  --k1n-seq-protect-k2-iou-below 0.65 \
-  --k1n-seq-smooth-window 11 \
-  --k1n-seq-enter-confirm-frames 6 \
-  --k1n-seq-exit-confirm-frames 6 \
-  --k1n-seq-merge-short-k1-max-len 5 \
-  --k1n-seq-merge-short-k2-max-len 5 \
-  --overlay-encoder cpu \
-  --progress-interval-sec 30
+  --reuse-inference-output-dir "<existing-inference-output-dir>"
 ```
 
 The `--` separator is important when using `python -m atosyori_postprocess run`: arguments after it are passed through to the embedded postprocess engine.
@@ -58,15 +39,19 @@ These are the defaults in `external/atosyori-pipeline-dev/src/atosyori_postproce
 
 | Setting | Default | Notes |
 | --- | --- | --- |
+| `--intervals` | `3` | Final merged SQLite is produced for 3-frame keyframe frequency by default. |
+| `--dense-recall-target` | `0.96` | Default dense recall target for ellipse postprocess unless class policy overrides it. |
+| `--class-policy-json` | none | With no policy file, fallback mode is ellipse; `configs/class_policy_default.json` records the default class policy used by integration scripts. |
 | `--endpoint-extend` | enabled | Endpoint extrapolation is on by default. |
-| `--endpoint-extend-frames` | `2` | Current debug profile overrides this to `5`. |
+| `--endpoint-extend-frames` | `5` | Up to 5 frames are extrapolated before/after a track endpoint. |
 | `--endpoint-extend-edge-only` | `false` | Track ends are extended regardless of edge contact. |
 | `--endpoint-extend-motion-frames` | `10` | Linear fit uses up to the nearest 10 compatible frames. |
 | `--endpoint-extend-max-speed-px` | `1000.0` | Rows faster than this are skipped. |
 | `--embed-original-masks` | `true` | Final SQLite includes original dense masks for debugging. |
-| `--routing-mode` | `track_dp` | Current debug profile overrides this to `k1n_sequence`. |
+| `--routing-mode` | `k1n_sequence` | Uses K1 normalized cost sequence smoothing and protected island cleanup. |
 | `--k1-cost-routing` | `normalized` | K1 routing can use raw or normalized cost. |
 | `--threshold-norm` | `0.18` | K1N threshold used when normalized routing is active. |
+| `--threshold-edge-norm` | `0.18` | Edge K1N threshold; currently same as the default threshold. |
 | `--k1n-seq-exit-norm` | `0.13` | Exit threshold for K1N sequence routing. |
 | `--k1n-seq-protect-k2-iou-below` | `0.65` | Allows/keeps K2 when K1 IoU is too low. |
 | `--k1n-seq-smooth-window` | `11` | Median smoothing window for K1N sequence routing. |

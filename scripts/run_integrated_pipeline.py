@@ -402,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-detector-overlay", action="store_true")
 
     parser.add_argument("--postprocess", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--intervals", default="3,6")
+    parser.add_argument("--intervals", default="3")
     parser.add_argument("--class-policy-json", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--default-shape-mode", choices=("ellipse", "polygon"), default="ellipse")
     parser.add_argument("--render-overlays", action=argparse.BooleanOptionalAction, default=False)

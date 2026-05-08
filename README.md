@@ -64,7 +64,7 @@ checkpoints/
 python tools/check_artifacts.py
 ```
 
-標準policyは `男性器` にpolygon branchを使うため、`polygon_point_predictor/best.pt` と `feature_stats.npz` が無い場合は標準policyのフル後処理は完走しません。モデル未配置で接続確認だけ行う場合は `configs/class_policy_ellipse_only.json` を使ってください。
+標準policyは全クラスellipseのため、標準後処理だけならpolygon predictor artifactは不要です。polygon branchを使う独自policyを指定する場合は `polygon_point_predictor/best.pt` と `feature_stats.npz` を配置してください。
 
 ## Run
 
@@ -149,14 +149,14 @@ DINOv3側は既存の高速化済みruntimeを使います。
 
 標準設定は `configs/class_policy_default.json` です。
 
-- `男性器`: polygon, 3フレーム相当
-- `女性器`: ellipse, 6フレーム相当
-- `結合部分`: ellipse, 6フレーム相当
-- その他: ellipse, 6フレーム相当
+- `男性器`: ellipse, 3フレーム相当, recall `0.96`
+- `女性器`: ellipse, 3フレーム相当, recall `0.96`
+- `結合部分`: ellipse, 3フレーム相当, recall `0.96`
+- その他: ellipse, 3フレーム相当, recall `0.96`
 
-全クラスをellipseで動かす検証用設定は `configs/class_policy_ellipse_only.json` です。
+同じ内容を明示名で参照したい場合は `configs/class_policy_all_ellipse_int3_recall096.json` も使えます。
 
-現行のデバッグ/再現用後処理プロファイルは `configs/class_policy_all_ellipse_int3_recall096.json` と [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md) に明記しています。主な条件は全クラスellipse、3フレーム間隔、recall `0.96`、K1N sequence routing、元マスク同梱、エッジ条件なしの10フレーム線形fit/5フレームendpoint外挿です。
+現行の後処理デフォルトは [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md) に明記しています。主な条件は全クラスellipse、3フレーム間隔、recall `0.96`、K1N sequence routing、元マスク同梱、エッジ条件なしの10フレーム線形fit/5フレームendpoint外挿です。
 
 ## Upload artifacts
 

@@ -103,7 +103,7 @@ The postprocess first converts JSONL + video into tracked SQLite:
 
 Then it groups tracks by class label and applies each class policy.
 
-The current debug/reproduction postprocess profile, including endpoint extrapolation and K1/K2 routing arguments, is documented in:
+The current default postprocess profile, including endpoint extrapolation and K1/K2 routing defaults, is documented in:
 
 ```text
 docs/POSTPROCESS_SETTINGS.md
@@ -118,20 +118,20 @@ Default:
 configs/class_policy_default.json
 ```
 
-Current policy:
+Current default policy:
 
-- `男性器`: polygon, target interval 3
-- `女性器`: ellipse, target interval 6
-- `結合部分`: ellipse, target interval 6
-- fallback: ellipse, target interval 6
+- `男性器`: ellipse, target interval 3, recall 0.96
+- `女性器`: ellipse, target interval 3, recall 0.96
+- `結合部分`: ellipse, target interval 3, recall 0.96
+- fallback: ellipse, target interval 3, recall 0.96
 
-For environments without the polygon predictor checkpoint, use:
+The older `configs/class_policy_ellipse_only.json` is also ellipse-only and follows the same interval/recall defaults.
 
 ```text
 configs/class_policy_ellipse_only.json
 ```
 
-For the current all-ellipse debug profile with target interval 3 and recall 0.96, use:
+For a stable explicit name for the same all-ellipse profile, use:
 
 ```text
 configs/class_policy_all_ellipse_int3_recall096.json

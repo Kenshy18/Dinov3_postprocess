@@ -60,7 +60,7 @@ def kftrackk_parse_args() -> argparse.Namespace:
     parser.add_argument('--k2-slot-size-weight', type=float, default=0.65)
     parser.add_argument('--k2-slot-angle-weight', type=float, default=0.2)
     parser.add_argument('--max-streams', type=int, default=-1)
-    parser.add_argument('--dense-recall-target', type=float, default=0.98)
+    parser.add_argument('--dense-recall-target', type=float, default=0.96)
     parser.add_argument('--dense-recall-samples', type=int, default=61)
     parser.add_argument('--dense-recall-max-inflate-log', type=float, default=1.2)
     parser.add_argument('--dense-recall-search-iters', type=int, default=20)
