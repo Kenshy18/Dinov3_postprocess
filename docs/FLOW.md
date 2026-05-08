@@ -103,6 +103,13 @@ The postprocess first converts JSONL + video into tracked SQLite:
 
 Then it groups tracks by class label and applies each class policy.
 
+The current debug/reproduction postprocess profile, including endpoint extrapolation and K1/K2 routing arguments, is documented in:
+
+```text
+docs/POSTPROCESS_SETTINGS.md
+configs/class_policy_all_ellipse_int3_recall096.json
+```
+
 ## 4. Class policy
 
 Default:
@@ -122,6 +129,12 @@ For environments without the polygon predictor checkpoint, use:
 
 ```text
 configs/class_policy_ellipse_only.json
+```
+
+For the current all-ellipse debug profile with target interval 3 and recall 0.96, use:
+
+```text
+configs/class_policy_all_ellipse_int3_recall096.json
 ```
 
 ## 5. Final artifacts

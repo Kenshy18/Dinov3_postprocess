@@ -148,7 +148,7 @@ def infer_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--k2-profile-stages', action='store_true', help='Synchronize and record K2 batch-stage timings for profiling.')
     parser.add_argument('--k2-cudnn-benchmark', type=str, default='off', choices=('on', 'off'), help='cuDNN benchmark can speed repeated shapes but adds first-batch autotune overhead.')
     parser.add_argument('--k2-tf32', type=str, default='default', choices=('default', 'on', 'off'), help='Control TF32 for K2 CUDA matmul/cuDNN paths.')
-    parser.add_argument('--routing-mode', type=str, default='track_dp', choices=('threshold_only', 'threshold_soft', 'threshold_hysteresis', 'track_dp', 'band'), help="K1/K2 routing mode. 'threshold_only' uses per-row K1 cost only. 'threshold_soft' applies weak temporal smoothing near the threshold. 'threshold_hysteresis' uses explicit enter/exit thresholds plus entry confirmation. 'track_dp' performs track-level non-learned DP with asymmetric switching and soft run penalties. 'band' uses the original track expansion logic.")
+    parser.add_argument('--routing-mode', type=str, default='track_dp', choices=('threshold_only', 'threshold_soft', 'threshold_hysteresis', 'k1n_sequence', 'track_dp', 'band'), help="K1/K2 routing mode. 'threshold_only' uses per-row K1 cost only. 'threshold_soft' applies weak temporal smoothing near the threshold. 'threshold_hysteresis' uses explicit enter/exit thresholds plus entry confirmation. 'k1n_sequence' uses only the K1 normalized cost sequence with hysteresis and protected island cleanup. 'track_dp' performs track-level non-learned DP with asymmetric switching and soft run penalties. 'band' uses the original track expansion logic.")
     parser.add_argument('--k1-cost-routing', type=str, default='normalized', choices=('raw', 'normalized'), help='Cost scale used for K1/K2 routing. Debug columns still keep both raw and normalized costs.')
     parser.add_argument('--threshold', type=int, default=5000)
     parser.add_argument('--threshold-edge', type=int, default=-1)
@@ -173,6 +173,17 @@ def infer_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--k2-hyst-exit-edge-norm', type=float, default=-1.0)
     parser.add_argument('--k2-hyst-confirm-frames', type=int, default=2)
     parser.add_argument('--k2-hyst-reset-gap', type=int, default=2)
+    parser.add_argument('--k1n-seq-enter-norm', type=float, default=-1.0)
+    parser.add_argument('--k1n-seq-exit-norm', type=float, default=0.13)
+    parser.add_argument('--k1n-seq-strong-enter-norm', type=float, default=-1.0)
+    parser.add_argument('--k1n-seq-strong-exit-norm', type=float, default=-1.0)
+    parser.add_argument('--k1n-seq-protect-k2-iou-below', type=float, default=0.65)
+    parser.add_argument('--k1n-seq-smooth-window', type=int, default=11)
+    parser.add_argument('--k1n-seq-enter-confirm-frames', type=int, default=6)
+    parser.add_argument('--k1n-seq-exit-confirm-frames', type=int, default=6)
+    parser.add_argument('--k1n-seq-merge-short-k1-max-len', type=int, default=5)
+    parser.add_argument('--k1n-seq-merge-short-k2-max-len', type=int, default=5)
+    parser.add_argument('--k1n-seq-reset-gap', type=int, default=2)
     parser.add_argument('--k2-dp-error-weight', type=float, default=1.0)
     parser.add_argument('--k2-dp-instability-weight', type=float, default=0.4)
     parser.add_argument('--k2-dp-edge-bonus', type=float, default=0.2)
@@ -1775,6 +1786,204 @@ def infer_build_k2_threshold_hysteresis_selection(rows_by_track: dict[str, list[
     summary = {'routing_mode': 'threshold_hysteresis', 'enter_threshold': float(enter_default), 'enter_threshold_edge': float(enter_edge), 'exit_threshold': float(exit_default), 'exit_threshold_edge': float(exit_edge), 'confirm_frames': int(effective_confirm), 'reset_gap': int(max_gap), 'selected_count': len(selected), 'promoted_by_confirm': int(total_pending_promotions), 'tracks': summary_tracks}
     return (selected, summary)
 
+def infer_count_k2_switch_stats(flags: list[bool], frames: list[int], *, reset_gap: int) -> dict[str, int]:
+    if not flags:
+        return {'switch_count': 0, 'k1_run_count': 0, 'k2_run_count': 0, 'k1_single_frame_islands': 0, 'k1_two_frame_islands': 0, 'k2_single_frame_islands': 0, 'k2_two_frame_islands': 0}
+    max_gap = max(0, int(reset_gap))
+    runs: list[tuple[bool, int, int]] = []
+    start = 0
+    for idx in range(1, len(flags) + 1):
+        at_end = idx == len(flags)
+        has_gap = (not at_end) and (int(frames[idx]) - int(frames[idx - 1]) > max_gap)
+        changed = (not at_end) and flags[idx] != flags[idx - 1]
+        if at_end or has_gap or changed:
+            runs.append((bool(flags[start]), start, idx))
+            start = idx
+    switch_count = 0
+    for left, right in zip(runs, runs[1:], strict=False):
+        if int(frames[right[1]]) - int(frames[left[2] - 1]) <= max_gap and left[0] != right[0]:
+            switch_count += 1
+    stats = {'switch_count': int(switch_count), 'k1_run_count': int(sum(1 for mode, _start, _end in runs if not mode)), 'k2_run_count': int(sum(1 for mode, _start, _end in runs if mode)), 'k1_single_frame_islands': 0, 'k1_two_frame_islands': 0, 'k2_single_frame_islands': 0, 'k2_two_frame_islands': 0}
+    for run_idx in range(1, len(runs) - 1):
+        mode, start_idx, end_idx = runs[run_idx]
+        left_mode, _left_start, left_end = runs[run_idx - 1]
+        right_mode, right_start, _right_end = runs[run_idx + 1]
+        if left_mode != right_mode or left_mode == mode:
+            continue
+        if int(frames[start_idx]) - int(frames[left_end - 1]) > max_gap:
+            continue
+        if int(frames[right_start]) - int(frames[end_idx - 1]) > max_gap:
+            continue
+        run_len = end_idx - start_idx
+        if run_len == 1:
+            stats['k2_single_frame_islands' if mode else 'k1_single_frame_islands'] += 1
+        elif run_len == 2:
+            stats['k2_two_frame_islands' if mode else 'k1_two_frame_islands'] += 1
+    return stats
+
+def infer_build_k2_k1n_sequence_selection(rows_by_track: dict[str, list[tuple[int, str, str, int]]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, enter_threshold: float, exit_threshold: float, strong_enter_threshold: float, strong_exit_threshold: float, protect_k2_iou_below: float, smooth_window: int, enter_confirm_frames: int, exit_confirm_frames: int, merge_short_k1_max_len: int, merge_short_k2_max_len: int, reset_gap: int) -> tuple[set[tuple[int, str]], dict[str, object]]:
+    selected: set[tuple[int, str]] = set()
+    summary_tracks: list[dict[str, object]] = []
+    enter = float(enter_threshold)
+    exit_value = min(float(exit_threshold), enter)
+    protect_iou = float(protect_k2_iou_below)
+    iou_equivalent_enter = (1.0 / protect_iou - 1.0) if 0.0 < protect_iou < 1.0 else enter * 1.5
+    strong_enter = float(strong_enter_threshold if float(strong_enter_threshold) >= 0.0 else max(enter * 1.5, iou_equivalent_enter))
+    strong_enter = max(strong_enter, enter)
+    strong_exit = float(strong_exit_threshold if float(strong_exit_threshold) >= 0.0 else exit_value * 0.65)
+    strong_exit = min(strong_exit, exit_value)
+    window = max(1, int(smooth_window))
+    if window % 2 == 0:
+        window += 1
+    radius = window // 2
+    enter_confirm = max(1, int(enter_confirm_frames))
+    exit_confirm = max(1, int(exit_confirm_frames))
+    max_gap = max(0, int(reset_gap))
+    merge_k1_limit = max(0, int(merge_short_k1_max_len))
+    merge_k2_limit = max(0, int(merge_short_k2_max_len))
+    totals = {'seed_count': 0, 'strong_seed_count': 0, 'pre_cleanup_selected_count': 0, 'selected_count': 0, 'promoted_by_confirm': 0, 'exited_by_confirm': 0, 'merged_short_k1_runs': 0, 'merged_short_k1_rows': 0, 'removed_short_k2_runs': 0, 'removed_short_k2_rows': 0, 'protected_short_k1_runs': 0, 'protected_short_k2_runs': 0, 'protected_short_k2_iou_runs': 0, 'protected_short_k2_iou_rows': 0, 'protected_short_k2_cost_runs': 0, 'protected_short_k2_cost_rows': 0, 'switch_count': 0, 'k1_single_frame_islands': 0, 'k1_two_frame_islands': 0, 'k2_single_frame_islands': 0, 'k2_two_frame_islands': 0}
+
+    def smooth_costs(costs: list[float]) -> list[float]:
+        if window <= 1 or len(costs) <= 2:
+            return list(costs)
+        out: list[float] = []
+        for idx in range(len(costs)):
+            left = max(0, idx - radius)
+            right = min(len(costs), idx + radius + 1)
+            out.append(float(np.median(np.asarray(costs[left:right], dtype=np.float64))))
+        return out
+
+    def split_chunks(frames_local: list[int]) -> list[tuple[int, int]]:
+        chunks: list[tuple[int, int]] = []
+        start = 0
+        for idx in range(1, len(frames_local) + 1):
+            at_end = idx == len(frames_local)
+            has_gap = (not at_end) and int(frames_local[idx]) - int(frames_local[idx - 1]) > max_gap
+            if at_end or has_gap:
+                chunks.append((start, idx))
+                start = idx
+        return chunks
+
+    def apply_hysteresis(costs: list[float], smooth: list[float], ious: list[float]) -> tuple[list[bool], int, int]:
+        flags = [False] * len(costs)
+        in_k2 = False
+        pending_enter: list[int] = []
+        pending_exit: list[int] = []
+        promoted = 0
+        exited = 0
+        for idx, (cost, score, iou) in enumerate(zip(costs, smooth, ious, strict=True)):
+            strong_k2 = cost >= strong_enter or (protect_iou > 0.0 and iou < protect_iou)
+            if in_k2:
+                should_exit = cost <= strong_exit or score <= exit_value
+                pending_exit = [*pending_exit, idx] if should_exit else []
+                if cost <= strong_exit or len(pending_exit) >= exit_confirm:
+                    for pending_idx in pending_exit:
+                        flags[pending_idx] = False
+                    exited += len(pending_exit)
+                    in_k2 = False
+                    pending_exit = []
+                    pending_enter = []
+                    flags[idx] = False
+                else:
+                    flags[idx] = True
+            else:
+                should_enter = strong_k2 or score >= enter
+                pending_enter = [*pending_enter, idx] if should_enter else []
+                if strong_k2 or len(pending_enter) >= enter_confirm:
+                    for pending_idx in pending_enter:
+                        flags[pending_idx] = True
+                    promoted += len(pending_enter)
+                    in_k2 = True
+                    pending_enter = []
+                    pending_exit = []
+                    flags[idx] = True
+                else:
+                    flags[idx] = False
+        return (flags, promoted, exited)
+
+    def merge_protected_short_islands(flags: list[bool], frames_local: list[int], costs: list[float], ious: list[float]) -> tuple[list[bool], dict[str, int]]:
+        out = list(flags)
+        local_stats = {'merged_short_k1_runs': 0, 'merged_short_k1_rows': 0, 'removed_short_k2_runs': 0, 'removed_short_k2_rows': 0, 'protected_short_k1_runs': 0, 'protected_short_k2_runs': 0, 'protected_short_k2_iou_runs': 0, 'protected_short_k2_iou_rows': 0, 'protected_short_k2_cost_runs': 0, 'protected_short_k2_cost_rows': 0}
+        if len(out) < 3 or (merge_k1_limit <= 0 and merge_k2_limit <= 0):
+            return (out, local_stats)
+        changed = True
+        while changed:
+            changed = False
+            i = 0
+            while i < len(out):
+                j = i + 1
+                while j < len(out) and out[j] == out[i] and int(frames_local[j]) - int(frames_local[j - 1]) <= max_gap:
+                    j += 1
+                run_len = j - i
+                left_ok = i > 0 and int(frames_local[i]) - int(frames_local[i - 1]) <= max_gap
+                right_ok = j < len(out) and int(frames_local[j]) - int(frames_local[j - 1]) <= max_gap
+                if left_ok and right_ok and out[i - 1] == out[j] and out[i - 1] != out[i]:
+                    if (not out[i]) and merge_k1_limit > 0 and run_len <= merge_k1_limit:
+                        for k in range(i, j):
+                            out[k] = True
+                        local_stats['merged_short_k1_runs'] += 1
+                        local_stats['merged_short_k1_rows'] += run_len
+                        changed = True
+                    elif out[i] and merge_k2_limit > 0 and run_len <= merge_k2_limit:
+                        protect_by_cost = max(costs[i:j]) >= strong_enter
+                        protect_by_iou = protect_iou > 0.0 and min(ious[i:j]) < protect_iou
+                        if protect_by_cost or protect_by_iou:
+                            local_stats['protected_short_k2_runs'] += 1
+                            if protect_by_cost:
+                                local_stats['protected_short_k2_cost_runs'] += 1
+                                local_stats['protected_short_k2_cost_rows'] += run_len
+                            if protect_by_iou:
+                                local_stats['protected_short_k2_iou_runs'] += 1
+                                local_stats['protected_short_k2_iou_rows'] += run_len
+                        else:
+                            for k in range(i, j):
+                                out[k] = False
+                            local_stats['removed_short_k2_runs'] += 1
+                            local_stats['removed_short_k2_rows'] += run_len
+                            changed = True
+                i = j
+        return (out, local_stats)
+
+    for track_id, track_rows in rows_by_track.items():
+        ordered_rows = sorted(track_rows, key=lambda row: int(row[0]))
+        keys = [(int(frame), str(track_id)) for frame, _, _, _ in ordered_rows]
+        frames = [int(frame) for frame, _, _, _ in ordered_rows]
+        costs = [float(k1_metrics_lookup[key]['weighted_error']) for key in keys]
+        ious = [float(k1_metrics_lookup[key].get('iou', 1.0)) for key in keys]
+        final_flags = [False] * len(keys)
+        track_promoted = 0
+        track_exited = 0
+        track_cleanup = {'merged_short_k1_runs': 0, 'merged_short_k1_rows': 0, 'removed_short_k2_runs': 0, 'removed_short_k2_rows': 0, 'protected_short_k1_runs': 0, 'protected_short_k2_runs': 0, 'protected_short_k2_iou_runs': 0, 'protected_short_k2_iou_rows': 0, 'protected_short_k2_cost_runs': 0, 'protected_short_k2_cost_rows': 0}
+        for start, end in split_chunks(frames):
+            chunk_costs = costs[start:end]
+            chunk_smooth = smooth_costs(chunk_costs)
+            chunk_ious = ious[start:end]
+            chunk_flags, promoted, exited = apply_hysteresis(chunk_costs, chunk_smooth, chunk_ious)
+            chunk_flags, cleanup_stats = merge_protected_short_islands(chunk_flags, frames[start:end], chunk_costs, chunk_ious)
+            final_flags[start:end] = chunk_flags
+            track_promoted += promoted
+            track_exited += exited
+            for key, value in cleanup_stats.items():
+                track_cleanup[key] += int(value)
+        selected_in_track = 0
+        for key, flag in zip(keys, final_flags, strict=True):
+            if flag:
+                selected.add(key)
+                selected_in_track += 1
+        seed_count = int(sum(1 for cost in costs if cost >= enter))
+        strong_seed_count = int(sum(1 for cost in costs if cost >= strong_enter))
+        pre_cleanup_selected_count = selected_in_track + track_cleanup['removed_short_k2_rows'] - track_cleanup['merged_short_k1_rows']
+        switch_stats = infer_count_k2_switch_stats(final_flags, frames, reset_gap=max_gap)
+        for key, value in {'seed_count': seed_count, 'strong_seed_count': strong_seed_count, 'pre_cleanup_selected_count': pre_cleanup_selected_count, 'selected_count': selected_in_track, 'promoted_by_confirm': track_promoted, 'exited_by_confirm': track_exited}.items():
+            totals[key] += int(value)
+        for key, value in track_cleanup.items():
+            totals[key] += int(value)
+        for key in ('switch_count', 'k1_single_frame_islands', 'k1_two_frame_islands', 'k2_single_frame_islands', 'k2_two_frame_islands'):
+            totals[key] += int(switch_stats[key])
+        summary_tracks.append({'track_id': str(track_id), 'frame_count': len(keys), 'seed_count': int(seed_count), 'strong_seed_count': int(strong_seed_count), 'pre_cleanup_selected_count': int(pre_cleanup_selected_count), 'expanded_count': int(selected_in_track), 'switch_count': int(switch_stats['switch_count']), 'k1_run_count': int(switch_stats['k1_run_count']), 'k2_run_count': int(switch_stats['k2_run_count']), 'k1_single_frame_islands': int(switch_stats['k1_single_frame_islands']), 'k1_two_frame_islands': int(switch_stats['k1_two_frame_islands']), 'k2_single_frame_islands': int(switch_stats['k2_single_frame_islands']), 'k2_two_frame_islands': int(switch_stats['k2_two_frame_islands']), 'promoted_by_confirm': int(track_promoted), 'exited_by_confirm': int(track_exited), **{key: int(value) for key, value in track_cleanup.items()}, 'cost_min': float(min(costs)) if costs else None, 'cost_p50': float(np.percentile(np.asarray(costs, dtype=np.float64), 50.0)) if costs else None, 'cost_p90': float(np.percentile(np.asarray(costs, dtype=np.float64), 90.0)) if costs else None, 'cost_max': float(max(costs)) if costs else None, 'iou_min': float(min(ious)) if ious else None, 'error_cut': None, 'instability_cut': None})
+    summary = {'routing_mode': 'k1n_sequence', 'cost_feature': 'k1_cost_norm_sequence', 'enter_threshold': float(enter), 'exit_threshold': float(exit_value), 'strong_enter_threshold': float(strong_enter), 'strong_exit_threshold': float(strong_exit), 'protect_k2_iou_below': float(protect_iou), 'smooth_window': int(window), 'enter_confirm_frames': int(enter_confirm), 'exit_confirm_frames': int(exit_confirm), 'merge_short_k1_max_len': int(merge_k1_limit), 'merge_short_k2_max_len': int(merge_k2_limit), 'reset_gap': int(max_gap), **{key: int(value) for key, value in totals.items()}, 'tracks': summary_tracks}
+    return (selected, summary)
+
 def infer_cleanup_selected_k2_inner_islands(rows_by_track: dict[str, list[tuple[int, str, str, int]]], selected_keys: set[tuple[int, str]], k1_metrics_lookup: dict[tuple[int, str], dict[str, object]], *, max_len: int, keep_cost: float) -> tuple[set[tuple[int, str]], dict[str, int]]:
     limit = max(0, int(max_len))
     if limit <= 0:
@@ -2164,6 +2373,10 @@ def infer_main() -> None:
         hyst_enter_edge = float(args.k2_hyst_enter_norm if float(args.k2_hyst_enter_edge_norm) < 0.0 else args.k2_hyst_enter_edge_norm)
         hyst_exit = float(args.k2_hyst_exit_norm)
         hyst_exit_edge = float(args.k2_hyst_exit_norm if float(args.k2_hyst_exit_edge_norm) < 0.0 else args.k2_hyst_exit_edge_norm)
+        k1n_seq_enter = float(args.threshold_norm if float(args.k1n_seq_enter_norm) < 0.0 else args.k1n_seq_enter_norm)
+        k1n_seq_exit = float(args.k1n_seq_exit_norm)
+        k1n_seq_strong_enter = float(args.k1n_seq_strong_enter_norm)
+        k1n_seq_strong_exit = float(args.k1n_seq_strong_exit_norm)
         dp_merge_short_k2_keep_cost = float(args.k2_dp_merge_short_k2_keep_cost_norm)
         dp_force_k2_cost = float(args.k2_dp_force_k2_cost_norm)
     else:
@@ -2174,6 +2387,10 @@ def infer_main() -> None:
         hyst_enter_edge = float(args.k2_hyst_enter if int(args.k2_hyst_enter_edge) < 0 else args.k2_hyst_enter_edge)
         hyst_exit = float(args.k2_hyst_exit)
         hyst_exit_edge = float(args.k2_hyst_exit if int(args.k2_hyst_exit_edge) < 0 else args.k2_hyst_exit_edge)
+        k1n_seq_enter = threshold_default
+        k1n_seq_exit = hyst_exit
+        k1n_seq_strong_enter = -1.0
+        k1n_seq_strong_exit = -1.0
         dp_merge_short_k2_keep_cost = float(args.k2_dp_merge_short_k2_keep_cost)
         dp_force_k2_cost = float(args.k2_dp_force_k2_cost)
     if str(args.routing_mode) == 'threshold_only':
@@ -2182,6 +2399,8 @@ def infer_main() -> None:
         selected_keys, k2_band_summary = infer_build_k2_threshold_soft_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, threshold_default=threshold_default, threshold_edge=effective_threshold_edge, edge_keys=edge_keys, ema_alpha=float(args.k2_soft_ema_alpha), band_ratio=float(args.k2_soft_band_ratio), exit_ratio=float(args.k2_soft_exit_ratio), strong_ratio=float(args.k2_soft_strong_ratio), k1_keep_cost=soft_k1_keep_cost, reset_gap=int(args.k2_soft_reset_gap), merge_islands_max_len=int(args.k2_soft_merge_islands_max_len), merge_policy=str(args.k2_soft_merge_policy))
     elif str(args.routing_mode) == 'threshold_hysteresis':
         selected_keys, k2_band_summary = infer_build_k2_threshold_hysteresis_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, enter_default=hyst_enter, enter_edge=hyst_enter_edge, exit_default=hyst_exit, exit_edge=hyst_exit_edge, edge_keys=edge_keys, confirm_frames=int(args.k2_hyst_confirm_frames), reset_gap=int(args.k2_hyst_reset_gap))
+    elif str(args.routing_mode) == 'k1n_sequence':
+        selected_keys, k2_band_summary = infer_build_k2_k1n_sequence_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, enter_threshold=k1n_seq_enter, exit_threshold=k1n_seq_exit, strong_enter_threshold=k1n_seq_strong_enter, strong_exit_threshold=k1n_seq_strong_exit, protect_k2_iou_below=float(args.k1n_seq_protect_k2_iou_below), smooth_window=int(args.k1n_seq_smooth_window), enter_confirm_frames=int(args.k1n_seq_enter_confirm_frames), exit_confirm_frames=int(args.k1n_seq_exit_confirm_frames), merge_short_k1_max_len=int(args.k1n_seq_merge_short_k1_max_len), merge_short_k2_max_len=int(args.k1n_seq_merge_short_k2_max_len), reset_gap=int(args.k1n_seq_reset_gap))
     elif str(args.routing_mode) == 'track_dp':
         selected_keys, k2_band_summary = infer_build_k2_track_dp_selection(rows_by_track=rows_by_track, k1_metrics_lookup=routing_metrics_lookup, k1_ellipses_lookup=k1_ellipses_lookup, threshold_default=threshold_default, threshold_edge=effective_threshold_edge, edge_keys=edge_keys, error_weight=float(args.k2_dp_error_weight), instability_weight=float(args.k2_dp_instability_weight), edge_bonus=float(args.k2_dp_edge_bonus), k2_bias=float(args.k2_dp_k2_bias), switch_12=float(args.k2_dp_switch_12), switch_21=float(args.k2_dp_switch_21), short_k1_gamma=float(args.k2_dp_short_k1_gamma), short_k2_gamma=float(args.k2_dp_short_k2_gamma), short_k1_tau=float(args.k2_dp_short_k1_tau), short_k2_tau=float(args.k2_dp_short_k2_tau), short_len_cap=int(args.k2_dp_short_len_cap), reset_gap=int(args.k2_dp_reset_gap), merge_short_k1_max_len=int(args.k2_dp_merge_short_k1_max_len), merge_short_k2_max_len=int(args.k2_dp_merge_short_k2_max_len), merge_short_k2_keep_cost=dp_merge_short_k2_keep_cost)
     elif (not use_normalized_k1_cost) and effective_threshold_edge == threshold_default:
@@ -2249,6 +2468,7 @@ def infer_main() -> None:
     fst.write_sqlite(submission_rows, args.output_dir / 'k1_exact_k2_v5_predictions.sqlite', reference_sqlite=input_sqlite_path)
     write_sqlite_sec = time.perf_counter() - write_sqlite_start
     write_metrics_start = time.perf_counter()
+    infer_write_metrics_csv(k1_metric_rows, args.output_dir / 'k1_candidate_metrics.csv')
     infer_write_metrics_csv(metric_rows, args.output_dir / 'k1_exact_k2_v5_metrics.csv')
     write_metrics_sec = time.perf_counter() - write_metrics_start
     total_sec = time.perf_counter() - t0

@@ -12,7 +12,7 @@
 
 このディレクトリを単体でcloneし、checkpoint/engineを `checkpoints/` に配置すれば、動画入力からJSONL、後処理SQLite、overlayまで一気通貫で実行できます。
 
-Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md) を参照してください。
+Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、後処理の現行設定は [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md) を参照してください。
 
 ## Setup
 
@@ -155,6 +155,8 @@ DINOv3側は既存の高速化済みruntimeを使います。
 - その他: ellipse, 6フレーム相当
 
 全クラスをellipseで動かす検証用設定は `configs/class_policy_ellipse_only.json` です。
+
+現行のデバッグ/再現用後処理プロファイルは `configs/class_policy_all_ellipse_int3_recall096.json` と [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md) に明記しています。主な条件は全クラスellipse、3フレーム間隔、recall `0.96`、K1N sequence routing、元マスク同梱、エッジ条件なしの10フレーム線形fit/5フレームendpoint外挿です。
 
 ## Upload artifacts
 
