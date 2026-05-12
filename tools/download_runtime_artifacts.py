@@ -4,6 +4,8 @@
 This script intentionally supports a small set of layouts used by this bundle:
 
 - unified runtime artifact folder prepared from artifacts_to_upload/runtime_artifacts/
+- current shared Google Drive runtime folder, which groups detector artifacts by
+  backbone under checkpoints/dinov3/ and checkpoints/Eva02/
 - postprocess Google Drive folder from Atosyori
 - DINOv3 runtime Google Drive folder prepared from artifacts_to_upload/
 
@@ -22,6 +24,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SourceSpec = str | tuple[str, ...]
 DEFAULT_POSTPROCESS_URL = (
     "https://drive.google.com/drive/folders/"
     "10-Zc2ShIkJn7T1JIcvUgiEgdSoIANJcT?usp=sharing"
@@ -52,21 +55,48 @@ POSTPROCESS_MAPPINGS = [
 DINOV3_MAPPINGS = [
     ("detector/model_final.pth", "checkpoints/detector/model_final.pth"),
     (
-        "dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+        (
+            "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+            "dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+        ),
         "checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
     ),
     ("classifier/best.pt", "checkpoints/classifier/best.pt"),
 ]
 
 RUNTIME_MAPPINGS = [
-    ("checkpoints/detector/model_final.pth", "checkpoints/detector/model_final.pth"),
+    (
+        (
+            "checkpoints/dinov3/detector/model_final.pth",
+            "checkpoints/detector/model_final.pth",
+        ),
+        "checkpoints/detector/model_final.pth",
+    ),
     (
         "checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
         "checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
     ),
-    ("checkpoints/classifier/best.pt", "checkpoints/classifier/best.pt"),
-    ("checkpoints/eva02/detector/model_final.pth", "checkpoints/eva02/detector/model_final.pth"),
-    ("checkpoints/eva02/classifier/best.pt", "checkpoints/eva02/classifier/best.pt"),
+    (
+        (
+            "checkpoints/dinov3/classifier/best.pt",
+            "checkpoints/classifier/best.pt",
+        ),
+        "checkpoints/classifier/best.pt",
+    ),
+    (
+        (
+            "checkpoints/Eva02/detector/model_final.pth",
+            "checkpoints/eva02/detector/model_final.pth",
+        ),
+        "checkpoints/eva02/detector/model_final.pth",
+    ),
+    (
+        (
+            "checkpoints/Eva02/classifier/best.pt",
+            "checkpoints/eva02/classifier/best.pt",
+        ),
+        "checkpoints/eva02/classifier/best.pt",
+    ),
     ("checkpoints/postprocess/k2_v5/best_exact.pt", "checkpoints/postprocess/k2_v5/best_exact.pt"),
     ("checkpoints/postprocess/k2_v5/run_config.json", "checkpoints/postprocess/k2_v5/run_config.json"),
     (
@@ -138,26 +168,44 @@ def path_has_suffix(path: Path, suffix: str) -> bool:
     return len(parts) >= len(suffix_parts) and parts[-len(suffix_parts) :] == suffix_parts
 
 
-def find_source(root: Path, expected_rel: str) -> Path:
-    exact = root / expected_rel
-    if exact.is_file():
-        return exact
+def source_candidates(expected_rel: SourceSpec) -> tuple[str, ...]:
+    if isinstance(expected_rel, str):
+        return (expected_rel,)
+    return expected_rel
 
-    matches = [p for p in root.rglob(Path(expected_rel).name) if p.is_file() and path_has_suffix(p, expected_rel)]
+
+def format_source_spec(expected_rel: SourceSpec) -> str:
+    candidates = source_candidates(expected_rel)
+    if len(candidates) == 1:
+        return candidates[0]
+    return " or ".join(candidates)
+
+
+def find_source(root: Path, expected_rel: SourceSpec) -> Path:
+    candidates = source_candidates(expected_rel)
+    for rel in candidates:
+        exact = root / rel
+        if exact.is_file():
+            return exact
+
+    matches: list[Path] = []
+    for rel in candidates:
+        matches.extend(p for p in root.rglob(Path(rel).name) if p.is_file() and path_has_suffix(p, rel))
     if matches:
-        return sorted(matches, key=lambda p: (len(p.parts), str(p)))[0]
+        return sorted(set(matches), key=lambda p: (len(p.parts), str(p)))[0]
 
-    name_matches = [p for p in root.rglob(Path(expected_rel).name) if p.is_file()]
+    filenames = {Path(rel).name for rel in candidates}
+    name_matches = [p for filename in filenames for p in root.rglob(filename) if p.is_file()]
     if len(name_matches) == 1:
         return name_matches[0]
 
     if name_matches:
         options = "\n".join(f"  - {p}" for p in sorted(name_matches)[:20])
-        raise FileNotFoundError(f"ambiguous artifact for {expected_rel}; candidates:\n{options}")
-    raise FileNotFoundError(f"artifact not found under {root}: {expected_rel}")
+        raise FileNotFoundError(f"ambiguous artifact for {format_source_spec(expected_rel)}; candidates:\n{options}")
+    raise FileNotFoundError(f"artifact not found under {root}: {format_source_spec(expected_rel)}")
 
 
-def place_mappings(source_root: Path, mappings: list[tuple[str, str]], *, overwrite: bool) -> None:
+def place_mappings(source_root: Path, mappings: list[tuple[SourceSpec, str]], *, overwrite: bool) -> None:
     for source_rel, dest_rel in mappings:
         src = find_source(source_root, source_rel)
         dst = ROOT / dest_rel
