@@ -12,6 +12,11 @@ checkpoints/
     dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
   classifier/
     best.pt
+  eva02/
+    detector/
+      model_final.pth
+    classifier/
+      best.pt
   trt/
     dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   postprocess/
@@ -53,6 +58,8 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/detector/model_final.pth
   checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
   checkpoints/classifier/best.pt
+  checkpoints/eva02/detector/model_final.pth
+  checkpoints/eva02/classifier/best.pt
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py

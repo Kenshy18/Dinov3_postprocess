@@ -2,7 +2,7 @@
 
 ## 1. Clone this directory/repository
 
-The bundle contains the required source code for DINOv3 inference and Atosyori postprocess.
+The bundle contains the required source code for DINOv3/EVA02 inference and Atosyori postprocess.
 
 Key source directories:
 
@@ -43,6 +43,8 @@ Expected integrated artifact folder layout:
 checkpoints/detector/model_final.pth
 checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 checkpoints/classifier/best.pt
+checkpoints/eva02/detector/model_final.pth
+checkpoints/eva02/classifier/best.pt
 checkpoints/postprocess/k2_v5/best_exact.pt
 checkpoints/postprocess/k2_v5/run_config.json
 checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py

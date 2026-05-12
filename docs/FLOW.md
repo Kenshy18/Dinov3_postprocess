@@ -4,7 +4,7 @@ This runtime is a self-contained bundle for:
 
 ```text
 video
-  -> DINOv3 + Cascade Mask R-CNN
+  -> DINOv3 or EVA02 + Cascade Mask R-CNN
   -> optional ROI classifier
   -> JSONL
   -> Atosyori raw preprocessing / tracking
@@ -13,7 +13,7 @@ video
   -> optional overlay video
 ```
 
-## 1. DINOv3 inference
+## 1. Detector Inference
 
 Entrypoint:
 
@@ -24,10 +24,13 @@ scripts/run_integrated_pipeline.py
 
 `infer_video_postprocess.py` is the short production-style wrapper. It always runs postprocess and enables overlay only when `--overlay` is specified. `run_integrated_pipeline.py` exposes the detailed detector/postprocess options.
 
-It calls:
+Use `--detector dinov3` or `--detector eva02`. The default remains `dinov3`.
+
+It calls one of:
 
 ```text
 inference/dinov3_video_jsonl_runtime/infer_video_dinov3_jsonl.py
+inference/eva02_video_jsonl_runtime/infer_video_eva02_jsonl.py
 ```
 
 The DINOv3 runtime uses bundled code under:
@@ -51,8 +54,8 @@ Default acceleration:
 Output:
 
 ```text
-<run>/dinov3/jsonl/<video_stem>.jsonl
-<run>/dinov3/summary.json
+<run>/<detector>/jsonl/<video_stem>.jsonl
+<run>/<detector>/summary.json
 ```
 
 ## 2. ROI classification
@@ -61,6 +64,7 @@ Classification is enabled by default and uses:
 
 ```text
 checkpoints/classifier/best.pt
+checkpoints/eva02/classifier/best.pt
 ```
 
 The classifier adds class fields to each detection in the JSONL:

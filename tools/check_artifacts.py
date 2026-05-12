@@ -17,6 +17,8 @@ REQUIRED = {
     / "dinov3"
     / "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
     "ROI classifier checkpoint": ROOT / "checkpoints" / "classifier" / "best.pt",
+    "EVA02 detector checkpoint": ROOT / "checkpoints" / "eva02" / "detector" / "model_final.pth",
+    "EVA02 ROI classifier checkpoint": ROOT / "checkpoints" / "eva02" / "classifier" / "best.pt",
     "TensorRT backbone engine": ROOT
     / "checkpoints"
     / "trt"
@@ -40,7 +42,7 @@ OPTIONAL_GENERATED = {
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check DINOv3 integrated runtime artifacts")
+    parser = argparse.ArgumentParser(description="Check integrated runtime artifacts")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     parser.add_argument("--allow-missing", action="store_true", help="Return 0 even if required files are missing")
     args = parser.parse_args()

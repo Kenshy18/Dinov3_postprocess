@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run DINOv3 video inference, optional ROI classification, and Atosyori postprocess.
+"""Run detector video inference, optional ROI classification, and Atosyori postprocess.
 
-The integration intentionally keeps the DINOv3 detector runtime and the
+The integration intentionally keeps detector runtimes and the
 Atosyori postprocess repository as separate components. This script wires them
 together and writes a compact per-video summary with easy-to-find SQLite and
 overlay links.
@@ -25,6 +25,7 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 SCRIPT_DIR = Path(__file__).resolve().parent
 INTEGRATION_ROOT = SCRIPT_DIR.parent
 DEFAULT_DINOV3_RUNTIME = INTEGRATION_ROOT / "inference" / "dinov3_video_jsonl_runtime"
+DEFAULT_EVA02_RUNTIME = INTEGRATION_ROOT / "inference" / "eva02_video_jsonl_runtime"
 LOCAL_ATOSYORI_REPO = INTEGRATION_ROOT / "external" / "atosyori-pipeline-dev"
 DEFAULT_ATOSYORI_REPO = Path(
     os.environ.get(
@@ -38,6 +39,7 @@ DEFAULT_ATOSYORI_REPO = Path(
 )
 DEFAULT_MODEL_ROOT = INTEGRATION_ROOT / "checkpoints" / "postprocess"
 DEFAULT_DETECTOR_CHECKPOINT = INTEGRATION_ROOT / "checkpoints" / "detector" / "model_final.pth"
+DEFAULT_EVA02_DETECTOR_CHECKPOINT = INTEGRATION_ROOT / "checkpoints" / "eva02" / "detector" / "model_final.pth"
 DEFAULT_DINOV3_WEIGHTS = (
     INTEGRATION_ROOT
     / "checkpoints"
@@ -45,6 +47,7 @@ DEFAULT_DINOV3_WEIGHTS = (
     / "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
 )
 DEFAULT_CLASSIFIER_CHECKPOINT = INTEGRATION_ROOT / "checkpoints" / "classifier" / "best.pt"
+DEFAULT_EVA02_CLASSIFIER_CHECKPOINT = INTEGRATION_ROOT / "checkpoints" / "eva02" / "classifier" / "best.pt"
 DEFAULT_TRT_BACKBONE_ENGINE = (
     INTEGRATION_ROOT
     / "checkpoints"
@@ -174,6 +177,58 @@ def build_dinov3_command(args: argparse.Namespace, video: Path, dinov3_out: Path
     return command
 
 
+def build_eva02_command(args: argparse.Namespace, video: Path, eva02_out: Path) -> list[str]:
+    script = args.eva02_runtime / "infer_video_eva02_jsonl.py"
+    if not script.is_file():
+        raise FileNotFoundError(script)
+
+    command = [
+        str(args.python),
+        str(script),
+        "--input",
+        str(video),
+        "--output",
+        str(eva02_out),
+        "--classifier" if args.classifier else "--no-classifier",
+        "--target-size",
+        str(args.eva02_target_size),
+        "--score-thresh",
+        str(args.eva02_score_thresh),
+        "--nms-thresh",
+        str(args.eva02_nms_thresh),
+        "--topk",
+        str(args.eva02_topk),
+        "--batch-size",
+        str(args.eva02_batch_size),
+        "--warmup-frames",
+        str(args.eva02_warmup_frames),
+        "--json-backend",
+        str(args.eva02_json_backend),
+        "--mask-approx",
+        str(args.eva02_mask_approx),
+        "--async-writer" if args.eva02_async_writer else "--no-async-writer",
+        "--checkpoint",
+        str(args.eva02_detector_checkpoint),
+        "--classifier-checkpoint",
+        str(args.eva02_classifier_checkpoint),
+        "--overwrite",
+    ]
+    maybe_add(command, "--max-frames", args.max_frames)
+    if args.recursive:
+        command.append("--recursive")
+    if args.write_detector_overlay:
+        command.append("--write-overlay")
+    return command
+
+
+def build_detector_command(args: argparse.Namespace, video: Path, detector_out: Path) -> list[str]:
+    if args.detector == "dinov3":
+        return build_dinov3_command(args, video, detector_out)
+    if args.detector == "eva02":
+        return build_eva02_command(args, video, detector_out)
+    raise RuntimeError(f"unsupported detector: {args.detector}")
+
+
 def atosyori_env(args: argparse.Namespace) -> dict[str, str]:
     env = dict(os.environ)
     src = args.atosyori_repo / "src"
@@ -235,12 +290,12 @@ def build_postprocess_command(
     return command
 
 
-def summarize_dinov3(dinov3_out: Path, video: Path) -> tuple[Path, dict[str, Any]]:
-    summary_path = dinov3_out / "summary.json"
+def summarize_detector(detector_out: Path, video: Path) -> tuple[Path, dict[str, Any]]:
+    summary_path = detector_out / "summary.json"
     if not summary_path.is_file():
         raise FileNotFoundError(summary_path)
     summary = load_json(summary_path)
-    jsonl_path = dinov3_out / "jsonl" / f"{video.stem}.jsonl"
+    jsonl_path = detector_out / "jsonl" / f"{video.stem}.jsonl"
     runs = list(summary.get("runs", []))
     if runs:
         run_jsonl = Path(str(runs[0].get("output_jsonl", jsonl_path)))
@@ -315,18 +370,18 @@ def model_status(model_root: Path) -> dict[str, Any]:
 
 def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
-    dinov3_out = run_dir / "dinov3"
+    detector_out = run_dir / args.detector
     postprocess_out = run_dir / "postprocess"
 
     timings: list[dict[str, Any]] = []
     timings.append(
         run_command(
-            build_dinov3_command(args, video, dinov3_out),
-            cwd=args.dinov3_runtime,
-            label=f"dinov3 inference: {video.name}",
+            build_detector_command(args, video, detector_out),
+            cwd=args.dinov3_runtime if args.detector == "dinov3" else args.eva02_runtime,
+            label=f"{args.detector} inference: {video.name}",
         )
     )
-    jsonl_path, dinov3_summary = summarize_dinov3(dinov3_out, video)
+    jsonl_path, detector_summary = summarize_detector(detector_out, video)
 
     postprocess_summary: dict[str, Any] | None = None
     if args.postprocess:
@@ -343,19 +398,29 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
     summary = {
         "video": str(video),
         "run_dir": str(run_dir),
+        "detector": args.detector,
+        "detector_runtime": str(args.dinov3_runtime if args.detector == "dinov3" else args.eva02_runtime),
         "dinov3_runtime": str(args.dinov3_runtime),
+        "eva02_runtime": str(args.eva02_runtime),
         "atosyori_repo": str(args.atosyori_repo),
         "postprocess_model_status": model_status(args.postprocess_model_root),
         "class_policy_json": None if args.class_policy_json is None else str(args.class_policy_json),
         "artifacts": {
-            "dinov3_jsonl": str(jsonl_path),
-            "dinov3_summary": str(dinov3_out / "summary.json"),
+            "detector_jsonl": str(jsonl_path),
+            "detector_summary": str(detector_out / "summary.json"),
+            "dinov3_jsonl": str(jsonl_path) if args.detector == "dinov3" else None,
+            "dinov3_summary": str(detector_out / "summary.json") if args.detector == "dinov3" else None,
             "postprocess_summary": None if postprocess_summary is None else postprocess_summary["summary"],
         },
+        "detector_summary": {
+            "classifier_enabled": detector_summary.get("classifier_enabled"),
+            "class_names": detector_summary.get("class_names"),
+            "runs": detector_summary.get("runs", []),
+        },
         "dinov3": {
-            "classifier_enabled": dinov3_summary.get("classifier_enabled"),
-            "class_names": dinov3_summary.get("class_names"),
-            "runs": dinov3_summary.get("runs", []),
+            "classifier_enabled": detector_summary.get("classifier_enabled") if args.detector == "dinov3" else None,
+            "class_names": detector_summary.get("class_names") if args.detector == "dinov3" else None,
+            "runs": detector_summary.get("runs", []) if args.detector == "dinov3" else [],
         },
         "postprocess": postprocess_summary,
         "timings": timings,
@@ -368,14 +433,16 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Video -> DINOv3 JSONL/classification -> Atosyori SQLite/overlay pipeline"
+        description="Video -> detector JSONL/classification -> Atosyori SQLite/overlay pipeline"
     )
     parser.add_argument("--input", required=True, help="Input video file or directory")
     parser.add_argument("--output-root", type=Path, default=INTEGRATION_ROOT / "output" / "runs")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
+    parser.add_argument("--detector", choices=("dinov3", "eva02"), default="dinov3")
     parser.add_argument("--dinov3-runtime", type=Path, default=DEFAULT_DINOV3_RUNTIME)
+    parser.add_argument("--eva02-runtime", type=Path, default=DEFAULT_EVA02_RUNTIME)
     parser.add_argument("--atosyori-repo", type=Path, default=DEFAULT_ATOSYORI_REPO)
     parser.add_argument("--postprocess-model-root", type=Path, default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--force", action="store_true")
@@ -383,6 +450,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--classifier", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--classifier-checkpoint", type=Path, default=DEFAULT_CLASSIFIER_CHECKPOINT)
     parser.add_argument("--detector-checkpoint", type=Path, default=DEFAULT_DETECTOR_CHECKPOINT)
+    parser.add_argument("--eva02-classifier-checkpoint", type=Path, default=DEFAULT_EVA02_CLASSIFIER_CHECKPOINT)
+    parser.add_argument("--eva02-detector-checkpoint", type=Path, default=DEFAULT_EVA02_DETECTOR_CHECKPOINT)
     parser.add_argument("--trt-backbone-engine", type=Path, default=DEFAULT_TRT_BACKBONE_ENGINE)
     parser.add_argument("--backbone-weights", type=Path, default=DEFAULT_DINOV3_WEIGHTS)
     parser.add_argument("--target-size", default="1280x720")
@@ -400,6 +469,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--async-writer", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu-prefetch", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--write-detector-overlay", action="store_true")
+
+    parser.add_argument("--eva02-target-size", type=int, default=1280)
+    parser.add_argument("--eva02-score-thresh", type=float, default=0.1)
+    parser.add_argument("--eva02-nms-thresh", type=float, default=0.5)
+    parser.add_argument("--eva02-topk", type=int, default=80)
+    parser.add_argument("--eva02-batch-size", type=int, default=20)
+    parser.add_argument("--eva02-warmup-frames", type=int, default=10)
+    parser.add_argument("--eva02-json-backend", choices=("json", "orjson"), default="json")
+    parser.add_argument("--eva02-mask-approx", choices=("none", "simple"), default="simple")
+    parser.add_argument("--eva02-async-writer", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--postprocess", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--intervals", default="3")
@@ -421,15 +500,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
+    if args.detector == "eva02" and not args.classifier:
+        raise RuntimeError("EVA02 runtime currently requires --classifier")
     args.input = abs_path(args.input)
     args.output_root = abs_path(args.output_root)
     args.python = abs_path_preserve_symlink(args.python)
     args.dinov3_runtime = abs_path(args.dinov3_runtime)
+    args.eva02_runtime = abs_path(args.eva02_runtime)
     args.atosyori_repo = abs_path(args.atosyori_repo)
     args.postprocess_model_root = abs_path(args.postprocess_model_root)
     for name in (
         "classifier_checkpoint",
         "detector_checkpoint",
+        "eva02_classifier_checkpoint",
+        "eva02_detector_checkpoint",
         "trt_backbone_engine",
         "backbone_weights",
         "class_policy_json",
@@ -461,6 +545,7 @@ def main() -> int:
         "input": str(args.input),
         "output_root": str(args.output_root),
         "run_dir": str(root_run_dir),
+        "detector": args.detector,
         "video_count": len(videos),
         "summaries": [str(Path(str(item["run_dir"])) / "summary.json") for item in all_summaries],
     }

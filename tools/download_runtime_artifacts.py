@@ -65,6 +65,8 @@ RUNTIME_MAPPINGS = [
         "checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
     ),
     ("checkpoints/classifier/best.pt", "checkpoints/classifier/best.pt"),
+    ("checkpoints/eva02/detector/model_final.pth", "checkpoints/eva02/detector/model_final.pth"),
+    ("checkpoints/eva02/classifier/best.pt", "checkpoints/eva02/classifier/best.pt"),
     ("checkpoints/postprocess/k2_v5/best_exact.pt", "checkpoints/postprocess/k2_v5/best_exact.pt"),
     ("checkpoints/postprocess/k2_v5/run_config.json", "checkpoints/postprocess/k2_v5/run_config.json"),
     (
@@ -174,7 +176,7 @@ def all_destinations_exist(mappings: list[tuple[str, str]]) -> bool:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Download/place DINOv3 integrated runtime artifacts")
+    parser = argparse.ArgumentParser(description="Download/place integrated runtime artifacts")
     parser.add_argument("--runtime-artifacts-url", default=os.environ.get("RUNTIME_ARTIFACTS_URL", ""))
     parser.add_argument("--runtime-artifacts-dir", type=Path, default=None)
     parser.add_argument("--dinov3-artifacts-url", default=os.environ.get("DINOV3_ARTIFACTS_URL", ""))

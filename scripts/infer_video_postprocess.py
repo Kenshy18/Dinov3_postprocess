@@ -4,7 +4,7 @@
 This is a thin wrapper over run_integrated_pipeline.py with a smaller CLI for
 the common production path:
 
-video -> DINOv3 JSONL/classification -> Atosyori SQLite -> optional overlay.
+video -> detector JSONL/classification -> Atosyori SQLite -> optional overlay.
 """
 
 from __future__ import annotations
@@ -21,18 +21,19 @@ PIPELINE_SCRIPT = SCRIPT_DIR / "run_integrated_pipeline.py"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run DINOv3 video inference and Atosyori postprocess")
+    parser = argparse.ArgumentParser(description="Run detector video inference and Atosyori postprocess")
     parser.add_argument("--input", required=True, help="Input video file or directory")
     parser.add_argument("--output-root", type=Path, default=ROOT / "output" / "runs")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--overlay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--detector", choices=("dinov3", "eva02"), default="dinov3")
     parser.add_argument("--classifier", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ellipse-only", action="store_true", help="Use ellipse-only class policy")
     parser.add_argument("--max-frames", type=int, default=None)
-    parser.add_argument("--warmup-frames", type=int, default=300)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--warmup-frames", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument(
         "--extra-args",
         nargs=argparse.REMAINDER,
@@ -51,14 +52,20 @@ def main() -> int:
         str(args.input),
         "--output-root",
         str(args.output_root),
-        "--warmup-frames",
-        str(args.warmup_frames),
-        "--batch-size",
-        str(args.batch_size),
+        "--detector",
+        str(args.detector),
         "--classifier" if args.classifier else "--no-classifier",
         "--postprocess",
         "--render-overlays" if args.overlay else "--no-render-overlays",
     ]
+    if args.detector == "eva02":
+        if args.warmup_frames is not None:
+            command.extend(["--eva02-warmup-frames", str(args.warmup_frames)])
+        if args.batch_size is not None:
+            command.extend(["--eva02-batch-size", str(args.batch_size)])
+    else:
+        command.extend(["--warmup-frames", str(300 if args.warmup_frames is None else args.warmup_frames)])
+        command.extend(["--batch-size", str(8 if args.batch_size is None else args.batch_size)])
     if args.run_name:
         command.extend(["--run-name", args.run_name])
     if args.recursive:
