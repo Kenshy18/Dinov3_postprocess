@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.schemas.detection_jsonl import summarize_detection_jsonl  # noqa: E402
+from backend.pipeline.run_audit import build_output_audit  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
@@ -799,105 +799,6 @@ def render_sqlite_overlay(
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def table_count(conn: sqlite3.Connection, table: str) -> int | None:
-    tables = {str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'")}
-    if table not in tables:
-        return None
-    return int(conn.execute(f"select count(*) from {table}").fetchone()[0])
-
-
-def sqlite_summary(path: Path | None) -> dict[str, Any] | None:
-    if path is None:
-        return None
-    info: dict[str, Any] = {
-        "path": str(path),
-        "exists": path.exists(),
-        "size_bytes": path.stat().st_size if path.exists() else 0,
-    }
-    if not path.exists():
-        return info
-    conn = sqlite3.connect(str(path))
-    try:
-        tables = sorted(str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'"))
-        info["tables"] = tables
-        info["row_counts"] = {
-            table: count
-            for table in ("masks", "tracks", "raw_tracked_masks", "raw_tracks")
-            if (count := table_count(conn, table)) is not None
-        }
-        if "masks" in tables:
-            columns = sqlite_columns(conn, "masks")
-            info["masks_columns"] = sorted(columns)
-            if "frame" in columns:
-                min_frame, max_frame = conn.execute("select min(frame), max(frame) from masks").fetchone()
-                info["frame_range"] = [min_frame, max_frame]
-            if "track_id" in columns:
-                info["unique_tracks_in_masks"] = int(
-                    conn.execute("select count(distinct track_id) from masks").fetchone()[0]
-                )
-            if "label" in columns:
-                info["labels"] = [
-                    str(row[0])
-                    for row in conn.execute(
-                        "select distinct label from masks where label is not null order by label"
-                    )
-                ]
-    finally:
-        conn.close()
-    return info
-
-
-def file_summary(path: Path) -> dict[str, Any]:
-    return {
-        "path": str(path),
-        "exists": path.exists(),
-        "size_bytes": path.stat().st_size if path.exists() else 0,
-    }
-
-
-def build_output_audit(
-    *,
-    detector_jsonl: Path,
-    tracked_sqlite: Path | None,
-    sqlite_outputs: dict[str, str],
-    overlay_outputs: dict[str, str],
-    pipeline_summary: dict[str, Any],
-) -> dict[str, Any]:
-    warnings: list[str] = []
-    detector_contract: dict[str, Any] | None = None
-    if detector_jsonl.exists():
-        detector_contract = summarize_detection_jsonl(detector_jsonl).as_dict()
-        if detector_contract.get("detections", 0) == 0:
-            warnings.append("detector_jsonl_has_zero_detections")
-        if detector_contract.get("detections_with_mask", 0) == 0:
-            warnings.append("detector_jsonl_has_zero_masks")
-    else:
-        warnings.append("detector_jsonl_missing")
-
-    sqlite_audit = {label: sqlite_summary(Path(path)) for label, path in sorted(sqlite_outputs.items())}
-    tracked_audit = sqlite_summary(tracked_sqlite)
-    if pipeline_summary.get("postprocess") and not sqlite_outputs:
-        warnings.append("postprocess_enabled_but_no_final_sqlite")
-    if tracked_audit and tracked_audit.get("exists"):
-        row_counts = dict(tracked_audit.get("row_counts") or {})
-        if "raw_tracked_masks" not in row_counts or "raw_tracks" not in row_counts:
-            warnings.append("tracked_sqlite_missing_raw_audit_tables")
-
-    overlay_audit = {label: file_summary(Path(path)) for label, path in sorted(overlay_outputs.items())}
-    for label, info in overlay_audit.items():
-        if not info["exists"] or int(info["size_bytes"]) <= 0:
-            warnings.append(f"overlay_empty_or_missing:{label}")
-
-    return {
-        "detector_jsonl": file_summary(detector_jsonl),
-        "detector_contract": detector_contract,
-        "tracked_sqlite": tracked_audit,
-        "final_sqlite": sqlite_audit,
-        "overlays": overlay_audit,
-        "warnings": warnings,
-    }
 
 
 def organize_outputs(

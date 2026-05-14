@@ -6,6 +6,13 @@ Use this inventory before deleting old files:
 .venv_integrated/bin/python tools/inventory_cleanup_candidates.py
 ```
 
+To save the review artifact locally:
+
+```bash
+.venv_integrated/bin/python tools/inventory_cleanup_candidates.py \
+  --output .runtime/cleanup_inventory.md
+```
+
 The output is intentionally conservative:
 
 - `compatibility_wrapper`: old user-facing entrypoints. Delete only after
@@ -17,4 +24,3 @@ The output is intentionally conservative:
 
 Deletion remains a confirmation step. The inventory exists so review can be
 objective instead of relying on memory.
-

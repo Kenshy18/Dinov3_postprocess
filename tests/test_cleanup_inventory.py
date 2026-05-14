@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from tools.maintenance.inventory_cleanup_candidates import inventory, to_markdown
+from tools.maintenance.inventory_cleanup_candidates import inventory, summary_counts, to_markdown
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +22,13 @@ class CleanupInventoryTests(unittest.TestCase):
         text = to_markdown(inventory(ROOT))
 
         self.assertIn("This is an inventory only", text)
+        self.assertIn("## Summary", text)
         self.assertIn("confirm_before_delete", text)
+
+    def test_summary_counts_group_candidates(self) -> None:
+        counts = summary_counts(inventory(ROOT))
+
+        self.assertGreaterEqual(counts.get("compatibility_wrapper", 0), 1)
 
 
 if __name__ == "__main__":

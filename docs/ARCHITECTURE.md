@@ -72,7 +72,8 @@ tools/debug
   Debug-only investigation utilities.
 
 tools/maintenance
-  Local cleanup and long-term repository maintenance utilities.
+  Local cleanup, run diagnostics, and long-term repository maintenance
+  utilities.
 
 configs
   Tracked shared configuration examples and shared policy JSON files.

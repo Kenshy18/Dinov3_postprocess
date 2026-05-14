@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -121,11 +122,22 @@ def inventory(root: Path = ROOT) -> list[CleanupCandidate]:
     return sorted(candidates, key=lambda item: (item.category, item.path))
 
 
+def summary_counts(candidates: list[CleanupCandidate]) -> dict[str, int]:
+    return dict(sorted(Counter(item.category for item in candidates).items()))
+
+
 def to_markdown(candidates: list[CleanupCandidate]) -> str:
+    counts = summary_counts(candidates)
     lines = [
         "# Cleanup Candidate Inventory",
         "",
         "This is an inventory only. It does not approve deletion.",
+        "",
+        "## Summary",
+        "",
+        *[f"- {category}: `{count}`" for category, count in counts.items()],
+        "",
+        "## Candidates",
         "",
         "| Category | Path | Lines | Confidence | Action | Reason |",
         "|---|---:|---:|---|---|---|",
@@ -152,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument("--output", type=Path, help="Optional file to write.")
     return parser
 
 
@@ -159,9 +172,21 @@ def main() -> int:
     args = build_parser().parse_args()
     candidates = inventory(args.root)
     if args.format == "json":
-        print(json.dumps([asdict(item) for item in candidates], ensure_ascii=False, indent=2))
+        text = json.dumps(
+            {
+                "summary": summary_counts(candidates),
+                "candidates": [asdict(item) for item in candidates],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
     else:
-        print(to_markdown(candidates), end="")
+        text = to_markdown(candidates)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
     return 0
 
 

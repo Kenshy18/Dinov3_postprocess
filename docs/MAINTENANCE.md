@@ -114,5 +114,12 @@ Before proposing deletion, generate an objective inventory:
 .venv_integrated/bin/python tools/inventory_cleanup_candidates.py
 ```
 
+Review results can be saved under ignored local state:
+
+```bash
+.venv_integrated/bin/python tools/inventory_cleanup_candidates.py \
+  --output .runtime/cleanup_inventory.md
+```
+
 This reports compatibility wrappers, local generated state, and large source
 files. It does not delete anything and does not approve deletion by itself.

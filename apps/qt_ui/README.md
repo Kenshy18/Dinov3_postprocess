@@ -53,3 +53,5 @@ Windows/PowerShell から起動する場合は `apps/qt_ui/run_app.ps1` を使�
 - `logs/audit.jsonl`: 入力ffprobe、正規化理由、実行コマンド、終了コード、エラーtraceback
 - `logs/job_audit_summary.json`: JSONL契約、SQLite件数、overlayサイズ、警告
 - `postprocessed/`: 後処理内部成果物
+
+GUI以外で同じ成果物診断を行う場合は `tools/diagnose_run.py <run_dir>` を使います。
