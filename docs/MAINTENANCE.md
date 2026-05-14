@@ -1,0 +1,101 @@
+# Maintenance
+
+This project should stay easy to operate on one machine and easy to move to a
+new machine. Prefer clear boundaries over clever shortcuts.
+
+## Stable Entrypoints
+
+User-facing commands should stay short and stable:
+
+```text
+apps/qt_ui/run_app.sh
+UI/run_app.sh
+scripts/infer_video_postprocess.py
+scripts/run_full_flow.py
+scripts/run_postprocess_only.py
+scripts/run_integrated_pipeline.py
+tools/setup_gui_runtime.sh
+tools/verify_runtime.py
+```
+
+Implementation should live behind those entrypoints:
+
+```text
+apps/qt_ui
+backend/pipeline
+backend/detectors/<detector>
+backend/postprocess
+tools/setup
+tools/artifacts
+tools/verify
+training
+```
+
+## Change Checklist
+
+Before finishing a structural change:
+
+1. Update `docs/ARCHITECTURE.md` if ownership changed.
+2. Add or update a test under `tests/` if a boundary should not regress.
+3. Keep compatibility wrappers thin.
+4. Run:
+
+```bash
+.venv_integrated/bin/python tools/verify_runtime.py --no-atosyori-smoke
+```
+
+Run detector smoke tests when command construction, runtime defaults, artifact
+paths, TensorRT setup, or detector output schemas change.
+
+## Cleanup
+
+Use a dry-run first:
+
+```bash
+.venv_integrated/bin/python tools/clean_generated.py --all-local
+```
+
+Apply only after checking the printed targets:
+
+```bash
+.venv_integrated/bin/python tools/clean_generated.py --all-local --apply
+```
+
+`output/.gitkeep` and `output/README.md` are preserved.
+
+## Local State
+
+These files are local-machine state and should not be committed:
+
+```text
+configs/gui_runtime.env
+configs/runtime_profile.json
+configs/runtime_benchmark.json
+.venv_integrated/
+output/
+```
+
+Checkpoints and engines belong under `checkpoints/`; they are also local
+artifacts and should be restored by setup or artifact download.
+
+## Vendor Policy
+
+`external/atosyori-pipeline-dev` is a vendored engine source tree. Prefer
+wrapping it from `backend/postprocess` for command construction and environment
+setup. Only change the vendored engine when the behavior itself must change,
+such as raw tracking audit tables, SQLite schema, or overlay rendering.
+
+When vendor behavior changes, add a note to the summary or docs explaining why
+the change cannot live in the adapter.
+
+## Compatibility Policy
+
+Compatibility wrappers under `scripts/`, `tools/`, `UI/`, and `inference/`
+exist to keep old shortcuts and previous automation working. They should:
+
+- import or exec the new owner
+- contain no business logic
+- be covered by a light `--help` or compile check
+
+Delete compatibility wrappers only after confirming that no user shortcut,
+automation, or documentation still depends on them.

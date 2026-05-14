@@ -4,16 +4,25 @@
 
 ## Components
 
-- Integration entrypoint: `scripts/run_integrated_pipeline.py`
-- DINOv3 runtime: `inference/dinov3_video_jsonl_runtime/`
-- EVA02 runtime: `inference/eva02_video_jsonl_runtime/`
-- DINOv3/EVA02 source dependencies: `scripts/`, `configs/`, `dinov3/`, `eva02/eva02_det/`
+- Backend pipeline: `backend/pipeline/`
+- Backend detector adapters: `backend/detectors/`
+- Backend postprocess adapter: `backend/postprocess/`
+- User-facing backend CLI implementations: `backend/pipeline/cli/`
+- Integration entrypoint: `scripts/run_integrated_pipeline.py`（互換ラッパー）
+- Qt UI: `apps/qt_ui/`（`UI/` は互換入口）
+- DINOv3 runtime: `backend/detectors/dinov3/runtime/`
+- EVA02 runtime: `backend/detectors/eva02/runtime/`
+- Legacy inference entrypoints: `inference/`（互換ラッパー）
+- DINOv3/EVA02 source dependencies: `configs/`, `dinov3/`, `eva02/eva02_det/`
+- Training implementations: `training/`（`scripts/train_*.py` は互換入口）
 - Atosyori postprocess source: `external/atosyori-pipeline-dev/`
+- Setup/verification commands: `tools/`（互換入口）
+- Setup/artifact/verify/debug implementations: `tools/setup/`, `tools/artifacts/`, `tools/verify/`, `tools/debug/`
 - Runtime artifacts: `checkpoints/`
 
 このディレクトリを単体でcloneし、checkpoint/engineを `checkpoints/` に配置すれば、動画入力からJSONL、後処理SQLite、overlayまで一気通貫で実行できます。
 
-Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、後処理の現行設定は [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md) を参照してください。
+責務境界は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、長期保守方針は [docs/MAINTENANCE.md](docs/MAINTENANCE.md)、Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、後処理の現行設定は [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md)、整理・変更後の検証は [docs/VERIFICATION.md](docs/VERIFICATION.md) を参照してください。
 
 ## Setup
 
@@ -29,6 +38,14 @@ cp configs/artifact_sources.env.example configs/artifact_sources.env
 ```bash
 tools/setup_integrated_runtime_env.sh
 ```
+
+GUIを使うPCでは、同じ処理を分かりやすい名前で呼ぶ以下の入口も使えます。UI依存関係のインストール、DINOv3 TensorRT engineの作成/再利用、GPU/VRAMに応じた安全寄りのbatch設定生成まで行います。
+
+```bash
+tools/setup_gui_runtime.sh
+```
+
+生成された推奨設定は `configs/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `configs/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でbatch-size候補を順番に測定し、結果を `configs/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はVRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。
 
 別のAtosyori repoを使う場合:
 
@@ -65,6 +82,12 @@ checkpoints/
 
 ```bash
 python tools/check_artifacts.py
+```
+
+整理や設定変更のあとにまとめて確認する場合:
+
+```bash
+.venv_integrated/bin/python tools/verify_runtime.py
 ```
 
 標準policyは全クラスellipseのため、標準後処理だけならpolygon predictor artifactは不要です。polygon branchを使う独自policyを指定する場合は `polygon_point_predictor/best.pt` と `feature_stats.npz` を配置してください。

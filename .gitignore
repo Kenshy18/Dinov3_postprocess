@@ -3,7 +3,14 @@ __pycache__/
 *.log
 log.txt
 .venv_integrated/
+.codex
+.serena/
+.pytest_cache/
+.ruff_cache/
 configs/artifact_sources.env
+configs/gui_runtime.env
+configs/runtime_benchmark.json
+configs/runtime_profile.json
 
 artifacts_to_upload/*
 !artifacts_to_upload/README.md

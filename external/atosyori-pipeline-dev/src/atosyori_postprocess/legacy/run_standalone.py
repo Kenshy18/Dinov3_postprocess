@@ -3250,11 +3250,22 @@ def infer_normalize_raw_record(obj: dict[str, object]) -> tuple[int, list[dict[s
             continue
         det: dict[str, object] = {}
         det['class_name'] = str(src.get('class_name', src.get('label', 'unknown')))
+        if 'label' in src:
+            det['label'] = str(src.get('label', ''))
+        for key in ('category_id', 'category_index'):
+            if key in src and src.get(key) is not None:
+                det[key] = src.get(key)
+        for key in ('detector_score', 'class_score'):
+            value = infer_raw_to_float(src.get(key))
+            if value is not None:
+                det[key] = value
         score = infer_raw_to_float(src.get('score'))
         if score is not None:
             det['score'] = score
         bbox_xyxy = infer_raw_normalize_bbox_xyxy(src)
         det['bbox_xyxy'] = bbox_xyxy
+        if 'bbox' in src and src.get('bbox') is not None:
+            det['bbox'] = src.get('bbox')
         det['_bbox_area'] = max(0.0, bbox_xyxy[2] - bbox_xyxy[0]) * max(0.0, bbox_xyxy[3] - bbox_xyxy[1])
         polygons, mask_area, poly_boxes = infer_raw_normalize_segmentation(src.get('polygons') or src.get('segmentation'))
         det['polygons'] = polygons
@@ -3687,11 +3698,75 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
     cur.execute('DROP TABLE IF EXISTS masks')
     cur.execute('DROP TABLE IF EXISTS tracks')
     cur.execute('DROP TABLE IF EXISTS cuts')
+    cur.execute('DROP TABLE IF EXISTS raw_tracked_masks')
+    cur.execute('DROP TABLE IF EXISTS raw_tracks')
     cur.execute('\n        CREATE TABLE masks(\n            frame INTEGER NOT NULL,\n            track_id TEXT NOT NULL,\n            polygons TEXT,\n            shape_type TEXT,\n            dilate_px INTEGER NOT NULL DEFAULT 0,\n            feather_px INTEGER NOT NULL DEFAULT 0,\n            mosaic_block INTEGER NOT NULL DEFAULT 0,\n            mosaic_alias REAL NOT NULL DEFAULT 0,\n            label TEXT,\n            PRIMARY KEY(frame, track_id)\n        )\n        ')
     cur.execute('CREATE TABLE tracks(track_id TEXT PRIMARY KEY, label TEXT)')
     cur.execute('CREATE TABLE cuts(frame INTEGER PRIMARY KEY)')
+    cur.execute(
+        '''
+        CREATE TABLE raw_tracked_masks(
+            frame INTEGER NOT NULL,
+            raw_track_id TEXT NOT NULL,
+            raw_detection_index INTEGER NOT NULL,
+            final_track_id TEXT,
+            removed_by_short_track INTEGER NOT NULL DEFAULT 0,
+            raw_track_length INTEGER NOT NULL DEFAULT 0,
+            raw_label TEXT,
+            final_label TEXT,
+            polygons TEXT,
+            score REAL,
+            detector_score REAL,
+            class_score REAL,
+            category_id INTEGER,
+            category_index INTEGER,
+            bbox_xyxy_json TEXT,
+            bbox_json TEXT,
+            scene_id INTEGER,
+            PRIMARY KEY(frame, raw_track_id, raw_detection_index)
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE raw_tracks(
+            raw_track_id TEXT PRIMARY KEY,
+            final_track_id TEXT,
+            removed_by_short_track INTEGER NOT NULL DEFAULT 0,
+            raw_track_length INTEGER NOT NULL DEFAULT 0,
+            raw_label TEXT,
+            final_label TEXT,
+            scene_id INTEGER
+        )
+        '''
+    )
+    cur.execute('CREATE INDEX idx_raw_tracked_masks_track_frame ON raw_tracked_masks(raw_track_id, frame)')
+    cur.execute('CREATE INDEX idx_raw_tracked_masks_final_track_frame ON raw_tracked_masks(final_track_id, frame)')
     active_track_ids: list[int] = []
     all_mask_rows_to_insert: list[tuple[int, str, str, str]] = []
+    all_raw_mask_rows_to_insert: list[dict[str, object]] = []
+
+    def raw_optional_float(value: object) -> float | None:
+        number = infer_raw_to_float(value)
+        if number is None:
+            return None
+        if not math.isfinite(float(number)):
+            return None
+        return float(number)
+
+    def raw_optional_int(value: object) -> int | None:
+        number = infer_raw_to_float(value)
+        if number is None:
+            return None
+        if not math.isfinite(float(number)):
+            return None
+        return int(number)
+
+    def raw_json_or_none(value: object) -> str | None:
+        if value is None:
+            return None
+        return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+
     with jsonl_path.open('r', encoding='utf-8') as f:
         for line_no, line in enumerate(f, start=1):
             line = line.strip()
@@ -3753,7 +3828,27 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
                     continue
                 track_id = str(det_to_track[det_idx])
                 label = str(det.get('class_name', ''))
-                mask_rows_to_insert.append((int(frame_idx), track_id, json.dumps(polygons, ensure_ascii=False), label))
+                raw_label = str(det.get('label', label))
+                polygons_json = json.dumps(polygons, ensure_ascii=False)
+                mask_rows_to_insert.append((int(frame_idx), track_id, polygons_json, label))
+                track_obj = tracks.get(int(track_id))
+                all_raw_mask_rows_to_insert.append(
+                    {
+                        'frame': int(frame_idx),
+                        'raw_track_id': track_id,
+                        'raw_detection_index': int(det_idx),
+                        'raw_label': raw_label,
+                        'polygons': polygons_json,
+                        'score': raw_optional_float(det.get('score')),
+                        'detector_score': raw_optional_float(det.get('detector_score')),
+                        'class_score': raw_optional_float(det.get('class_score')),
+                        'category_id': raw_optional_int(det.get('category_id')),
+                        'category_index': raw_optional_int(det.get('category_index')),
+                        'bbox_xyxy_json': raw_json_or_none(det.get('bbox_xyxy')),
+                        'bbox_json': raw_json_or_none(det.get('bbox')),
+                        'scene_id': None if track_obj is None else int(track_obj.scene_id),
+                    }
+                )
                 label_counts = track_label_counts.setdefault(track_id, {})
                 label_counts[label] = int(label_counts.get(label, 0)) + 1
                 label_key = (track_id, label)
@@ -3782,7 +3877,8 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
             counts.items(),
             key=lambda item: (int(item[1]), -int(track_label_first_seen.get((track_id, item[0]), 0))),
         )[0]
-    track_majority_labels = {track_id: majority_track_label(track_id) for track_id in keep_tids}
+    raw_track_majority_labels = {track_id: majority_track_label(track_id) for track_id in track_counts}
+    track_majority_labels = {track_id: raw_track_majority_labels.get(track_id, '') for track_id in keep_tids}
     mixed_label_tracks = sum(1 for track_id in keep_tids if len(track_label_counts.get(track_id, {})) > 1)
     relabeled_mask_rows = sum(
         1
@@ -3798,17 +3894,99 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
         (new_tid, track_majority_labels[old_tid])
         for old_tid, new_tid in id_map.items()
     ]
+    raw_mask_rows_to_insert: list[tuple[object, ...]] = []
+    for raw_row in all_raw_mask_rows_to_insert:
+        raw_tid = str(raw_row['raw_track_id'])
+        final_tid = id_map.get(raw_tid)
+        raw_mask_rows_to_insert.append(
+            (
+                int(raw_row['frame']),
+                raw_tid,
+                int(raw_row['raw_detection_index']),
+                final_tid,
+                0 if final_tid is not None else 1,
+                int(track_counts.get(raw_tid, 0)),
+                raw_row.get('raw_label'),
+                track_majority_labels.get(raw_tid) if final_tid is not None else None,
+                raw_row.get('polygons'),
+                raw_row.get('score'),
+                raw_row.get('detector_score'),
+                raw_row.get('class_score'),
+                raw_row.get('category_id'),
+                raw_row.get('category_index'),
+                raw_row.get('bbox_xyxy_json'),
+                raw_row.get('bbox_json'),
+                raw_row.get('scene_id'),
+            )
+        )
+    raw_track_rows_to_insert: list[tuple[object, ...]] = []
+    for raw_tid in sorted(track_counts, key=lambda value: int(value)):
+        track_obj = tracks.get(int(raw_tid))
+        final_tid = id_map.get(raw_tid)
+        raw_track_rows_to_insert.append(
+            (
+                raw_tid,
+                final_tid,
+                0 if final_tid is not None else 1,
+                int(track_counts.get(raw_tid, 0)),
+                raw_track_majority_labels.get(raw_tid, ''),
+                track_majority_labels.get(raw_tid) if final_tid is not None else None,
+                None if track_obj is None else int(track_obj.scene_id),
+            )
+        )
     if final_mask_rows_to_insert:
         cur.executemany("\n                    INSERT OR REPLACE INTO masks(\n                        frame, track_id, polygons, shape_type, dilate_px, feather_px, mosaic_block, mosaic_alias, label\n                    )\n                    VALUES (?, ?, ?, 'polygon', 0, 0, 0, 0, ?)\n                    ", final_mask_rows_to_insert)
     if final_track_rows_to_insert:
         cur.executemany('INSERT OR REPLACE INTO tracks(track_id, label) VALUES (?, ?)', final_track_rows_to_insert)
+    if raw_mask_rows_to_insert:
+        cur.executemany(
+            '''
+            INSERT OR REPLACE INTO raw_tracked_masks(
+                frame,
+                raw_track_id,
+                raw_detection_index,
+                final_track_id,
+                removed_by_short_track,
+                raw_track_length,
+                raw_label,
+                final_label,
+                polygons,
+                score,
+                detector_score,
+                class_score,
+                category_id,
+                category_index,
+                bbox_xyxy_json,
+                bbox_json,
+                scene_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            raw_mask_rows_to_insert,
+        )
+    if raw_track_rows_to_insert:
+        cur.executemany(
+            '''
+            INSERT OR REPLACE INTO raw_tracks(
+                raw_track_id,
+                final_track_id,
+                removed_by_short_track,
+                raw_track_length,
+                raw_label,
+                final_label,
+                scene_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            raw_track_rows_to_insert,
+        )
     if cut_frames:
         cur.executemany('INSERT OR IGNORE INTO cuts(frame) VALUES (?)', [(int(cut_frame),) for cut_frame in cut_frames])
     conn.commit()
     final_tracks = len(id_map)
     final_rows = len(final_mask_rows_to_insert)
     conn.close()
-    return {'input_jsonl': str(jsonl_path), 'tracked_sqlite': str(sqlite_path), 'rows_before_prune': int(total_rows), 'rows_after_prune': final_rows, 'removed_short_tracks': int(len(remove_tids)), 'removed_rows': int(removed_rows), 'tracks_after_prune': final_tracks, 'mixed_label_tracks': int(mixed_label_tracks), 'relabeled_mask_rows': int(relabeled_mask_rows), 'track_label_policy': 'majority_vote_per_track', 'cuts_detected': int(cuts_detected), 'scenes': int(current_scene_id + 1), 'cut_detect_enabled': bool(enable_cut_detect), 'raw_cut_method': str(raw_cut_method), 'cut_detection_method': str(cut_detection_method), 'cut_detection_elapsed_sec': float(cut_detection_elapsed_sec), 'remove_short_tracks_max_frames': int(remove_short_tracks_max_frames), 'raw_det_score_min': float(raw_det_score_min), 'elapsed_sec': float(time.time() - start_time)}
+    return {'input_jsonl': str(jsonl_path), 'tracked_sqlite': str(sqlite_path), 'rows_before_prune': int(total_rows), 'rows_after_prune': final_rows, 'removed_short_tracks': int(len(remove_tids)), 'removed_rows': int(removed_rows), 'tracks_after_prune': final_tracks, 'raw_tracked_rows': int(len(raw_mask_rows_to_insert)), 'raw_tracks': int(len(raw_track_rows_to_insert)), 'raw_removed_rows': int(removed_rows), 'mixed_label_tracks': int(mixed_label_tracks), 'relabeled_mask_rows': int(relabeled_mask_rows), 'track_label_policy': 'majority_vote_per_track', 'cuts_detected': int(cuts_detected), 'scenes': int(current_scene_id + 1), 'cut_detect_enabled': bool(enable_cut_detect), 'raw_cut_method': str(raw_cut_method), 'cut_detection_method': str(cut_detection_method), 'cut_detection_elapsed_sec': float(cut_detection_elapsed_sec), 'remove_short_tracks_max_frames': int(remove_short_tracks_max_frames), 'raw_det_score_min': float(raw_det_score_min), 'elapsed_sec': float(time.time() - start_time)}
 
 def infer_prepare_input_sqlite(args: argparse.Namespace) -> tuple[Path, dict[str, object] | None]:
     if args.input_sqlite is not None:
@@ -7453,6 +7631,8 @@ def kffill_interpolate_metric_row(fieldnames: list[str], left_row: dict[str, str
             out[field] = str(int(run_id))
         elif field == 'has_keyframe':
             out[field] = '0'
+        elif field == 'is_gap_filled':
+            out[field] = '1'
         elif field == 'ellipse_params':
             out[field] = json.dumps(ellipse_params, ensure_ascii=False)
         elif field in numeric_fields and field in left_row and (field in right_row):
@@ -7473,6 +7653,8 @@ def kffill_main() -> None:
     output_summary.parent.mkdir(parents=True, exist_ok=True)
     union_rows = kffill_load_union_rows(input_union)
     fieldnames, metric_lookup = kffill_load_metrics(input_metrics)
+    if 'is_gap_filled' not in fieldnames:
+        fieldnames.append('is_gap_filled')
     by_track: dict[str, list[dict[str, object]]] = defaultdict(list)
     for row in union_rows:
         by_track[str(row['track_id'])].append(row)
@@ -7491,6 +7673,8 @@ def kffill_main() -> None:
             filled_union_rows.append(left)
             metric_row = metric_lookup.get((left_frame, track_id))
             if metric_row is not None:
+                metric_row = dict(metric_row)
+                metric_row['is_gap_filled'] = '0'
                 filled_metric_rows.append(metric_row)
             if idx + 1 >= len(track_rows):
                 continue
@@ -9624,6 +9808,159 @@ def pipeline_add_k1_cost_columns_to_sqlite(
     }
 
 
+def pipeline_parse_optional_float(value: object) -> float | None:
+    if value in (None, ''):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return float(number)
+
+
+def pipeline_parse_optional_int(value: object) -> int | None:
+    number = pipeline_parse_optional_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def pipeline_annotate_postprocess_metadata_to_sqlite(sqlite_path: Path, metrics_csvs: list[Path]) -> dict[str, object]:
+    if not sqlite_path.exists():
+        raise FileNotFoundError(f'output sqlite does not exist: {sqlite_path}')
+
+    lookup: dict[tuple[int, str], dict[str, object]] = {}
+    csv_rows = 0
+    duplicate_rows = 0
+    missing_csvs: list[str] = []
+    for metrics_csv in metrics_csvs:
+        if not metrics_csv.exists():
+            missing_csvs.append(str(metrics_csv))
+            continue
+        with metrics_csv.open('r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    key = (int(row['frame']), str(row['track_id']))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if key in lookup:
+                    duplicate_rows += 1
+                lookup[key] = {
+                    'has_keyframe': pipeline_parse_optional_int(row.get('has_keyframe')) or 0,
+                    'is_gap_filled': pipeline_parse_optional_int(row.get('is_gap_filled')) or 0,
+                    'postprocess_mode': row.get('mode'),
+                    'postprocess_candidate_name': row.get('candidate_name'),
+                    'postprocess_run_id': pipeline_parse_optional_int(row.get('run_id')),
+                    'postprocess_recall': pipeline_parse_optional_float(row.get('recall')),
+                    'postprocess_precision': pipeline_parse_optional_float(row.get('precision')),
+                    'postprocess_iou': pipeline_parse_optional_float(row.get('iou')),
+                    'postprocess_gt_area': pipeline_parse_optional_float(row.get('gt_area')),
+                    'postprocess_pred_area': pipeline_parse_optional_float(row.get('pred_area')),
+                    'postprocess_weighted_error': pipeline_parse_optional_float(row.get('weighted_error')),
+                }
+                csv_rows += 1
+
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        cur = conn.cursor()
+        if cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='masks'").fetchone() is None:
+            raise RuntimeError(f'output sqlite does not contain masks table: {sqlite_path}')
+        mask_columns = {str(row[1]) for row in cur.execute('PRAGMA table_info(masks)').fetchall()}
+        column_defs = [
+            ('has_keyframe', 'INTEGER NOT NULL DEFAULT 0'),
+            ('is_gap_filled', 'INTEGER NOT NULL DEFAULT 0'),
+            ('postprocess_mode', 'TEXT'),
+            ('postprocess_candidate_name', 'TEXT'),
+            ('postprocess_run_id', 'INTEGER'),
+            ('postprocess_recall', 'REAL'),
+            ('postprocess_precision', 'REAL'),
+            ('postprocess_iou', 'REAL'),
+            ('postprocess_gt_area', 'REAL'),
+            ('postprocess_pred_area', 'REAL'),
+            ('postprocess_weighted_error', 'REAL'),
+        ]
+        added_columns: list[str] = []
+        for name, definition in column_defs:
+            if name not in mask_columns:
+                cur.execute(f'ALTER TABLE masks ADD COLUMN "{name}" {definition}')
+                added_columns.append(name)
+
+        rows = [
+            (int(frame), str(track_id))
+            for frame, track_id in cur.execute('SELECT frame, track_id FROM masks')
+        ]
+        updates: list[tuple[object, ...]] = []
+        matched_rows = 0
+        gap_filled_rows = 0
+        keyframe_rows = 0
+        for frame, track_id in rows:
+            data = lookup.get((int(frame), str(track_id)))
+            if data is None:
+                updates.append((0, 0, None, None, None, None, None, None, None, None, None, int(frame), str(track_id)))
+                continue
+            matched_rows += 1
+            gap_filled_rows += int(data['is_gap_filled'])
+            keyframe_rows += int(data['has_keyframe'])
+            updates.append(
+                (
+                    int(data['has_keyframe']),
+                    int(data['is_gap_filled']),
+                    data.get('postprocess_mode'),
+                    data.get('postprocess_candidate_name'),
+                    data.get('postprocess_run_id'),
+                    data.get('postprocess_recall'),
+                    data.get('postprocess_precision'),
+                    data.get('postprocess_iou'),
+                    data.get('postprocess_gt_area'),
+                    data.get('postprocess_pred_area'),
+                    data.get('postprocess_weighted_error'),
+                    int(frame),
+                    str(track_id),
+                )
+            )
+        if updates:
+            cur.executemany(
+                '''
+                UPDATE masks
+                SET has_keyframe = ?,
+                    is_gap_filled = ?,
+                    postprocess_mode = ?,
+                    postprocess_candidate_name = ?,
+                    postprocess_run_id = ?,
+                    postprocess_recall = ?,
+                    postprocess_precision = ?,
+                    postprocess_iou = ?,
+                    postprocess_gt_area = ?,
+                    postprocess_pred_area = ?,
+                    postprocess_weighted_error = ?
+                WHERE frame = ? AND track_id = ?
+                ''',
+                updates,
+            )
+        conn.commit()
+        final_rows = int(len(rows))
+    finally:
+        conn.close()
+
+    return {
+        'enabled': True,
+        'sqlite': str(sqlite_path),
+        'metrics_csvs': [str(path) for path in metrics_csvs],
+        'missing_metrics_csvs': missing_csvs,
+        'csv_rows': int(csv_rows),
+        'duplicate_metric_keys': int(duplicate_rows),
+        'final_rows': int(final_rows),
+        'matched_rows': int(matched_rows),
+        'missing_rows': int(final_rows - matched_rows),
+        'keyframe_rows': int(keyframe_rows),
+        'gap_filled_rows': int(gap_filled_rows),
+        'columns_added': added_columns,
+    }
+
+
 def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite: Path) -> dict[str, object]:
     if not output_sqlite.exists():
         raise FileNotFoundError(f'output sqlite does not exist: {output_sqlite}')
@@ -9646,9 +9983,6 @@ def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite
                 missing = ', '.join(sorted(required - source_columns))
                 raise RuntimeError(f'original sqlite masks table is missing required columns: {missing}')
 
-            def source_expr(column: str, fallback_sql: str) -> str:
-                return f'"{column}"' if column in source_columns else fallback_sql
-
             mask_columns = {str(row[1]) for row in cur.execute('PRAGMA table_info(masks)').fetchall()}
             if 'has_original_mask' not in mask_columns:
                 cur.execute('ALTER TABLE masks ADD COLUMN has_original_mask INTEGER NOT NULL DEFAULT 0')
@@ -9657,56 +9991,15 @@ def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite
             mask_columns = {str(row[1]) for row in cur.execute('PRAGMA table_info(masks)').fetchall()}
 
             cur.execute('DROP TABLE IF EXISTS original_masks')
-            cur.execute(
-                '''
-                CREATE TABLE original_masks(
-                    frame INTEGER NOT NULL,
-                    track_id TEXT NOT NULL,
-                    original_polygons TEXT,
-                    original_shape_type TEXT,
-                    original_dilate_px INTEGER NOT NULL DEFAULT 0,
-                    original_feather_px INTEGER NOT NULL DEFAULT 0,
-                    original_mosaic_block INTEGER NOT NULL DEFAULT 0,
-                    original_mosaic_alias REAL NOT NULL DEFAULT 0,
-                    original_label TEXT,
-                    PRIMARY KEY(frame, track_id)
-                )
-                '''
-            )
-            cur.execute(
-                f'''
-                INSERT OR REPLACE INTO original_masks(
-                    frame,
-                    track_id,
-                    original_polygons,
-                    original_shape_type,
-                    original_dilate_px,
-                    original_feather_px,
-                    original_mosaic_block,
-                    original_mosaic_alias,
-                    original_label
-                )
-                SELECT
-                    CAST(frame AS INTEGER),
-                    CAST(track_id AS TEXT),
-                    polygons,
-                    {source_expr('shape_type', "'polygon'")},
-                    CAST({source_expr('dilate_px', '0')} AS INTEGER),
-                    CAST({source_expr('feather_px', '0')} AS INTEGER),
-                    CAST({source_expr('mosaic_block', '0')} AS INTEGER),
-                    CAST({source_expr('mosaic_alias', '0.0')} AS REAL),
-                    {source_expr('label', 'NULL')}
-                FROM original_source.masks
-                '''
-            )
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_original_masks_track_frame ON original_masks(track_id, frame)')
+            cur.execute('DROP TABLE IF EXISTS raw_tracked_masks')
+            cur.execute('DROP TABLE IF EXISTS raw_tracks')
             cur.execute(
                 '''
                 UPDATE masks
                 SET has_original_mask = CASE
                     WHEN EXISTS(
                         SELECT 1
-                        FROM original_masks original
+                        FROM original_source.masks original
                         WHERE original.frame = masks.frame
                           AND original.track_id = masks.track_id
                     )
@@ -9737,7 +10030,7 @@ def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite
                 )
 
             final_rows = int(cur.execute('SELECT COUNT(*) FROM masks').fetchone()[0])
-            original_rows = int(cur.execute('SELECT COUNT(*) FROM original_masks').fetchone()[0])
+            original_rows = int(cur.execute('SELECT COUNT(*) FROM original_source.masks').fetchone()[0])
             final_with_original = int(cur.execute('SELECT COUNT(*) FROM masks WHERE has_original_mask != 0').fetchone()[0])
             final_without_original = int(cur.execute('SELECT COUNT(*) FROM masks WHERE has_original_mask = 0').fetchone()[0])
             endpoint_without_original = 0
@@ -9748,7 +10041,7 @@ def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite
                     ).fetchone()[0]
                 )
             original_polygons_json_bytes = int(
-                cur.execute('SELECT COALESCE(SUM(LENGTH(original_polygons)), 0) FROM original_masks').fetchone()[0]
+                cur.execute('SELECT COALESCE(SUM(LENGTH(polygons)), 0) FROM original_source.masks').fetchone()[0]
             )
             conn.commit()
         finally:
@@ -9760,7 +10053,7 @@ def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite
         'enabled': True,
         'output_sqlite': str(output_sqlite),
         'original_sqlite': str(original_sqlite),
-        'table': 'original_masks',
+        'table': None,
         'final_rows': final_rows,
         'original_rows': original_rows,
         'final_rows_with_original': final_with_original,
@@ -9769,6 +10062,111 @@ def pipeline_embed_original_masks_for_debug(output_sqlite: Path, original_sqlite
         'original_polygons_json_bytes': original_polygons_json_bytes,
         'output_sqlite_size_bytes': int(output_sqlite.stat().st_size),
         'mask_columns_added': ['has_original_mask', 'mask_origin'],
+        'original_masks_embedded': False,
+    }
+
+
+def pipeline_copy_sqlite_table_by_name(src_cur: sqlite3.Cursor, dst_cur: sqlite3.Cursor, table_name: str) -> int:
+    if src_cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone() is None:
+        return 0
+    create_row = src_cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    if create_row is None or not create_row[0]:
+        return 0
+    dst_cur.execute(str(create_row[0]))
+    columns = [str(row[1]) for row in src_cur.execute(f'PRAGMA table_info("{table_name}")').fetchall()]
+    if columns:
+        cols = ', '.join(f'"{name}"' for name in columns)
+        rows = src_cur.execute(f'SELECT {cols} FROM "{table_name}"').fetchall()
+        if rows:
+            placeholders = ', '.join('?' for _ in columns)
+            dst_cur.executemany(f'INSERT INTO "{table_name}"({cols}) VALUES ({placeholders})', rows)
+    return int(dst_cur.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0])
+
+
+def pipeline_count_sqlite_rows(cur: sqlite3.Cursor, table_name: str) -> int:
+    if cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone() is None:
+        return 0
+    return int(cur.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0])
+
+
+def pipeline_write_tracking_pruned_sqlite(output_sqlite: Path, source_sqlite: Path) -> dict[str, object]:
+    if not source_sqlite.exists():
+        raise FileNotFoundError(f'source sqlite does not exist: {source_sqlite}')
+    output_sqlite.parent.mkdir(parents=True, exist_ok=True)
+    if output_sqlite.exists():
+        output_sqlite.unlink()
+
+    src = sqlite3.connect(str(source_sqlite))
+    copied_tables: dict[str, int] = {}
+    try:
+        src_cur = src.cursor()
+        source_tables = {str(row[0]) for row in src_cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if 'masks' not in source_tables:
+            raise RuntimeError(f'source sqlite does not contain masks table: {source_sqlite}')
+        dst = sqlite3.connect(str(output_sqlite))
+        try:
+            dst_cur = dst.cursor()
+            for table_name in ('masks', 'tracks', 'cuts'):
+                row_count = pipeline_copy_sqlite_table_by_name(src_cur, dst_cur, table_name)
+                if row_count:
+                    copied_tables[table_name] = int(row_count)
+            if 'masks' in copied_tables:
+                dst_cur.execute('CREATE INDEX IF NOT EXISTS idx_tracking_pruned_masks_track_frame ON masks(track_id, frame)')
+            dst.commit()
+        finally:
+            dst.close()
+        raw_tables_available = bool({'raw_tracked_masks', 'raw_tracks'}.issubset(source_tables))
+        kept_tracks = pipeline_count_sqlite_rows(src_cur, 'tracks')
+        kept_track_frame_rows = pipeline_count_sqlite_rows(src_cur, 'masks')
+        kept_unique_frames = int(src_cur.execute('SELECT COUNT(DISTINCT frame) FROM masks').fetchone()[0])
+        if raw_tables_available:
+            raw_tracks = int(src_cur.execute('SELECT COUNT(*) FROM raw_tracks').fetchone()[0])
+            raw_track_frame_rows = int(src_cur.execute('SELECT COUNT(*) FROM raw_tracked_masks').fetchone()[0])
+            removed_tracks = int(src_cur.execute('SELECT COUNT(*) FROM raw_tracks WHERE COALESCE(removed_by_short_track, 0) != 0').fetchone()[0])
+            removed_track_frame_rows = int(src_cur.execute('SELECT COUNT(*) FROM raw_tracked_masks WHERE COALESCE(removed_by_short_track, 0) != 0').fetchone()[0])
+            raw_unique_frames = int(src_cur.execute('SELECT COUNT(DISTINCT frame) FROM raw_tracked_masks').fetchone()[0])
+            affected_unique_frames = int(src_cur.execute('SELECT COUNT(DISTINCT frame) FROM raw_tracked_masks WHERE COALESCE(removed_by_short_track, 0) != 0').fetchone()[0])
+            frames_removed_entirely = int(
+                src_cur.execute(
+                    'SELECT COUNT(*) FROM (SELECT DISTINCT frame FROM raw_tracked_masks EXCEPT SELECT DISTINCT frame FROM masks)'
+                ).fetchone()[0]
+            )
+        else:
+            raw_tracks = kept_tracks
+            raw_track_frame_rows = kept_track_frame_rows
+            removed_tracks = 0
+            removed_track_frame_rows = 0
+            raw_unique_frames = kept_unique_frames
+            affected_unique_frames = 0
+            frames_removed_entirely = 0
+    finally:
+        src.close()
+
+    return {
+        'enabled': True,
+        'source_sqlite': str(source_sqlite),
+        'output_sqlite': str(output_sqlite),
+        'copied_tables': copied_tables,
+        'short_track_prune': {
+            'raw_tables_available': raw_tables_available,
+            'raw_tracks_before_prune': int(raw_tracks),
+            'tracks_after_prune': int(kept_tracks),
+            'removed_tracks': int(removed_tracks),
+            'raw_track_frame_rows_before_prune': int(raw_track_frame_rows),
+            'track_frame_rows_after_prune': int(kept_track_frame_rows),
+            'removed_track_frame_rows': int(removed_track_frame_rows),
+            'raw_unique_frames_before_prune': int(raw_unique_frames),
+            'unique_frames_after_prune': int(kept_unique_frames),
+            'affected_unique_frames': int(affected_unique_frames),
+            'unique_frames_removed_entirely': int(frames_removed_entirely),
+        },
+        'output_sqlite_size_bytes': int(output_sqlite.stat().st_size),
     }
 
 
@@ -10690,6 +11088,7 @@ def pipeline_main() -> None:
         group_results: dict[str, object] = {}
         group_target_ratios: dict[str, float] = {}
         merged_input_sqlites: list[Path] = []
+        merged_metric_csvs: list[Path] = []
         timings: dict[str, object] = {}
 
         for group in policy_groups:
@@ -10736,6 +11135,9 @@ def pipeline_main() -> None:
 
             group_results[group_id] = group_result
             merged_input_sqlites.append(pred_sqlite_path)
+            group_metrics_csv = dict(group_result.get('paths', {})).get('filled_overlay_metrics_csv')
+            if group_metrics_csv:
+                merged_metric_csvs.append(Path(str(group_metrics_csv)))
             timings[f'group_{group_id}'] = group_result.get('timings', {})
 
         merged_dir = pipeline_dir / 'keyframes' / label / 'merged'
@@ -10762,6 +11164,13 @@ def pipeline_main() -> None:
         )
         timings['annotate_k1_cost'] = {'wall_seconds': float(time.perf_counter() - t0)}
 
+        t0 = time.perf_counter()
+        postprocess_metadata_annotation_summary = pipeline_annotate_postprocess_metadata_to_sqlite(
+            merged_pred_sqlite_path,
+            merged_metric_csvs,
+        )
+        timings['annotate_postprocess_metadata'] = {'wall_seconds': float(time.perf_counter() - t0)}
+
         if bool(args.embed_original_masks):
             t0 = time.perf_counter()
             original_mask_annotation_summary = pipeline_embed_original_masks_for_debug(
@@ -10769,9 +11178,19 @@ def pipeline_main() -> None:
                 tracked_sqlite,
             )
             timings['embed_original_masks'] = {'wall_seconds': float(time.perf_counter() - t0)}
+
+            t0 = time.perf_counter()
+            tracking_pruned_sqlite_path = merged_dir / 'ai_tracking_pruned.sqlite'
+            tracking_pruned_debug_summary = pipeline_write_tracking_pruned_sqlite(
+                tracking_pruned_sqlite_path,
+                tracked_sqlite,
+            )
+            timings['write_tracking_pruned_sqlite'] = {'wall_seconds': float(time.perf_counter() - t0)}
         else:
             original_mask_annotation_summary = {'enabled': False}
+            tracking_pruned_debug_summary = {'enabled': False}
             timings['embed_original_masks'] = {'skipped': True, 'wall_seconds': 0.0}
+            timings['write_tracking_pruned_sqlite'] = {'skipped': True, 'wall_seconds': 0.0}
 
         merged_exact_dir = merged_dir / 'exact'
         merged_exact_summary_path = merged_exact_dir / 'summary.json'
@@ -10813,10 +11232,13 @@ def pipeline_main() -> None:
             'mode': mode_summary,
             'group_results': group_results,
             'k1_cost_annotation_summary': k1_cost_annotation_summary,
+            'postprocess_metadata_annotation_summary': postprocess_metadata_annotation_summary,
             'original_mask_annotation_summary': original_mask_annotation_summary,
+            'tracking_pruned_debug_summary': tracking_pruned_debug_summary,
             'exact_summary': merged_exact_summary,
             'paths': {
                 'merged_pred_sqlite': str(merged_pred_sqlite_path),
+                'ai_tracking_pruned_sqlite': str(tracking_pruned_sqlite_path) if bool(tracking_pruned_debug_summary.get('enabled', False)) else None,
                 'merged_exact_metrics_csv': str(merged_exact_dir / 'keyframe_exact_metrics.csv'),
                 'overlay_video': str(overlay_video) if args.render_overlays else None,
             },

@@ -32,9 +32,9 @@ Date: 2026-04-27
 
 ```bash
 /tmp/dinov3_runtime_setup_fast_test/bin/python \
-  inference/dinov3_video_jsonl_runtime/infer_video_dinov3_jsonl.py \
+  backend/detectors/dinov3/runtime/infer_video_dinov3_jsonl.py \
   --input inference/dinov3_cascade_unified/input/アクセル様２月解析用白カン01.26.mp4 \
-  --output inference/dinov3_video_jsonl_runtime/output_runs/newvenv_long_realdata_20260427_full \
+  --output backend/detectors/dinov3/runtime/output_runs/newvenv_long_realdata_20260427_full \
   --classifier \
   --warmup-frames 300 \
   --batch-size 8 \

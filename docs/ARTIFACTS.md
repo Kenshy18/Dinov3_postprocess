@@ -2,7 +2,7 @@
 
 Large runtime artifacts are not tracked in Git. The first setup script can restore them from Google Drive and then build the TensorRT engine locally.
 
-Expected layout:
+Expected local runtime layout after download/placement:
 
 ```text
 checkpoints/
@@ -51,15 +51,15 @@ Use this template:
 cp configs/artifact_sources.env.example configs/artifact_sources.env
 ```
 
-Integrated artifacts to upload:
+Canonical shared Drive upload layout:
 
 ```text
 artifacts_to_upload/runtime_artifacts/
-  checkpoints/detector/model_final.pth
+  checkpoints/dinov3/detector/model_final.pth
   checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
-  checkpoints/classifier/best.pt
-  checkpoints/eva02/detector/model_final.pth
-  checkpoints/eva02/classifier/best.pt
+  checkpoints/dinov3/classifier/best.pt
+  checkpoints/Eva02/detector/model_final.pth
+  checkpoints/Eva02/classifier/best.pt
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -70,6 +70,10 @@ artifacts_to_upload/runtime_artifacts/
 ```
 
 Upload that folder to Google Drive, then set `RUNTIME_ARTIFACTS_URL`.
+
+`tools/download_runtime_artifacts.py` also accepts the older flat local aliases
+such as `checkpoints/detector/model_final.pth`,
+`checkpoints/classifier/best.pt`, and lowercase `checkpoints/eva02/...`.
 
 Manual artifact download/placement:
 

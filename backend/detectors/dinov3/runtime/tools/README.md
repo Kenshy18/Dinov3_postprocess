@@ -5,7 +5,7 @@
 ## Recommended setup
 
 ```bash
-inference/dinov3_video_jsonl_runtime/tools/setup_fast_runtime_env.sh
+backend/detectors/dinov3/runtime/tools/setup_fast_runtime_env.sh
 ```
 
 このスクリプトは新しいvenv作成、依存確認、必要時のTensorRT engine作成、短いsmoke testまで実行します。
@@ -13,7 +13,7 @@ inference/dinov3_video_jsonl_runtime/tools/setup_fast_runtime_env.sh
 ## TensorRT rebuild only
 
 ```bash
-cd inference/dinov3_video_jsonl_runtime
+cd backend/detectors/dinov3/runtime
 PYTHON=../eva02_cascade_experimental/venv/bin/python ./tools/rebuild_default_trt_backbone.sh
 ```
 

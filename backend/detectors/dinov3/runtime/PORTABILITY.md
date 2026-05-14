@@ -6,7 +6,7 @@
 
 - `.engine` はTensorRT/CUDA/GPU世代に強く依存するため、別PCでは再作成が安全。
 - 現在の大きなファイルはsymlinkです。通常のコピーではリンク先実体が入らず壊れます。
-- 推論コードはrepo側の `eva02/eva02_det`, `dinov3`, `scripts/train_dinov3_cascade_unified.py`, `configs` に依存します。
+- 推論コードはrepo側の `eva02/eva02_det`, `dinov3`, `training/dinov3/train_dinov3_cascade_unified.py`, `scripts/train_dinov3_cascade_unified.py`（互換入口）, `configs` に依存します。
 - Python環境には PyTorch, Detectron2系コード, TensorRT, OpenCV, orjson などが必要です。
 
 ## Minimum files needed
@@ -27,7 +27,7 @@
 例:
 
 ```bash
-rsync -aL inference/dinov3_video_jsonl_runtime/ user@host:/path/to/unified_training_codino_eva02/inference/dinov3_video_jsonl_runtime/
+rsync -aL backend/detectors/dinov3/runtime/ user@host:/path/to/unified_training_codino_eva02/backend/detectors/dinov3/runtime/
 ```
 
 ただし、TensorRT engineはコピー先で再作成することを推奨します。
@@ -37,7 +37,7 @@ rsync -aL inference/dinov3_video_jsonl_runtime/ user@host:/path/to/unified_train
 まず通常は以下のセットアップ入口を使ってください。新しいvenv作成、依存確認、必要ならTensorRT engine再作成、短いsmoke testまで行います。
 
 ```bash
-cd inference/dinov3_video_jsonl_runtime
+cd backend/detectors/dinov3/runtime
 ./tools/setup_fast_runtime_env.sh
 ```
 
@@ -55,7 +55,7 @@ BASE_PYTHON=/path/to/python3.10 ./tools/setup_fast_runtime_env.sh
 実行:
 
 ```bash
-cd inference/dinov3_video_jsonl_runtime
+cd backend/detectors/dinov3/runtime
 PYTHON=../eva02_cascade_experimental/venv/bin/python ./tools/rebuild_default_trt_backbone.sh
 ```
 

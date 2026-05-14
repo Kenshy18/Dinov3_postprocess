@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "description": "Example only. The real configs/runtime_profile.json is generated locally by tools/setup_gui_runtime.sh and is intentionally gitignored.",
+  "recommendations": {
+    "total_vram_gib": 12.0,
+    "dinov3": {
+      "batch_size": 4,
+      "warmup_frames": 0,
+      "trt_backbone_engine": "checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+    },
+    "eva02": {
+      "batch_size": 1,
+      "warmup_frames": 0,
+      "classifier_batch_size": 1024
+    },
+    "postprocess": {
+      "k2_device": "auto",
+      "polygon_predictor_device": "auto",
+      "overlay_encoder": "nvenc"
+    }
+  },
+  "vram_guideline": [
+    {
+      "vram_gib": "< 10",
+      "dinov3_batch_size": 2,
+      "eva02_batch_size": 1,
+      "eva02_classifier_batch_size": 512
+    },
+    {
+      "vram_gib": "10-15",
+      "dinov3_batch_size": 4,
+      "eva02_batch_size": 1,
+      "eva02_classifier_batch_size": 1024
+    },
+    {
+      "vram_gib": "16-23",
+      "dinov3_batch_size": 6,
+      "eva02_batch_size": 2,
+      "eva02_classifier_batch_size": 1536
+    },
+    {
+      "vram_gib": "24-39",
+      "dinov3_batch_size": 8,
+      "eva02_batch_size": 4,
+      "eva02_classifier_batch_size": 2048
+    },
+    {
+      "vram_gib": ">= 40",
+      "dinov3_batch_size": 8,
+      "eva02_batch_size": 8,
+      "eva02_classifier_batch_size": 4096
+    }
+  ],
+  "notes": [
+    "Keep EVA02 conservative on GPUs below 16 GiB VRAM; high batch sizes can spill to CUDA shared/unified memory and become extremely slow.",
+    "TensorRT engine files are GPU/driver/TensorRT dependent and should be rebuilt locally."
+  ]
+}

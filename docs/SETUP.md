@@ -7,7 +7,7 @@ The bundle contains the required source code for DINOv3/EVA02 inference and Atos
 Key source directories:
 
 ```text
-inference/dinov3_video_jsonl_runtime/
+backend/detectors/dinov3/runtime/
 scripts/
 configs/
 dinov3/
@@ -37,14 +37,14 @@ If artifacts are already available locally, set:
 RUNTIME_ARTIFACTS_DIR="/path/to/runtime_artifacts"
 ```
 
-Expected integrated artifact folder layout:
+Expected shared Drive artifact folder layout:
 
 ```text
-checkpoints/detector/model_final.pth
+checkpoints/dinov3/detector/model_final.pth
 checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
-checkpoints/classifier/best.pt
-checkpoints/eva02/detector/model_final.pth
-checkpoints/eva02/classifier/best.pt
+checkpoints/dinov3/classifier/best.pt
+checkpoints/Eva02/detector/model_final.pth
+checkpoints/Eva02/classifier/best.pt
 checkpoints/postprocess/k2_v5/best_exact.pt
 checkpoints/postprocess/k2_v5/run_config.json
 checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -60,6 +60,10 @@ You can check the current placement with:
 python tools/check_artifacts.py
 ```
 
+The downloader places those grouped Drive paths into the local runtime layout
+under `checkpoints/detector`, `checkpoints/classifier`, and
+`checkpoints/eva02`.
+
 ## 3. Create runtime environment
 
 ```bash
@@ -71,9 +75,19 @@ The setup script performs:
 - artifact download and placement into `checkpoints/`
 - venv creation
 - dependency installation
+- UI dependency installation
 - bundled Detectron2/EVA02 extension build when needed
 - TensorRT engine build when missing or when `REBUILD_TRT=1`
+- local GPU/VRAM profiling into `configs/runtime_profile.json`
 - optional smoke/import checks
+
+For GUI machines, this wrapper is the recommended entrypoint:
+
+```bash
+tools/setup_gui_runtime.sh
+```
+
+The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `configs/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and DINOv3 TensorRT engine path are written to `configs/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `configs/runtime_profile.json`, `configs/runtime_benchmark.json`, and `configs/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
 
 Useful options:
 

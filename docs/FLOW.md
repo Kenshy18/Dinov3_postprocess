@@ -18,29 +18,85 @@ video
 Entrypoint:
 
 ```text
+backend/pipeline/run_integrated_pipeline.py
+backend/pipeline/cli/run_full_flow.py
+backend/pipeline/cli/run_postprocess_only.py
+scripts/run_full_flow.py
+scripts/run_postprocess_only.py
 scripts/infer_video_postprocess.py
-scripts/run_integrated_pipeline.py
+scripts/run_integrated_pipeline.py  # compatibility wrapper
 ```
 
-`infer_video_postprocess.py` is the short production-style wrapper. It always runs postprocess and enables overlay only when `--overlay` is specified. `run_integrated_pipeline.py` exposes the detailed detector/postprocess options.
+`backend/pipeline/cli/run_full_flow.py` owns the recommended end-to-end wrapper. `scripts/run_full_flow.py` is the compatibility command users can keep calling. It keeps the common production choices visible: detector, postprocess on/off, overlay on/off, default shape mode, keyframe interval, recall target, and compact per-class overrides.
+
+`backend/pipeline/cli/run_postprocess_only.py` owns the recommended wrapper when AI JSONL or tracked SQLite already exists and only Atosyori postprocess should be rerun. `scripts/run_postprocess_only.py` remains the compatibility command.
+
+`infer_video_postprocess.py` is the older short wrapper. `backend/pipeline/run_integrated_pipeline.py` owns the detailed low-level integration logic; `scripts/run_integrated_pipeline.py` is kept as a compatibility wrapper.
+
+Example end-to-end run:
+
+```bash
+.venv_integrated/bin/python scripts/run_full_flow.py \
+  --input input/short/0210_first30s.mp4 \
+  --run-name sample_full_flow \
+  --detector dinov3 \
+  --shape-mode ellipse \
+  --keyframe-interval 3 \
+  --recall-target 0.96 \
+  --class-policy female:polygon:5:0.97 \
+  --overlay \
+  --force
+```
+
+Example postprocess-only run:
+
+```bash
+.venv_integrated/bin/python scripts/run_postprocess_only.py \
+  --input-jsonl output/runs/sample_full_flow/dinov3/jsonl/0210_first30s.jsonl \
+  --input-video input/short/0210_first30s.mp4 \
+  --run-name sample_postprocess_only \
+  --shape-mode ellipse \
+  --keyframe-interval 3 \
+  --recall-target 0.96 \
+  --no-overlay \
+  --force
+```
+
+Per-class overrides use:
+
+```text
+--class-policy CLASS:MODE[:INTERVAL[:RECALL]]
+```
+
+`CLASS` can be `female`, `male`, `junction`, or an exact label such as `女性器`. `junction` updates both `結合部分` and `結合`. The wrapper writes the generated JSON to `<run>/config/class_policy.generated.json`.
+
+Both wrappers stream child process progress to the terminal and also write logs:
+
+```text
+<run>/logs/full_flow.log
+<run>/logs/postprocess.log
+```
 
 Use `--detector dinov3` or `--detector eva02`. The default remains `dinov3`.
 
 It calls one of:
 
 ```text
-inference/dinov3_video_jsonl_runtime/infer_video_dinov3_jsonl.py
-inference/eva02_video_jsonl_runtime/infer_video_eva02_jsonl.py
+backend/detectors/dinov3/runtime/infer_video_dinov3_jsonl.py
+backend/detectors/eva02/runtime/infer_video_eva02_jsonl.py
 ```
 
 The DINOv3 runtime uses bundled code under:
 
 ```text
-scripts/train_dinov3_cascade_unified.py
+training/dinov3/train_dinov3_cascade_unified.py
 configs/paths.py
 dinov3/
 eva02/eva02_det/
 ```
+
+`scripts/train_dinov3_cascade_unified.py` is kept as a compatibility wrapper
+for existing commands and runtime imports.
 
 Default acceleration:
 
@@ -48,7 +104,7 @@ Default acceleration:
 - Cascade box head reduced to 1 stage
 - RPN test top-k `100/40`
 - BF16 autocast
-- batch size `8`
+- batch size from `configs/runtime_profile.json` when setup has been run
 - async JSONL writer
 
 Output:
