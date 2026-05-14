@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Example only. The real configs/runtime_profile.json is generated locally by tools/setup_gui_runtime.sh and is intentionally gitignored.",
+  "description": "Example only. The real .runtime/runtime_profile.json is generated locally by tools/setup_gui_runtime.sh and is intentionally gitignored.",
   "recommendations": {
     "total_vram_gib": 12.0,
     "dinov3": {

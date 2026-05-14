@@ -10,7 +10,19 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 INTEGRATION_ROOT = SCRIPT_DIR.parents[1]
-RUNTIME_PROFILE = Path(os.environ.get("DINOV3_RUNTIME_PROFILE", INTEGRATION_ROOT / "configs" / "runtime_profile.json"))
+DEFAULT_RUNTIME_PROFILE = INTEGRATION_ROOT / ".runtime" / "runtime_profile.json"
+LEGACY_RUNTIME_PROFILE = INTEGRATION_ROOT / "configs" / "runtime_profile.json"
+
+
+def _default_runtime_profile_path() -> Path:
+    raw = os.environ.get("DINOV3_RUNTIME_PROFILE")
+    if raw:
+        path = Path(raw).expanduser()
+        return path if path.is_absolute() else INTEGRATION_ROOT / path
+    return DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE.is_file() else LEGACY_RUNTIME_PROFILE
+
+
+RUNTIME_PROFILE = _default_runtime_profile_path()
 
 
 def _runtime_profile() -> dict:

@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SKIP_DIR_NAMES = {".git", ".venv_integrated"}
 OUTPUT_KEEP_NAMES = {".gitkeep", "README.md"}
+RUNTIME_KEEP_NAMES = {".gitkeep", "README.md"}
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ def collect_targets(
     *,
     include_caches: bool,
     include_output: bool,
+    include_runtime_state: bool,
     include_serena: bool,
 ) -> list[CleanupTarget]:
     root = root.resolve()
@@ -53,6 +55,13 @@ def collect_targets(
             for child in sorted(output_dir.iterdir()):
                 if child.name not in OUTPUT_KEEP_NAMES:
                     targets.append(CleanupTarget(child, "generated output"))
+
+    if include_runtime_state:
+        runtime_dir = root / ".runtime"
+        if runtime_dir.is_dir():
+            for child in sorted(runtime_dir.iterdir()):
+                if child.name not in RUNTIME_KEEP_NAMES:
+                    targets.append(CleanupTarget(child, "local runtime state"))
 
     if include_serena:
         path = root / ".serena"
@@ -75,8 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--caches", action="store_true", help="Clean __pycache__, pytest, and ruff caches.")
     parser.add_argument("--output", action="store_true", help="Clean output/ while preserving .gitkeep and README.md.")
+    parser.add_argument("--runtime-state", action="store_true", help="Clean .runtime/ while preserving .gitkeep and README.md.")
     parser.add_argument("--serena", action="store_true", help="Clean .serena local metadata.")
-    parser.add_argument("--all-local", action="store_true", help="Clean caches, output, and .serena.")
+    parser.add_argument("--all-local", action="store_true", help="Clean caches, output, .runtime state, and .serena.")
     parser.add_argument("--apply", action="store_true", help="Actually delete targets. Default is dry-run.")
     return parser
 
@@ -85,15 +95,17 @@ def main() -> int:
     args = build_parser().parse_args()
     include_caches = bool(args.caches or args.all_local)
     include_output = bool(args.output or args.all_local)
+    include_runtime_state = bool(args.runtime_state or args.all_local)
     include_serena = bool(args.serena or args.all_local)
-    if not (include_caches or include_output or include_serena):
-        print("[clean] no target group selected; use --caches, --output, --serena, or --all-local")
+    if not (include_caches or include_output or include_runtime_state or include_serena):
+        print("[clean] no target group selected; use --caches, --output, --runtime-state, --serena, or --all-local")
         return 2
 
     targets = collect_targets(
         Path(args.root),
         include_caches=include_caches,
         include_output=include_output,
+        include_runtime_state=include_runtime_state,
         include_serena=include_serena,
     )
     action = "delete" if args.apply else "would-delete"

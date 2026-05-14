@@ -40,8 +40,6 @@ REPO_ROOT = BASE_DIR.parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from configs import paths as unified_paths
-TWO_STAGE_DIR = BASE_DIR
-TWO_STAGE_SCRIPTS_DIR = BASE_DIR
 
 def _import_module_from_file(module_name: str, file_path: Path):
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
@@ -62,14 +60,10 @@ base = _import_module_from_file(
     BASE_DIR / "infer_video_jsonl_singleclass.py",
 )
 
-# Import rich ROI-classifier utilities from experimental two-stage scripts.
-if str(TWO_STAGE_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(TWO_STAGE_SCRIPTS_DIR))
-
 # =========================
 # Hardcoded settings (edit)
 # =========================
-from two_stage_roi_classifier import (  # noqa: E402
+from backend.classifiers.eva02_roi.runtime.two_stage_roi_classifier import (  # noqa: E402
     build_roi_feature_tensor_from_instances,
     classifier_from_checkpoint,
     extract_box_head_features_from_instances,

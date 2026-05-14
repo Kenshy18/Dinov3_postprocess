@@ -6,6 +6,8 @@
 
 - Backend pipeline: `backend/pipeline/`
 - Backend detector adapters: `backend/detectors/`
+- ROI classifier runtimes: `backend/classifiers/`
+- Shared detector/postprocess schemas: `backend/schemas/`
 - Backend postprocess adapter: `backend/postprocess/`
 - User-facing backend CLI implementations: `backend/pipeline/cli/`
 - Integration entrypoint: `scripts/run_integrated_pipeline.py`（互換ラッパー）
@@ -45,7 +47,7 @@ GUIを使うPCでは、同じ処理を分かりやすい名前で呼ぶ以下の
 tools/setup_gui_runtime.sh
 ```
 
-生成された推奨設定は `configs/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `configs/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でbatch-size候補を順番に測定し、結果を `configs/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はVRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。
+生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でbatch-size候補を順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はVRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。
 
 別のAtosyori repoを使う場合:
 

@@ -104,7 +104,7 @@ Default acceleration:
 - Cascade box head reduced to 1 stage
 - RPN test top-k `100/40`
 - BF16 autocast
-- batch size from `configs/runtime_profile.json` when setup has been run
+- batch size from `.runtime/runtime_profile.json` when setup has been run
 - async JSONL writer
 
 Output:

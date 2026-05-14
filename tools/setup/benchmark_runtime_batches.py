@@ -28,7 +28,7 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUTPUT = ROOT / "configs" / "runtime_benchmark.json"
+DEFAULT_OUTPUT = ROOT / ".runtime" / "runtime_benchmark.json"
 DEFAULT_WORK_DIR = ROOT / "output" / "runtime_batch_benchmark"
 DEFAULT_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
 

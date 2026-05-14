@@ -13,4 +13,6 @@ Contract:
 - Input: shared detector JSONL and the original video.
 - Output: SQLite, overlays, audit/log files, and postprocess summary.
 - This layer should not care whether the JSONL came from DINOv3 or EVA02.
+- Vendored engine behavior and local patches are documented in
+  `external/atosyori-pipeline-dev/docs/local_patches.md`.
 - Do not add detector or UI behavior here.

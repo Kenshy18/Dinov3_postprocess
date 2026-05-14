@@ -10,7 +10,7 @@ cat <<'EOF'
   - download/check artifacts when configured
   - build/reuse local DINOv3 TensorRT engine
   - benchmark local batch sizes with a temporary dummy video
-  - write configs/runtime_profile.json and configs/gui_runtime.env
+  - write .runtime/runtime_profile.json and .runtime/gui_runtime.env
 EOF
 
 "$ROOT_DIR/tools/setup/setup_integrated_runtime_env.sh"
@@ -26,5 +26,5 @@ Compatibility launch:
   $ROOT_DIR/UI/run_app.sh
 
 Runtime profile:
-  $ROOT_DIR/configs/runtime_profile.json
+  $ROOT_DIR/.runtime/runtime_profile.json
 EOF

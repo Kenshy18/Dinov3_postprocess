@@ -55,11 +55,50 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         for expected in (
             "backend/detectors/dinov3",
             "backend/detectors/eva02",
+            "backend/classifiers",
+            "backend/schemas",
             "backend/postprocess",
+            ".runtime",
             "inference/dinov3_video_jsonl_runtime/* -> backend.detectors.dinov3.runtime.*",
             "inference/eva02_video_jsonl_runtime/* -> backend.detectors.eva02.runtime.*",
         ):
             self.assertIn(expected, architecture)
+
+    def test_classifier_implementations_live_under_backend_classifiers(self) -> None:
+        dinov3_classifier = ROOT / "backend" / "classifiers" / "dinov3_roi" / "runtime" / "two_stage_roi_classifier.py"
+        eva02_classifier = ROOT / "backend" / "classifiers" / "eva02_roi" / "runtime" / "two_stage_roi_classifier.py"
+        self.assertGreater(len(dinov3_classifier.read_text(encoding="utf-8").splitlines()), 1000)
+        self.assertGreater(len(eva02_classifier.read_text(encoding="utf-8").splitlines()), 1000)
+
+        for wrapper in (
+            ROOT
+            / "backend"
+            / "detectors"
+            / "dinov3"
+            / "runtime"
+            / "two_stage_multiclass_20260426"
+            / "scripts"
+            / "two_stage_roi_classifier.py",
+            ROOT / "backend" / "detectors" / "eva02" / "runtime" / "two_stage_roi_classifier.py",
+            ROOT
+            / "inference"
+            / "dinov3_video_jsonl_runtime"
+            / "two_stage_multiclass_20260426"
+            / "scripts"
+            / "two_stage_roi_classifier.py",
+            ROOT / "inference" / "eva02_video_jsonl_runtime" / "two_stage_roi_classifier.py",
+        ):
+            text = wrapper.read_text(encoding="utf-8")
+            self.assertIn("Compatibility wrapper", text)
+            self.assertIn("backend.classifiers", text)
+            self.assertLess(len(text.splitlines()), 35)
+
+    def test_local_runtime_state_is_separate_from_configs(self) -> None:
+        self.assertEqual(pipeline_defaults.DEFAULT_RUNTIME_PROFILE, ROOT / ".runtime" / "runtime_profile.json")
+        self.assertEqual(pipeline_defaults.LEGACY_RUNTIME_PROFILE, ROOT / "configs" / "runtime_profile.json")
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn(".runtime/*", gitignore)
+        self.assertTrue((ROOT / "configs" / "runtime_profile.example.json").is_file())
 
 
 if __name__ == "__main__":

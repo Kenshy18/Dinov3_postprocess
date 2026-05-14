@@ -36,12 +36,14 @@ DEFAULT_CONFIG = (
     / "eva2_o365_to_coco_cascade_mask_rcnn_vitdet_l_8attn_1280_lrd0p8.py"
 )
 DEFAULT_RUNTIME_PROFILE = REPO_ROOT / "configs" / "runtime_profile.json"
+DEFAULT_LOCAL_RUNTIME_PROFILE = REPO_ROOT / ".runtime" / "runtime_profile.json"
 
 
 def _profile_default(section: str, key: str, default: int) -> int:
     try:
-        if DEFAULT_RUNTIME_PROFILE.is_file():
-            profile = json.loads(DEFAULT_RUNTIME_PROFILE.read_text(encoding="utf-8"))
+        profile_path = DEFAULT_LOCAL_RUNTIME_PROFILE if DEFAULT_LOCAL_RUNTIME_PROFILE.is_file() else DEFAULT_RUNTIME_PROFILE
+        if profile_path.is_file():
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
             value = profile.get("recommendations", {}).get(section, {}).get(key)
             if value is not None:
                 return int(value)

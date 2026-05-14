@@ -16,6 +16,11 @@ class CleanGeneratedTests(unittest.TestCase):
             (output / ".gitkeep").write_text("", encoding="utf-8")
             (output / "README.md").write_text("keep", encoding="utf-8")
             (output / "run").mkdir()
+            runtime = root / ".runtime"
+            runtime.mkdir()
+            (runtime / ".gitkeep").write_text("", encoding="utf-8")
+            (runtime / "README.md").write_text("keep", encoding="utf-8")
+            (runtime / "runtime_profile.json").write_text("{}", encoding="utf-8")
             (root / ".serena").mkdir()
             (root / "pkg" / "__pycache__").mkdir(parents=True)
             (root / ".venv_integrated" / "lib" / "__pycache__").mkdir(parents=True)
@@ -24,15 +29,19 @@ class CleanGeneratedTests(unittest.TestCase):
                 root,
                 include_caches=True,
                 include_output=True,
+                include_runtime_state=True,
                 include_serena=True,
             )
 
         paths = {target.path.relative_to(root).as_posix() for target in targets}
         self.assertIn("output/run", paths)
+        self.assertIn(".runtime/runtime_profile.json", paths)
         self.assertIn(".serena", paths)
         self.assertIn("pkg/__pycache__", paths)
         self.assertNotIn("output/.gitkeep", paths)
         self.assertNotIn("output/README.md", paths)
+        self.assertNotIn(".runtime/.gitkeep", paths)
+        self.assertNotIn(".runtime/README.md", paths)
         self.assertNotIn(".venv_integrated/lib/__pycache__", paths)
 
 

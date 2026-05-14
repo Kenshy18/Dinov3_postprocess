@@ -9,6 +9,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from backend.schemas.detection_jsonl import summarize_detection_jsonl
+
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -44,6 +46,7 @@ def summarize_detector(detector_out: Path, video: Path) -> tuple[Path, dict[str,
             jsonl_path = run_jsonl
     if not jsonl_path.is_file():
         raise FileNotFoundError(jsonl_path)
+    summary["jsonl_contract"] = summarize_detection_jsonl(jsonl_path).as_dict()
     return jsonl_path, summary
 
 

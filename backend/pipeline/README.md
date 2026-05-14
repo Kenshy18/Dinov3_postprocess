@@ -26,6 +26,7 @@ Edit files here when changing orchestration, argument defaults, or output
 summary collection.
 
 Detector command construction belongs in `backend/detectors/<detector>`.
+Detector JSONL validation belongs in `backend/schemas`.
 Postprocess command construction belongs in `backend/postprocess`.
 
 User-facing CLI implementations live in:

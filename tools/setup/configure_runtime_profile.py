@@ -15,7 +15,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PROFILE = ROOT / "configs" / "runtime_profile.json"
+DEFAULT_PROFILE = ROOT / ".runtime" / "runtime_profile.json"
 
 
 def env_path(name: str, default: Path) -> Path:
@@ -30,7 +30,7 @@ DEFAULT_TRT_ENGINE = env_path(
     "DINOV3_TRT_BACKBONE_ENGINE",
     ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
 )
-DEFAULT_BENCHMARK = env_path("DINOV3_BATCH_BENCHMARK", ROOT / "configs" / "runtime_benchmark.json")
+DEFAULT_BENCHMARK = env_path("DINOV3_BATCH_BENCHMARK", ROOT / ".runtime" / "runtime_benchmark.json")
 
 
 def run_text(command: list[str]) -> str | None:

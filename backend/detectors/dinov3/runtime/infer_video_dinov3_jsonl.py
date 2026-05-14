@@ -35,8 +35,6 @@ import torch
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parents[3]
 BUNDLE_CHECKPOINTS = REPO_ROOT / "checkpoints"
-TWO_STAGE_DIR = BASE_DIR / "two_stage_multiclass_20260426"
-TWO_STAGE_SCRIPTS = TWO_STAGE_DIR / "scripts"
 DEFAULT_TRT_ENGINE = (
     BUNDLE_CHECKPOINTS
     / "trt"
@@ -51,8 +49,8 @@ DEFAULT_DINOV3_WEIGHTS = (
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
-if str(TWO_STAGE_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(TWO_STAGE_SCRIPTS))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 try:
     import orjson  # type: ignore
@@ -72,7 +70,7 @@ from infer_images_singleclass import (  # noqa: E402
     unified_paths,
 )
 try:
-    from two_stage_roi_classifier import (  # noqa: E402
+    from backend.classifiers.dinov3_roi.runtime.two_stage_roi_classifier import (  # noqa: E402
         classifier_from_checkpoint,
         extract_box_head_features_from_instances,
         extract_box_pooler_features_expanded_from_instances,

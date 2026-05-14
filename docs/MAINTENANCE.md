@@ -61,16 +61,17 @@ Apply only after checking the printed targets:
 .venv_integrated/bin/python tools/clean_generated.py --all-local --apply
 ```
 
-`output/.gitkeep` and `output/README.md` are preserved.
+`output/.gitkeep`, `output/README.md`, `.runtime/.gitkeep`, and
+`.runtime/README.md` are preserved.
 
 ## Local State
 
 These files are local-machine state and should not be committed:
 
 ```text
-configs/gui_runtime.env
-configs/runtime_profile.json
-configs/runtime_benchmark.json
+.runtime/gui_runtime.env
+.runtime/runtime_profile.json
+.runtime/runtime_benchmark.json
 .venv_integrated/
 output/
 ```
@@ -87,6 +88,11 @@ such as raw tracking audit tables, SQLite schema, or overlay rendering.
 
 When vendor behavior changes, add a note to the summary or docs explaining why
 the change cannot live in the adapter.
+
+Current local vendor patch notes live in
+`external/atosyori-pipeline-dev/docs/local_patches.md`. Keep that document in
+sync with any raw JSONL, tracking audit, SQLite schema, or overlay behavior
+change.
 
 ## Compatibility Policy
 

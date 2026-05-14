@@ -21,9 +21,9 @@ tools/debug
 
 Generated local state:
 
-- `configs/gui_runtime.env`
-- `configs/runtime_profile.json`
-- `configs/runtime_benchmark.json`
+- `.runtime/gui_runtime.env`
+- `.runtime/runtime_profile.json`
+- `.runtime/runtime_benchmark.json`
 
 These files are intentionally gitignored because they depend on the local
 Python environment, GPU, driver, TensorRT version, and measured batch speed.

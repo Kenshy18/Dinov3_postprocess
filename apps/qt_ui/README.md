@@ -14,7 +14,7 @@ apps/qt_ui/run_app.sh
 
 `UI/run_app.sh` は既存ショートカット用の互換入口です。
 
-`tools/setup_gui_runtime.sh` はUI依存関係、推論依存関係、DINOv3 TensorRT engine、batch-size実測をまとめて準備します。batch-size測定では一時的なダミー動画を作成し、候補を順番に実行して `configs/runtime_benchmark.json` に結果を残した後、ダミー動画と一時出力を削除します。生成される `configs/runtime_profile.json`、`configs/runtime_benchmark.json`、`configs/gui_runtime.env` はPC依存のためgitignore対象です。`apps/qt_ui/run_app.sh` とGUI内の実行コマンドは、この設定からPython/venv、batch-size、TensorRT engineを選択します。目安値は `configs/runtime_profile.example.json` にあります。
+`tools/setup_gui_runtime.sh` はUI依存関係、推論依存関係、DINOv3 TensorRT engine、batch-size実測をまとめて準備します。batch-size測定では一時的なダミー動画を作成し、候補を順番に実行して `.runtime/runtime_benchmark.json` に結果を残した後、ダミー動画と一時出力を削除します。生成される `.runtime/runtime_profile.json`、`.runtime/runtime_benchmark.json`、`.runtime/gui_runtime.env` はPC依存のためgitignore対象です。`apps/qt_ui/run_app.sh` とGUI内の実行コマンドは、この設定からPython/venv、batch-size、TensorRT engineを選択します。目安値は `configs/runtime_profile.example.json` にあります。
 
 ## 実行内容
 

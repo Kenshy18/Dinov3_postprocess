@@ -14,11 +14,16 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 
 ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_STATE_DIR = ROOT / ".runtime"
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 DEFAULT_RAW_REMOVE_SHORT_TRACKS_MAX_FRAMES = 10
 DEFAULT_OVERLAY_ENCODER = "nvenc"
-GUI_RUNTIME_ENV = ROOT / "configs" / "gui_runtime.env"
-DEFAULT_RUNTIME_PROFILE = ROOT / "configs" / "runtime_profile.json"
+GUI_RUNTIME_ENV = Path(os.environ.get("GUI_RUNTIME_ENV", RUNTIME_STATE_DIR / "gui_runtime.env"))
+LEGACY_GUI_RUNTIME_ENV = ROOT / "configs" / "gui_runtime.env"
+DEFAULT_RUNTIME_PROFILE = RUNTIME_STATE_DIR / "runtime_profile.json"
+LEGACY_RUNTIME_PROFILE = ROOT / "configs" / "runtime_profile.json"
+DEFAULT_BATCH_BENCHMARK = RUNTIME_STATE_DIR / "runtime_benchmark.json"
+LEGACY_BATCH_BENCHMARK = ROOT / "configs" / "runtime_benchmark.json"
 FALLBACK_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
 
 
@@ -42,10 +47,11 @@ def _valid_executable(path: Path) -> bool:
 
 def load_gui_runtime_env() -> dict[str, str]:
     values: dict[str, str] = {}
-    if not GUI_RUNTIME_ENV.is_file():
+    env_path = GUI_RUNTIME_ENV if GUI_RUNTIME_ENV.is_file() else LEGACY_GUI_RUNTIME_ENV
+    if not env_path.is_file():
         return values
     try:
-        for raw_line in GUI_RUNTIME_ENV.read_text(encoding="utf-8").splitlines():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -68,7 +74,7 @@ def runtime_profile_path() -> Path:
     if raw:
         path = Path(raw).expanduser()
         return path if path.is_absolute() else ROOT / path
-    return DEFAULT_RUNTIME_PROFILE
+    return DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE.is_file() else LEGACY_RUNTIME_PROFILE
 
 
 def load_runtime_profile() -> dict:
@@ -1092,7 +1098,8 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         environment.insert("PYTHONUNBUFFERED", "1")
         environment.insert("DINOV3_RUNTIME_PROFILE", str(runtime_profile_path()))
         benchmark_path = load_gui_runtime_env().get("DINOV3_BATCH_BENCHMARK") or os.environ.get("DINOV3_BATCH_BENCHMARK")
-        environment.insert("DINOV3_BATCH_BENCHMARK", benchmark_path or str(ROOT / "configs" / "runtime_benchmark.json"))
+        default_benchmark = DEFAULT_BATCH_BENCHMARK if DEFAULT_BATCH_BENCHMARK.is_file() else LEGACY_BATCH_BENCHMARK
+        environment.insert("DINOV3_BATCH_BENCHMARK", benchmark_path or str(default_benchmark))
         environment.insert("DINOV3_TRT_BACKBONE_ENGINE", str(selected_trt_engine()))
         self.process.setProcessEnvironment(environment)
         self.process.setWorkingDirectory(str(ROOT))

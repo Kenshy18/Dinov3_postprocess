@@ -7,6 +7,9 @@ log.txt
 .serena/
 .pytest_cache/
 .ruff_cache/
+.runtime/*
+!.runtime/.gitkeep
+!.runtime/README.md
 configs/artifact_sources.env
 configs/gui_runtime.env
 configs/runtime_benchmark.json

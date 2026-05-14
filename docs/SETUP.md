@@ -78,7 +78,7 @@ The setup script performs:
 - UI dependency installation
 - bundled Detectron2/EVA02 extension build when needed
 - TensorRT engine build when missing or when `REBUILD_TRT=1`
-- local GPU/VRAM profiling into `configs/runtime_profile.json`
+- local GPU/VRAM profiling into `.runtime/runtime_profile.json`
 - optional smoke/import checks
 
 For GUI machines, this wrapper is the recommended entrypoint:
@@ -87,7 +87,7 @@ For GUI machines, this wrapper is the recommended entrypoint:
 tools/setup_gui_runtime.sh
 ```
 
-The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `configs/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and DINOv3 TensorRT engine path are written to `configs/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `configs/runtime_profile.json`, `configs/runtime_benchmark.json`, and `configs/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
+The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `.runtime/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and DINOv3 TensorRT engine path are written to `.runtime/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `.runtime/runtime_profile.json`, `.runtime/runtime_benchmark.json`, and `.runtime/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. Legacy `configs/runtime_profile.json` is still read as a fallback during migration. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
 
 Useful options:
 
