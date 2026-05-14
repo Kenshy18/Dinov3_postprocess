@@ -101,6 +101,7 @@ inference/dinov3_video_jsonl_runtime/* -> backend.detectors.dinov3.runtime.*
 inference/eva02_video_jsonl_runtime/* -> backend.detectors.eva02.runtime.*
 inference/*/two_stage_roi_classifier.py -> backend.classifiers.*_roi.runtime.two_stage_roi_classifier
 UI/run_app.sh                      -> apps/qt_ui/run_app.sh
+UI/run_app.ps1                     -> apps/qt_ui/run_app.ps1
 UI/app.py                          -> apps.qt_ui.app
 UI/run_ui_job.py                   -> apps.qt_ui.run_ui_job
 tools/setup_gui_runtime.sh         -> tools/setup/setup_gui_runtime.sh

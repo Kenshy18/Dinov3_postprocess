@@ -13,6 +13,7 @@ apps/qt_ui/run_app.sh
 ```
 
 `UI/run_app.sh` は既存ショートカット用の互換入口です。
+Windows/PowerShell から起動する場合は `apps/qt_ui/run_app.ps1` を使います。配置方針は `docs/WINDOWS_UI.md` を参照してください。
 
 `tools/setup_gui_runtime.sh` はUI依存関係、推論依存関係、DINOv3 TensorRT engine、batch-size実測をまとめて準備します。batch-size測定では一時的なダミー動画を作成し、候補を順番に実行して `.runtime/runtime_benchmark.json` に結果を残した後、ダミー動画と一時出力を削除します。生成される `.runtime/runtime_profile.json`、`.runtime/runtime_benchmark.json`、`.runtime/gui_runtime.env` はPC依存のためgitignore対象です。`apps/qt_ui/run_app.sh` とGUI内の実行コマンドは、この設定からPython/venv、batch-size、TensorRT engineを選択します。目安値は `configs/runtime_profile.example.json` にあります。
 
@@ -50,4 +51,5 @@ apps/qt_ui/run_app.sh
 - `jsonl/`: 推論JSONLと推論summary
 - `logs/`: UIジョブログ
 - `logs/audit.jsonl`: 入力ffprobe、正規化理由、実行コマンド、終了コード、エラーtraceback
+- `logs/job_audit_summary.json`: JSONL契約、SQLite件数、overlayサイズ、警告
 - `postprocessed/`: 後処理内部成果物

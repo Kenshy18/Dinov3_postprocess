@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
@@ -17,6 +18,13 @@ from typing import Any
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.schemas.detection_jsonl import summarize_detection_jsonl  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
@@ -67,6 +75,26 @@ def extract_max_frames(command: list[str]) -> int | None:
     return None
 
 
+def option_value(command: list[str], option: str) -> str | None:
+    prefix = option + "="
+    for index, part in enumerate(command):
+        if part == option and index + 1 < len(command):
+            return str(command[index + 1])
+        if part.startswith(prefix):
+            return part.split("=", 1)[1]
+    return None
+
+
+def option_enabled(command: list[str], positive: str, negative: str) -> bool | None:
+    value: bool | None = None
+    for part in command:
+        if part == positive:
+            value = True
+        elif part == negative:
+            value = False
+    return value
+
+
 def command_text(command: list[str]) -> str:
     return " ".join(f'"{part}"' if " " in str(part) else str(part) for part in command)
 
@@ -86,6 +114,43 @@ def write_audit(audit_path: Path, event: str, **fields: object) -> None:
     }
     with audit_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False, default=json_default) + "\n")
+
+
+def runtime_snapshot(pipeline_command: list[str]) -> dict[str, Any]:
+    tracked_env = {
+        key: os.environ.get(key)
+        for key in (
+            "DINOV3_RUNTIME_PROFILE",
+            "DINOV3_BATCH_BENCHMARK",
+            "DINOV3_TRT_BACKBONE_ENGINE",
+            "ATOSYORI_REPO",
+            "PYTHONPATH",
+        )
+        if os.environ.get(key)
+    }
+    return {
+        "python": sys.executable,
+        "platform": platform.platform(),
+        "cwd": str(Path.cwd()),
+        "environment": tracked_env,
+        "command": pipeline_command,
+        "settings": {
+            "detector": option_value(pipeline_command, "--detector"),
+            "postprocess": option_enabled(pipeline_command, "--postprocess", "--no-postprocess"),
+            "shape_mode": option_value(pipeline_command, "--default-shape-mode"),
+            "intervals": option_value(pipeline_command, "--intervals"),
+            "class_policy_json": option_value(pipeline_command, "--class-policy-json"),
+            "batch_size": option_value(pipeline_command, "--batch-size"),
+            "eva02_batch_size": option_value(pipeline_command, "--eva02-batch-size"),
+            "eva02_classifier_batch_size": option_value(pipeline_command, "--eva02-classifier-batch-size"),
+            "warmup_frames": option_value(pipeline_command, "--warmup-frames"),
+            "eva02_warmup_frames": option_value(pipeline_command, "--eva02-warmup-frames"),
+            "max_frames": option_value(pipeline_command, "--max-frames"),
+            "score_thresh": option_value(pipeline_command, "--score-thresh"),
+            "eva02_score_thresh": option_value(pipeline_command, "--eva02-score-thresh"),
+            "trt_backbone_engine": option_value(pipeline_command, "--trt-backbone-engine"),
+        },
+    }
 
 
 def run_streamed(command: list[str], *, cwd: Path, log_path: Path, audit_path: Path, label: str) -> int:
@@ -736,6 +801,105 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def table_count(conn: sqlite3.Connection, table: str) -> int | None:
+    tables = {str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'")}
+    if table not in tables:
+        return None
+    return int(conn.execute(f"select count(*) from {table}").fetchone()[0])
+
+
+def sqlite_summary(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    info: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+    }
+    if not path.exists():
+        return info
+    conn = sqlite3.connect(str(path))
+    try:
+        tables = sorted(str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'"))
+        info["tables"] = tables
+        info["row_counts"] = {
+            table: count
+            for table in ("masks", "tracks", "raw_tracked_masks", "raw_tracks")
+            if (count := table_count(conn, table)) is not None
+        }
+        if "masks" in tables:
+            columns = sqlite_columns(conn, "masks")
+            info["masks_columns"] = sorted(columns)
+            if "frame" in columns:
+                min_frame, max_frame = conn.execute("select min(frame), max(frame) from masks").fetchone()
+                info["frame_range"] = [min_frame, max_frame]
+            if "track_id" in columns:
+                info["unique_tracks_in_masks"] = int(
+                    conn.execute("select count(distinct track_id) from masks").fetchone()[0]
+                )
+            if "label" in columns:
+                info["labels"] = [
+                    str(row[0])
+                    for row in conn.execute(
+                        "select distinct label from masks where label is not null order by label"
+                    )
+                ]
+    finally:
+        conn.close()
+    return info
+
+
+def file_summary(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+    }
+
+
+def build_output_audit(
+    *,
+    detector_jsonl: Path,
+    tracked_sqlite: Path | None,
+    sqlite_outputs: dict[str, str],
+    overlay_outputs: dict[str, str],
+    pipeline_summary: dict[str, Any],
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    detector_contract: dict[str, Any] | None = None
+    if detector_jsonl.exists():
+        detector_contract = summarize_detection_jsonl(detector_jsonl).as_dict()
+        if detector_contract.get("detections", 0) == 0:
+            warnings.append("detector_jsonl_has_zero_detections")
+        if detector_contract.get("detections_with_mask", 0) == 0:
+            warnings.append("detector_jsonl_has_zero_masks")
+    else:
+        warnings.append("detector_jsonl_missing")
+
+    sqlite_audit = {label: sqlite_summary(Path(path)) for label, path in sorted(sqlite_outputs.items())}
+    tracked_audit = sqlite_summary(tracked_sqlite)
+    if pipeline_summary.get("postprocess") and not sqlite_outputs:
+        warnings.append("postprocess_enabled_but_no_final_sqlite")
+    if tracked_audit and tracked_audit.get("exists"):
+        row_counts = dict(tracked_audit.get("row_counts") or {})
+        if "raw_tracked_masks" not in row_counts or "raw_tracks" not in row_counts:
+            warnings.append("tracked_sqlite_missing_raw_audit_tables")
+
+    overlay_audit = {label: file_summary(Path(path)) for label, path in sorted(overlay_outputs.items())}
+    for label, info in overlay_audit.items():
+        if not info["exists"] or int(info["size_bytes"]) <= 0:
+            warnings.append(f"overlay_empty_or_missing:{label}")
+
+    return {
+        "detector_jsonl": file_summary(detector_jsonl),
+        "detector_contract": detector_contract,
+        "tracked_sqlite": tracked_audit,
+        "final_sqlite": sqlite_audit,
+        "overlays": overlay_audit,
+        "warnings": warnings,
+    }
+
+
 def organize_outputs(
     *,
     run_dir: Path,
@@ -838,8 +1002,20 @@ def organize_outputs(
         "overlays": overlay_outputs,
         "folders": {name: str(path) for name, path in layout.items()},
     }
+    output_audit = build_output_audit(
+        detector_jsonl=detector_jsonl,
+        tracked_sqlite=tracked_sqlite,
+        sqlite_outputs=sqlite_outputs,
+        overlay_outputs=overlay_outputs,
+        pipeline_summary=summary,
+    )
+    final_summary["output_audit"] = output_audit
     (run_dir / "最終成果物.json").write_text(json.dumps(final_summary, ensure_ascii=False, indent=2), encoding="utf-8")
     (job_dir / "job_manifest.json").write_text(json.dumps(final_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    (layout["logs"] / "job_audit_summary.json").write_text(
+        json.dumps(output_audit, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
@@ -860,6 +1036,7 @@ def main() -> int:
             "job_start",
             args={key: value for key, value in vars(args).items() if key != "pipeline_command"},
             pipeline_command=pipeline_command,
+            runtime=runtime_snapshot(pipeline_command),
             cwd=str(Path.cwd()),
         )
         original_input = args.input.expanduser().resolve()

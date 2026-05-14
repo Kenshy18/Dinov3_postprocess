@@ -105,3 +105,14 @@ exist to keep old shortcuts and previous automation working. They should:
 
 Delete compatibility wrappers only after confirming that no user shortcut,
 automation, or documentation still depends on them.
+
+## Cleanup Inventory
+
+Before proposing deletion, generate an objective inventory:
+
+```bash
+.venv_integrated/bin/python tools/inventory_cleanup_candidates.py
+```
+
+This reports compatibility wrappers, local generated state, and large source
+files. It does not delete anything and does not approve deletion by itself.
