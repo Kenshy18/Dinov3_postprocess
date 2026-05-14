@@ -241,7 +241,7 @@ def command_for_candidate(
     if detector == "eva02":
         return [
             str(python),
-            str(ROOT / "inference" / "eva02_video_jsonl_runtime" / "infer_video_eva02_jsonl.py"),
+            str(ROOT / "backend" / "detectors" / "eva02" / "runtime" / "infer_video_eva02_jsonl.py"),
             "--input",
             str(input_video),
             "--output",
@@ -268,7 +268,7 @@ def command_for_candidate(
         ]
     return [
         str(python),
-        str(ROOT / "inference" / "dinov3_video_jsonl_runtime" / "infer_video_dinov3_jsonl.py"),
+        str(ROOT / "backend" / "detectors" / "dinov3" / "runtime" / "infer_video_dinov3_jsonl.py"),
         "--input",
         str(input_video),
         "--output",

@@ -29,6 +29,9 @@ backend/detectors/eva02
   EVA02 detector boundary. Owns backend-facing command construction plus the
   EVA02 runtime implementation under runtime/.
 
+backend/detectors/jsonl_writer.py
+  Shared streaming JSONL writer used by detector runtimes.
+
 backend/classifiers
   ROI classifier implementation boundary. DINOv3/EVA02 detector runtimes import
   classifier loaders and feature helpers from here; old classifier files under
@@ -42,19 +45,14 @@ backend/postprocess
   Backend-facing Atosyori adapter. Owns postprocess command construction and
   environment setup. The engine source remains under external/.
 
-inference/dinov3_video_jsonl_runtime
-  Compatibility wrappers for old DINOv3 runtime paths.
-
-inference/eva02_video_jsonl_runtime
-  Compatibility wrappers for old EVA02 runtime paths.
-
 training/dinov3
   DINOv3 classifier/detector training implementation. Runtime code may import
   shared registration symbols through the compatibility wrapper, but training
   business logic belongs here.
 
 external/atosyori-pipeline-dev
-  Postprocess engine source. The backend calls it through its CLI/module entry.
+  Managed postprocess engine source. Algorithm, SQLite, raw tracking, and
+  overlay behavior changes live here.
 
 tools
   Stable compatibility commands for operational tooling.
@@ -87,7 +85,9 @@ checkpoints
 
 ## Compatibility Entrypoints
 
-The old paths remain as wrappers so existing shortcuts and tests keep working:
+Short user-facing paths remain as wrappers so existing shortcuts keep working.
+Old inference/* runtime wrappers have been removed; edit and call detector
+runtimes under `backend/detectors/<detector>/runtime`.
 
 ```text
 scripts/run_integrated_pipeline.py -> backend.pipeline.run_integrated_pipeline
@@ -98,9 +98,6 @@ scripts/infer_video_postprocess.py -> backend.pipeline.cli.infer_video_postproce
 scripts/flow_cli_common.py         -> backend.pipeline.cli.flow_cli_common
 scripts/render_raw_jsonl_overlays.py -> backend.pipeline.cli.render_raw_jsonl_overlays
 scripts/train_dinov3_cascade_unified.py -> training.dinov3.train_dinov3_cascade_unified
-inference/dinov3_video_jsonl_runtime/* -> backend.detectors.dinov3.runtime.*
-inference/eva02_video_jsonl_runtime/* -> backend.detectors.eva02.runtime.*
-inference/*/two_stage_roi_classifier.py -> backend.classifiers.*_roi.runtime.two_stage_roi_classifier
 UI/run_app.sh                      -> apps/qt_ui/run_app.sh
 UI/run_app.ps1                     -> apps/qt_ui/run_app.ps1
 UI/app.py                          -> apps.qt_ui.app
@@ -115,6 +112,8 @@ tools/benchmark_runtime_batches.py -> tools/setup/benchmark_runtime_batches.py
 tools/sync_atosyori_source.sh      -> tools/setup/sync_atosyori_source.sh
 tools/verify_runtime.py            -> tools/verify/verify_runtime.py
 tools/debug_confidence_overlay.py  -> tools/debug/debug_confidence_overlay.py
+tools/diagnose_run.py              -> tools/maintenance/diagnose_run.py
+tools/inventory_cleanup_candidates.py -> tools/maintenance/inventory_cleanup_candidates.py
 ```
 
 Prefer the new implementation paths when editing code. Prefer the compatibility
@@ -172,8 +171,8 @@ environment, GPU, driver, TensorRT version, and measured batch speeds.
 - Backend-facing postprocess command/contract changes belong in
   `backend/postprocess`.
 - Training behavior belongs in `training/...`.
-- Postprocess behavior belongs in `external/atosyori-pipeline-dev` or in a
-  thin backend adapter, not in the UI.
+- Postprocess behavior belongs in `external/atosyori-pipeline-dev`; command
+  wiring belongs in a thin backend adapter, not in the UI.
 - Setup and diagnostics belong in `tools`.
 - Keep compatibility wrappers thin. They should import and call the new owner,
   not contain business logic.

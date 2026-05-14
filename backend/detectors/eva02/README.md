@@ -4,7 +4,6 @@ Backend-facing role:
 
 - backend adapter: `backend/detectors/eva02/commands.py`
 - runtime implementation: `backend/detectors/eva02/runtime/infer_video_eva02_jsonl.py`
-- legacy wrapper: `inference/eva02_video_jsonl_runtime/infer_video_eva02_jsonl.py`
 - detector checkpoint: `checkpoints/eva02/detector/model_final.pth`
 - classifier checkpoint: `checkpoints/eva02/classifier/best.pt`
 - classifier implementation: `backend/classifiers/eva02_roi/`

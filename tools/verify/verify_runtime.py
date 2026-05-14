@@ -57,7 +57,6 @@ def run_quick_checks(args: argparse.Namespace) -> None:
             "backend",
             "scripts",
             "training",
-            "inference",
             "tools",
             "configs",
             "tests",

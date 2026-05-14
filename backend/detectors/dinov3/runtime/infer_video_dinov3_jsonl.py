@@ -19,9 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
 import sys
-import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -52,11 +50,7 @@ if str(BASE_DIR) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-try:
-    import orjson  # type: ignore
-except Exception:
-    orjson = None
-
+from backend.detectors.jsonl_writer import make_jsonl_writer  # noqa: E402
 from infer_images_singleclass import (  # noqa: E402
     DEFAULT_CONFIG,
     _AsyncBatchProducer,
@@ -478,66 +472,8 @@ def _draw_overlay(
     return img
 
 
-class _JsonlWriter:
-    def __init__(self, path: Path, backend: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.backend = str(backend)
-        if self.backend == "orjson":
-            if orjson is None:
-                raise RuntimeError("orjson backend requested but orjson is not installed")
-            self._bin = path.open("wb")
-            self._txt = None
-        else:
-            self._txt = path.open("w", encoding="utf-8")
-            self._bin = None
-
-    def write(self, record: dict[str, object]) -> None:
-        if self.backend == "orjson":
-            self._bin.write(orjson.dumps(record))  # type: ignore[union-attr]
-            self._bin.write(b"\n")  # type: ignore[union-attr]
-        else:
-            self._txt.write(json.dumps(record, ensure_ascii=False) + "\n")  # type: ignore[union-attr]
-
-    def close(self) -> None:
-        if self.backend == "orjson":
-            self._bin.flush()  # type: ignore[union-attr]
-            self._bin.close()  # type: ignore[union-attr]
-        else:
-            self._txt.flush()  # type: ignore[union-attr]
-            self._txt.close()  # type: ignore[union-attr]
-
-
-class _AsyncJsonlWriter:
-    def __init__(self, path: Path, backend: str, queue_size: int) -> None:
-        self._queue: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=max(1, int(queue_size)))
-        self._writer = _JsonlWriter(path, backend)
-        self._thread = threading.Thread(target=self._worker, name="jsonl_writer", daemon=True)
-        self._thread.start()
-
-    def _worker(self) -> None:
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-                self._writer.write(item)
-            finally:
-                self._queue.task_done()
-
-    def write(self, record: dict[str, object]) -> None:
-        self._queue.put(record)
-
-    def close(self) -> None:
-        self._queue.join()
-        self._queue.put(None)
-        self._thread.join()
-        self._writer.close()
-
-
 def _make_writer(path: Path, backend: str, async_writer: bool, queue_size: int):
-    if async_writer:
-        return _AsyncJsonlWriter(path, backend, queue_size)
-    return _JsonlWriter(path, backend)
+    return make_jsonl_writer(path, backend, async_writer=async_writer, queue_size=queue_size)
 
 
 def _infer_one_video(

@@ -19,7 +19,7 @@ WRAPPER_MARKERS = (
     "compatibility entrypoint",
     "互換",
 )
-WRAPPER_ROOTS = ("scripts", "tools", "UI", "inference")
+WRAPPER_ROOTS = ("scripts", "tools", "UI")
 GENERATED_ROOTS = ("output", ".runtime", ".serena", ".pytest_cache", ".ruff_cache")
 LARGE_SOURCE_ROOTS = ("backend", "external", "training")
 

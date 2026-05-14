@@ -61,7 +61,7 @@ Classifier enabled is the default:
 ```bash
 backend/detectors/dinov3/runtime/.venv_fast/bin/python \
   backend/detectors/dinov3/runtime/infer_video_dinov3_jsonl.py \
-  --input inference/dinov3_cascade_unified/input/アクセル様２月解析用白カン01.26.mp4 \
+  --input input/3月以降解析白カン動画-0210.mp4 \
   --output /tmp/dinov3_jsonl_out \
   --batch-size 8 \
   --mask-approx none \
@@ -75,7 +75,7 @@ Classifier disabled:
 ```bash
 backend/detectors/dinov3/runtime/.venv_fast/bin/python \
   backend/detectors/dinov3/runtime/infer_video_dinov3_jsonl.py \
-  --input inference/dinov3_cascade_unified/input/アクセル様２月解析用白カン01.26.mp4 \
+  --input input/3月以降解析白カン動画-0210.mp4 \
   --output /tmp/dinov3_jsonl_out_no_classifier \
   --no-classifier \
   --batch-size 8 \

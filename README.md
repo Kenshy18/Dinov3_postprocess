@@ -14,7 +14,6 @@
 - Qt UI: `apps/qt_ui/`（`UI/` は互換入口）
 - DINOv3 runtime: `backend/detectors/dinov3/runtime/`
 - EVA02 runtime: `backend/detectors/eva02/runtime/`
-- Legacy inference entrypoints: `inference/`（互換ラッパー）
 - DINOv3/EVA02 source dependencies: `configs/`, `dinov3/`, `eva02/eva02_det/`
 - Training implementations: `training/`（`scripts/train_*.py` は互換入口）
 - Atosyori postprocess source: `external/atosyori-pipeline-dev/`
@@ -24,7 +23,7 @@
 
 このディレクトリを単体でcloneし、checkpoint/engineを `checkpoints/` に配置すれば、動画入力からJSONL、後処理SQLite、overlayまで一気通貫で実行できます。
 
-責務境界は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、長期保守方針は [docs/MAINTENANCE.md](docs/MAINTENANCE.md)、Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、後処理の現行設定は [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md)、Windows側UI配置は [docs/WINDOWS_UI.md](docs/WINDOWS_UI.md)、ラン成果物診断は [docs/RUN_AUDIT.md](docs/RUN_AUDIT.md)、整理・変更後の検証は [docs/VERIFICATION.md](docs/VERIFICATION.md) を参照してください。
+責務境界は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、長期保守方針は [docs/MAINTENANCE.md](docs/MAINTENANCE.md)、Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、後処理の現行設定は [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md)、後処理エンジン管理方針は [docs/POSTPROCESS_ENGINE_POLICY.md](docs/POSTPROCESS_ENGINE_POLICY.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md)、Windows側UI配置は [docs/WINDOWS_UI.md](docs/WINDOWS_UI.md)、ラン成果物診断は [docs/RUN_AUDIT.md](docs/RUN_AUDIT.md)、整理・変更後の検証は [docs/VERIFICATION.md](docs/VERIFICATION.md) を参照してください。
 
 ## Setup
 

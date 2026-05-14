@@ -79,24 +79,24 @@ output/
 Checkpoints and engines belong under `checkpoints/`; they are also local
 artifacts and should be restored by setup or artifact download.
 
-## Vendor Policy
+## Postprocess Engine Policy
 
-`external/atosyori-pipeline-dev` is a vendored engine source tree. Prefer
-wrapping it from `backend/postprocess` for command construction and environment
-setup. Only change the vendored engine when the behavior itself must change,
-such as raw tracking audit tables, SQLite schema, or overlay rendering.
+`external/atosyori-pipeline-dev` is managed as this repository's postprocess
+engine source tree. Prefer wrapping it from `backend/postprocess` for command
+construction and environment setup, but change the engine directly when the
+behavior itself must change, such as raw tracking audit tables, SQLite schema,
+or overlay rendering.
 
-When vendor behavior changes, add a note to the summary or docs explaining why
-the change cannot live in the adapter.
+The detailed policy is in `docs/POSTPROCESS_ENGINE_POLICY.md`.
 
-Current local vendor patch notes live in
+Current local engine patch notes live in
 `external/atosyori-pipeline-dev/docs/local_patches.md`. Keep that document in
 sync with any raw JSONL, tracking audit, SQLite schema, or overlay behavior
 change.
 
 ## Compatibility Policy
 
-Compatibility wrappers under `scripts/`, `tools/`, `UI/`, and `inference/`
+Compatibility wrappers under `scripts/`, `tools/`, and `UI/`
 exist to keep old shortcuts and previous automation working. They should:
 
 - import or exec the new owner

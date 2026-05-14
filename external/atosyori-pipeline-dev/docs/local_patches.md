@@ -1,8 +1,8 @@
-# Local Integration Patches
+# Local Integration Requirements
 
-This vendored Atosyori tree is called through `backend/postprocess`. Most
-integration changes should live in that adapter. The engine is changed only
-when the postprocess behavior or audit output itself needs to change.
+This Atosyori tree is managed as this repository's postprocess engine. Most
+command wiring changes should live in `backend/postprocess`; behavior and audit
+changes belong here.
 
 Current local behavior relied on by this repository:
 
@@ -20,5 +20,5 @@ Current local behavior relied on by this repository:
   EVA02-style `frame_idx`/`instances` both normalize into the same postprocess
   path.
 
-When this vendored source is refreshed from upstream, verify that these items
+When this engine source is refreshed from another source tree, verify that these items
 still exist before trusting GUI or batch-run audit logs.

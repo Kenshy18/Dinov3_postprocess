@@ -72,6 +72,7 @@ from detectron2.config import LazyConfig, instantiate  # noqa: E402
 from detectron2.checkpoint import DetectionCheckpointer  # noqa: E402
 from detectron2.layers.mask_ops import _do_paste_mask, paste_masks_in_image  # noqa: E402
 from vit_pruning_codex import drop_blocks, parse_block_indices  # noqa: E402
+from backend.detectors.jsonl_writer import AsyncJsonlWriter, JsonlWriter  # noqa: E402
 
 try:
     import orjson  # type: ignore
@@ -1022,115 +1023,14 @@ def _instances_to_json(
     return results
 
 
-class _JsonlWriter:
+class _JsonlWriter(JsonlWriter):
     def __init__(self, output_path: Path, backend: str):
-        self.backend = backend
-        if backend == "orjson":
-            if orjson is None:
-                raise RuntimeError("json-backend=orjson requested but orjson is not installed")
-            self._f_bin = output_path.open("wb")
-            self._f_txt = None
-        else:
-            self._f_txt = output_path.open("w", encoding="utf-8")
-            self._f_bin = None
-
-    def write(self, record: dict) -> None:
-        if self.backend == "orjson":
-            self._f_bin.write(orjson.dumps(record, option=ORJSON_OPTS))
-            self._f_bin.write(b"\n")
-        else:
-            self._f_txt.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    def flush(self) -> None:
-        if self.backend == "orjson":
-            self._f_bin.flush()
-        else:
-            self._f_txt.flush()
-
-    def close(self) -> None:
-        if self.backend == "orjson":
-            self._f_bin.close()
-        else:
-            self._f_txt.close()
+        super().__init__(output_path=output_path, backend=backend, orjson_option=ORJSON_OPTS)
 
 
-class _AsyncJsonlWriter:
+class _AsyncJsonlWriter(AsyncJsonlWriter):
     def __init__(self, output_path: Path, backend: str, max_queue: int = 512):
-        if backend == "orjson" and orjson is None:
-            raise RuntimeError("json-backend=orjson requested but orjson is not installed")
-        self.backend = backend
-        self._queue: queue.Queue[object] = queue.Queue(maxsize=max_queue)
-        self._stop = object()
-        self._error: Optional[BaseException] = None
-        self._closed = False
-        self._thread = threading.Thread(target=self._worker, args=(output_path,), daemon=True)
-        self._thread.start()
-
-    def _set_error(self, exc: BaseException) -> None:
-        if self._error is None:
-            self._error = exc
-
-    def _raise_if_error(self) -> None:
-        if self._error is not None:
-            raise RuntimeError("async JSON writer failed") from self._error
-
-    def _worker(self, output_path: Path) -> None:
-        if self.backend == "orjson":
-            f_bin = output_path.open("wb")
-            f_txt = None
-        else:
-            f_txt = output_path.open("w", encoding="utf-8")
-            f_bin = None
-
-        try:
-            while True:
-                item = self._queue.get()
-                if item is self._stop:
-                    self._queue.task_done()
-                    break
-                record = item
-                try:
-                    if self.backend == "orjson":
-                        f_bin.write(orjson.dumps(record, option=ORJSON_OPTS))
-                        f_bin.write(b"\n")
-                    else:
-                        f_txt.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    self._queue.task_done()
-                except Exception as exc:
-                    self._set_error(exc)
-                    self._queue.task_done()
-                    while True:
-                        drained = self._queue.get()
-                        self._queue.task_done()
-                        if drained is self._stop:
-                            return
-        finally:
-            if self.backend == "orjson":
-                f_bin.flush()
-                f_bin.close()
-            else:
-                f_txt.flush()
-                f_txt.close()
-
-    def write(self, record: dict) -> None:
-        self._raise_if_error()
-        self._queue.put(record)
-        self._raise_if_error()
-
-    def flush(self) -> None:
-        self._queue.join()
-        self._raise_if_error()
-
-    def close(self) -> None:
-        if self._closed:
-            self._raise_if_error()
-            return
-        if self._error is None:
-            self._queue.join()
-        self._queue.put(self._stop)
-        self._thread.join()
-        self._closed = True
-        self._raise_if_error()
+        super().__init__(output_path=output_path, backend=backend, max_queue=max_queue, orjson_option=ORJSON_OPTS)
 
 
 class _FramePrefetcher:

@@ -33,7 +33,7 @@ Date: 2026-04-27
 ```bash
 /tmp/dinov3_runtime_setup_fast_test/bin/python \
   backend/detectors/dinov3/runtime/infer_video_dinov3_jsonl.py \
-  --input inference/dinov3_cascade_unified/input/アクセル様２月解析用白カン01.26.mp4 \
+  --input input/3月以降解析白カン動画-0210.mp4 \
   --output backend/detectors/dinov3/runtime/output_runs/newvenv_long_realdata_20260427_full \
   --classifier \
   --warmup-frames 300 \

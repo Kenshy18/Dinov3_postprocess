@@ -28,18 +28,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertTrue((dinov3_runtime / "infer_video_dinov3_jsonl.py").is_file())
         self.assertTrue((eva02_runtime / "infer_video_eva02_jsonl.py").is_file())
 
-    def test_legacy_inference_paths_are_wrappers_only(self) -> None:
-        wrappers = [
-            ROOT / "inference" / "dinov3_video_jsonl_runtime" / "infer_video_dinov3_jsonl.py",
-            ROOT / "inference" / "dinov3_video_jsonl_runtime" / "infer_images_singleclass.py",
-            ROOT / "inference" / "eva02_video_jsonl_runtime" / "infer_video_eva02_jsonl.py",
-        ]
-
-        for wrapper in wrappers:
-            text = wrapper.read_text(encoding="utf-8")
-            self.assertIn("Compatibility wrapper", text)
-            self.assertIn("backend.detectors", text)
-            self.assertLess(len(text.splitlines()), 30)
+    def test_legacy_inference_tree_was_removed(self) -> None:
+        self.assertFalse((ROOT / "inference").exists())
 
     def test_pipeline_uses_backend_postprocess_adapter(self) -> None:
         pipeline_source = inspect.getsource(pipeline_commands)
@@ -59,8 +49,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "backend/schemas",
             "backend/postprocess",
             ".runtime",
-            "inference/dinov3_video_jsonl_runtime/* -> backend.detectors.dinov3.runtime.*",
-            "inference/eva02_video_jsonl_runtime/* -> backend.detectors.eva02.runtime.*",
+            "Old inference/* runtime wrappers have been removed",
         ):
             self.assertIn(expected, architecture)
 
@@ -80,13 +69,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             / "scripts"
             / "two_stage_roi_classifier.py",
             ROOT / "backend" / "detectors" / "eva02" / "runtime" / "two_stage_roi_classifier.py",
-            ROOT
-            / "inference"
-            / "dinov3_video_jsonl_runtime"
-            / "two_stage_multiclass_20260426"
-            / "scripts"
-            / "two_stage_roi_classifier.py",
-            ROOT / "inference" / "eva02_video_jsonl_runtime" / "two_stage_roi_classifier.py",
         ):
             text = wrapper.read_text(encoding="utf-8")
             self.assertIn("Compatibility wrapper", text)
