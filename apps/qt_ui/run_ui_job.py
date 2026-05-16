@@ -15,9 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import cv2
+except Exception as exc:  # pragma: no cover - depends on local runtime env
+    cv2 = None  # type: ignore[assignment]
+    CV2_IMPORT_ERROR: BaseException | None = exc
+else:
+    CV2_IMPORT_ERROR = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +47,12 @@ LABEL_FONT_CANDIDATES = [
     Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
 ]
 _LABEL_FONT: ImageFont.ImageFont | None = None
+
+
+def require_cv2() -> Any:
+    if cv2 is None:
+        raise RuntimeError(f"OpenCV is required for video/overlay operations: {CV2_IMPORT_ERROR!r}")
+    return cv2
 
 
 def parse_args() -> argparse.Namespace:
@@ -539,12 +552,13 @@ def detection_items(frame_record: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def fill_polygons(frame: np.ndarray, polygons: list[np.ndarray], color: tuple[int, int, int], alpha: float) -> None:
+    cv2_mod = require_cv2()
     if not polygons:
         return
     height, width = frame.shape[:2]
     mask = np.zeros((height, width), dtype=np.uint8)
     pts = [np.round(poly).astype(np.int32).reshape(-1, 1, 2) for poly in polygons]
-    cv2.fillPoly(mask, pts, 1)
+    cv2_mod.fillPoly(mask, pts, 1)
     idx = mask > 0
     if np.any(idx):
         color_arr = np.asarray(color, dtype=np.float32)
@@ -552,8 +566,9 @@ def fill_polygons(frame: np.ndarray, polygons: list[np.ndarray], color: tuple[in
 
 
 def draw_polygons(frame: np.ndarray, polygons: list[np.ndarray], color: tuple[int, int, int], thickness: int) -> None:
+    cv2_mod = require_cv2()
     for poly in polygons:
-        cv2.polylines(frame, [np.round(poly).astype(np.int32).reshape(-1, 1, 2)], True, color, thickness, cv2.LINE_AA)
+        cv2_mod.polylines(frame, [np.round(poly).astype(np.int32).reshape(-1, 1, 2)], True, color, thickness, cv2_mod.LINE_AA)
 
 
 def polygon_anchor(polygons: list[np.ndarray], width: int, height: int) -> tuple[int, int]:
@@ -566,6 +581,7 @@ def polygon_anchor(polygons: list[np.ndarray], width: int, height: int) -> tuple
 
 
 def draw_label(frame: np.ndarray, text: str, anchor: tuple[int, int], color: tuple[int, int, int]) -> None:
+    cv2_mod = require_cv2()
     global _LABEL_FONT
     if _LABEL_FONT is None:
         for path in LABEL_FONT_CANDIDATES:
@@ -587,7 +603,7 @@ def draw_label(frame: np.ndarray, text: str, anchor: tuple[int, int], color: tup
     bottom = y + pad_y
     right = x + tw + pad_x * 2
 
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    rgb = cv2_mod.cvtColor(frame, cv2_mod.COLOR_BGR2RGB)
     image = Image.fromarray(rgb)
     draw = ImageDraw.Draw(image)
     bg_rgb = tuple(reversed(TEXT_BG_BGR))
@@ -595,7 +611,7 @@ def draw_label(frame: np.ndarray, text: str, anchor: tuple[int, int], color: tup
     border_rgb = tuple(reversed(color))
     draw.rectangle((x, top, right, bottom), fill=bg_rgb, outline=border_rgb, width=1)
     draw.text((x + pad_x, top + pad_y - bbox[1]), text, font=_LABEL_FONT, fill=fg_rgb)
-    frame[:] = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+    frame[:] = cv2_mod.cvtColor(np.asarray(image), cv2_mod.COLOR_RGB2BGR)
 
 
 def open_writer(output_video: Path, width: int, height: int, fps: float, encoder: str) -> subprocess.Popen:
@@ -650,8 +666,9 @@ def render_with_fallback(render_func, *, encoder: str) -> None:
 
 def render_raw_overlay(video_path: Path, jsonl_path: Path, output_video: Path, *, encoder: str, frame_limit: int | None = None) -> None:
     def _render(active_encoder: str) -> None:
+        cv2_mod = require_cv2()
         width, height, fps = video_meta(video_path)
-        cap = cv2.VideoCapture(str(video_path))
+        cap = cv2_mod.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
         proc = open_writer(output_video, width, height, fps, active_encoder)
@@ -750,13 +767,14 @@ def render_sqlite_overlay(
     frame_limit: int | None = None,
 ) -> None:
     def _render(active_encoder: str) -> None:
+        cv2_mod = require_cv2()
         width, height, fps = video_meta(video_path)
         labels_by_track = {}
         if tracked_sqlite is not None and tracked_sqlite.exists():
             labels_by_track.update(load_track_labels(tracked_sqlite))
         labels_by_track.update(load_track_labels(pred_sqlite))
 
-        cap = cv2.VideoCapture(str(video_path))
+        cap = cv2_mod.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
         proc = open_writer(output_video, width, height, fps, active_encoder)
@@ -851,6 +869,10 @@ def organize_outputs(
 
     tracked_sqlite_raw = postprocess.get("tracked_sqlite") or postprocess.get("tracked_sqlite_link")
     tracked_sqlite = Path(str(tracked_sqlite_raw)) if tracked_sqlite_raw else None
+    detector_raw_sqlite_raw = artifacts.get("raw_sqlite") or summary.get("raw_sqlite", {}).get("path")
+    detector_raw_sqlite = Path(str(detector_raw_sqlite_raw)) if detector_raw_sqlite_raw else None
+    if detector_raw_sqlite is not None and detector_raw_sqlite.exists():
+        link_or_copy(detector_raw_sqlite, layout["raw_sqlite"] / detector_raw_sqlite.name)
     if tracked_sqlite is not None and tracked_sqlite.exists():
         link_or_copy(tracked_sqlite, layout["raw_sqlite"] / tracked_sqlite.name)
 
@@ -902,6 +924,7 @@ def organize_outputs(
         "frame_limit": frame_limit,
         "pipeline_summary": str(summary_path),
         "detector_jsonl": str(detector_jsonl) if detector_jsonl.exists() else None,
+        "raw_detector_sqlite": None if detector_raw_sqlite is None or not detector_raw_sqlite.exists() else str(detector_raw_sqlite),
         "tracked_sqlite": None if tracked_sqlite is None else str(tracked_sqlite),
         "final_sqlite": sqlite_outputs,
         "overlays": overlay_outputs,
@@ -909,6 +932,7 @@ def organize_outputs(
     }
     output_audit = build_output_audit(
         detector_jsonl=detector_jsonl,
+        raw_detector_sqlite=detector_raw_sqlite if detector_raw_sqlite and detector_raw_sqlite.exists() else None,
         tracked_sqlite=tracked_sqlite,
         sqlite_outputs=sqlite_outputs,
         overlay_outputs=overlay_outputs,

@@ -10,6 +10,8 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import infer_video_postprocess  # noqa: E402
+import infer  # noqa: E402
+import overlay  # noqa: E402
 import flow_cli_common  # noqa: E402
 import run_full_flow  # noqa: E402
 import pipeline_commands  # noqa: E402
@@ -31,6 +33,76 @@ from pipeline_defaults import (  # noqa: E402
 
 
 class PipelineCommandTests(unittest.TestCase):
+    def test_primary_infer_entrypoint_builds_gui_layout_job(self) -> None:
+        args = argparse.Namespace(
+            mode="full",
+            detector="codino",
+            classifier=True,
+            force=True,
+            max_frames=8,
+            batch_size=2,
+            warmup_frames=0,
+            score_thresh=0.25,
+            overlay_mode="detailed",
+            raw_overlay=True,
+            overlay_encoder="cpu",
+            raw_sqlite=True,
+            shape_mode="ellipse",
+            keyframe_interval=3,
+            recall_target=0.96,
+            class_policy=[],
+            class_policy_json=None,
+            raw_cut_detect=True,
+            short_track_max_frames=10,
+            raw_det_score_min=0.35,
+            k2_device="auto",
+            polygon_predictor_device="auto",
+            progress_interval_sec=5.0,
+        )
+
+        command = infer.build_ui_job_command(
+            args,
+            video=ROOT / "input" / "sample.mp4",
+            output_root=ROOT / "output" / "runs",
+            run_name="unit_primary",
+            policy_path=ROOT / "output" / "runs" / "unit_primary" / "config" / "class_policy.generated.json",
+        )
+
+        self.assertIn("run_ui_job.py", command[1])
+        self.assertIn("--raw-overlay", command)
+        self.assertEqual(command[command.index("--overlay-mode") + 1], "detailed")
+        self.assertTrue(any(str(part).endswith("run_integrated_pipeline.py") for part in command))
+        self.assertEqual(command[command.index("--detector") + 1], "codino")
+        self.assertEqual(command[command.index("--codino-batch-size") + 1], "2")
+        self.assertEqual(command[command.index("--codino-score-thresh") + 1], "0.25")
+        self.assertIn("--postprocess", command)
+        self.assertIn("--raw-sqlite", command)
+
+    def test_overlay_direct_specs_support_raw_and_sqlite_inputs(self) -> None:
+        raw_args = argparse.Namespace(
+            video=ROOT / "input" / "sample.mp4",
+            raw_jsonl=ROOT / "out" / "sample.jsonl",
+            pred_sqlite=None,
+            tracked_sqlite=None,
+            output=ROOT / "out" / "raw.mp4",
+            output_dir=None,
+            mode="auto",
+        )
+        with self.assertRaises(FileNotFoundError):
+            overlay.direct_specs(raw_args)
+
+        sqlite_args = argparse.Namespace(
+            video=ROOT / "input" / "sample.mp4",
+            raw_jsonl=None,
+            pred_sqlite=ROOT / "out" / "pred.sqlite",
+            tracked_sqlite=None,
+            output=ROOT / "out" / "simple.mp4",
+            output_dir=None,
+            mode="simple",
+        )
+        with self.assertRaises(FileNotFoundError):
+            overlay.direct_specs(sqlite_args)
+
     def test_thin_wrapper_keeps_dinov3_production_defaults(self) -> None:
         args = argparse.Namespace(
             input="input/sample.mp4",
@@ -202,6 +274,7 @@ class PipelineCommandTests(unittest.TestCase):
             postprocess=True,
             overlay=True,
             overlay_encoder="cpu",
+            raw_sqlite=True,
             shape_mode="polygon",
             keyframe_interval=5,
             recall_target=0.97,

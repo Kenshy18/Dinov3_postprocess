@@ -15,28 +15,24 @@ video
 
 ## 1. Detector Inference
 
-Entrypoint:
+Primary entrypoints:
 
 ```text
-backend/pipeline/run_integrated_pipeline.py
-backend/pipeline/cli/run_full_flow.py
-backend/pipeline/cli/run_postprocess_only.py
-scripts/run_full_flow.py
-scripts/run_postprocess_only.py
-scripts/infer_video_postprocess.py
-scripts/run_integrated_pipeline.py  # compatibility wrapper
+tools/setup_runtime.sh
+scripts/infer.py
+scripts/overlay.py
 ```
 
-`backend/pipeline/cli/run_full_flow.py` owns the recommended end-to-end wrapper. `scripts/run_full_flow.py` is the compatibility command users can keep calling. It keeps the common production choices visible: detector, postprocess on/off, overlay on/off, default shape mode, keyframe interval, recall target, and compact per-class overrides.
+`backend/pipeline/cli/infer.py` owns the recommended end-to-end wrapper. `scripts/infer.py` is the compatibility command users should call. It keeps the common production choices visible: detector, mode (`full`, `inference`, `postprocess`), overlay mode, default shape mode, keyframe interval, recall target, and compact per-class overrides.
 
-`backend/pipeline/cli/run_postprocess_only.py` owns the recommended wrapper when AI JSONL or tracked SQLite already exists and only Atosyori postprocess should be rerun. `scripts/run_postprocess_only.py` remains the compatibility command.
+`backend/pipeline/cli/overlay.py` owns the standalone overlay wrapper. It accepts direct video + raw JSONL/final SQLite inputs, or completed run directories.
 
-`infer_video_postprocess.py` is the older short wrapper. `backend/pipeline/run_integrated_pipeline.py` owns the detailed low-level integration logic; `scripts/run_integrated_pipeline.py` is kept as a compatibility wrapper.
+`run_full_flow.py`, `run_postprocess_only.py`, and `infer_video_postprocess.py` are older wrappers. `backend/pipeline/run_integrated_pipeline.py` owns the detailed low-level integration logic; `scripts/run_integrated_pipeline.py` is kept as a compatibility wrapper.
 
 Example end-to-end run:
 
 ```bash
-.venv_integrated/bin/python scripts/run_full_flow.py \
+.venv_integrated/bin/python scripts/infer.py \
   --input input/short/0210_first30s.mp4 \
   --run-name sample_full_flow \
   --detector dinov3 \
@@ -44,21 +40,22 @@ Example end-to-end run:
   --keyframe-interval 3 \
   --recall-target 0.96 \
   --class-policy female:polygon:5:0.97 \
-  --overlay \
+  --overlay-mode detailed \
   --force
 ```
 
 Example postprocess-only run:
 
 ```bash
-.venv_integrated/bin/python scripts/run_postprocess_only.py \
+.venv_integrated/bin/python scripts/infer.py \
+  --mode postprocess \
   --input-jsonl output/runs/sample_full_flow/dinov3/jsonl/0210_first30s.jsonl \
   --input-video input/short/0210_first30s.mp4 \
   --run-name sample_postprocess_only \
   --shape-mode ellipse \
   --keyframe-interval 3 \
   --recall-target 0.96 \
-  --no-overlay \
+  --overlay-mode none \
   --force
 ```
 
@@ -70,11 +67,11 @@ Per-class overrides use:
 
 `CLASS` can be `female`, `male`, `junction`, or an exact label such as `女性器`. `junction` updates both `結合部分` and `結合`. The wrapper writes the generated JSON to `<run>/config/class_policy.generated.json`.
 
-Both wrappers stream child process progress to the terminal and also write logs:
+The primary wrappers stream child process progress to the terminal and also write logs:
 
 ```text
-<run>/logs/full_flow.log
-<run>/logs/postprocess.log
+<run>/logs/infer_cli.log
+<run>/logs/ui_job.log
 ```
 
 Use `--detector dinov3`, `--detector eva02`, or `--detector codino`. The default remains `dinov3`.
@@ -201,17 +198,38 @@ configs/class_policy_all_ellipse_int3_recall096.json
 
 ## 5. Final artifacts
 
-The integration symlinks important outputs into stable locations:
+`scripts/infer.py` uses the same user-facing layout as the GUI:
 
 ```text
-<run>/sqlite/<video_stem>_tracked.sqlite
-<run>/sqlite/<video_stem>_int_<N>_predictions.sqlite
-<run>/overlay/<video_stem>_int_<N>_postprocess.mp4
+<run>/最終成果物.json
+<run>/最終SQLite/<label>_predictions.sqlite
+<run>/推論生SQLite/<video_stem>_raw_detections.sqlite
+<run>/推論生SQLite/<video_stem>.tracked.sqlite
+<run>/詳細オーバーレイ/<label>_detailed.mp4
+<run>/統合マスクオーバーレイ/<label>_simple.mp4
+<run>/AI生成カバーオーバーレイ/<video_stem>_ai_raw_mask.mp4
+<run>/jsonl/<video_stem>.jsonl
+<run>/logs/infer_cli.log
+<run>/logs/infer_audit.jsonl
+<run>/logs/ui_job.log
 <run>/summary.json
 ```
 
-The full raw postprocess tree remains under:
+The low-level integration still keeps the raw detector/postprocess tree under:
 
 ```text
+<run>/<detector>/
 <run>/postprocess/
 ```
+
+Raw detector SQLite uses the common `raw_mask_sqlite_v1` schema:
+
+```text
+metadata(key, value)
+frames(frame, time_sec, width, height)
+masks(frame, mask_id, detection_index, label, class_name, category_id,
+      score, detector_score, class_score, bbox_xyxy, polygons, source_json)
+```
+
+Final postprocess SQLite keeps the Atosyori prediction contract and must expose
+`masks(frame, track_id, polygons)` at minimum.

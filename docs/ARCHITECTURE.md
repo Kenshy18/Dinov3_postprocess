@@ -102,6 +102,8 @@ Old inference/* runtime wrappers have been removed; edit and call detector
 runtimes under `backend/detectors/<detector>/runtime`.
 
 ```text
+scripts/infer.py                    -> backend.pipeline.cli.infer
+scripts/overlay.py                  -> backend.pipeline.cli.overlay
 scripts/run_integrated_pipeline.py -> backend.pipeline.run_integrated_pipeline
 scripts/pipeline_*.py              -> backend.pipeline.pipeline_*
 scripts/run_full_flow.py           -> backend.pipeline.cli.run_full_flow
@@ -114,6 +116,7 @@ UI/run_app.sh                      -> apps/qt_ui/run_app.sh
 UI/run_app.ps1                     -> apps/qt_ui/run_app.ps1
 UI/app.py                          -> apps.qt_ui.app
 UI/run_ui_job.py                   -> apps.qt_ui.run_ui_job
+tools/setup_runtime.sh             -> tools/setup/setup_gui_runtime.sh
 tools/setup_gui_runtime.sh         -> tools/setup/setup_gui_runtime.sh
 tools/setup_integrated_runtime_env.sh -> tools/setup/setup_integrated_runtime_env.sh
 tools/check_artifacts.py           -> tools/artifacts/check_artifacts.py

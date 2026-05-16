@@ -10,7 +10,8 @@
 - Shared detector/postprocess schemas: `backend/schemas/`
 - Backend postprocess adapter: `backend/postprocess/`
 - User-facing backend CLI implementations: `backend/pipeline/cli/`
-- Integration entrypoint: `scripts/run_integrated_pipeline.py`（互換ラッパー）
+- Primary CLI entrypoints: `tools/setup_runtime.sh`, `scripts/infer.py`, `scripts/overlay.py`
+- Low-level integration entrypoint: `scripts/run_integrated_pipeline.py`（互換ラッパー）
 - Qt UI: `apps/qt_ui/`（`UI/` は互換入口）
 - DINOv3 runtime: `backend/detectors/dinov3/runtime/`
 - EVA02 runtime: `backend/detectors/eva02/runtime/`
@@ -44,10 +45,10 @@ cp configs/artifact_sources.env.example configs/artifact_sources.env
 ```
 
 ```bash
-tools/setup_integrated_runtime_env.sh
+tools/setup_runtime.sh
 ```
 
-GUIを使うPCでは、同じ処理を分かりやすい名前で呼ぶ以下の入口も使えます。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、GPU/VRAMに応じたbatch設定生成まで行います。
+`tools/setup_runtime.sh` は正規セットアップ入口です。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、GPU/VRAMに応じたbatch設定生成まで行います。互換入口として `tools/setup_integrated_runtime_env.sh` と `tools/setup_gui_runtime.sh` も残しています。
 
 ```bash
 tools/setup_gui_runtime.sh
@@ -58,7 +59,7 @@ tools/setup_gui_runtime.sh
 別のAtosyori repoを使う場合:
 
 ```bash
-ATOSYORI_REPO=/path/to/atosyori-pipeline-dev tools/setup_integrated_runtime_env.sh
+ATOSYORI_REPO=/path/to/atosyori-pipeline-dev tools/setup_runtime.sh
 ```
 
 Atosyori repoもこの統合ディレクトリ内に持たせたい場合:
@@ -107,22 +108,21 @@ python tools/check_artifacts.py
 
 ## Run
 
-通常の動画推論から後処理までは、簡易入口を使います。
+通常の動画推論から後処理までは、正規入口 `scripts/infer.py` を使います。既定ではGUIと同じ成果物配置を作り、詳細overlayも生成します。
 
 ```bash
 .venv_integrated/bin/python \
-  scripts/infer_video_postprocess.py \
+  scripts/infer.py \
   --input input/sample.mp4 \
   --output-root output/runs \
-  --overlay \
-	  --force
+  --force
 ```
 
 EVA02 を使う場合:
 
 ```bash
 .venv_integrated/bin/python \
-  scripts/infer_video_postprocess.py \
+  scripts/infer.py \
   --detector eva02 \
   --input input/sample.mp4 \
   --output-root output/runs \
@@ -133,44 +133,75 @@ Co-DINO を使う場合:
 
 ```bash
 .venv_integrated/bin/python \
-  scripts/infer_video_postprocess.py \
+  scripts/infer.py \
   --detector codino \
   --input input/sample.mp4 \
   --output-root output/runs \
   --force
 ```
 
-詳細な全オプションを触る場合は統合入口を直接使います。
+推論のみ、後処理のみも同じ入口を使います。
 
 ```bash
 .venv_integrated/bin/python \
-  scripts/run_integrated_pipeline.py \
+  scripts/infer.py \
   --input input/sample.mp4 \
   --output-root output/runs \
-  --classifier \
-  --render-overlays \
+  --mode inference \
   --force
 ```
-
-後処理モデルがまだない状態でDINOv3 JSONLだけ確認する場合:
 
 ```bash
 .venv_integrated/bin/python \
-  scripts/run_integrated_pipeline.py \
-  --input input/sample.mp4 \
-  --output-root /tmp/dinov3_integrated_smoke \
-  --max-frames 8 \
-  --warmup-frames 0 \
-  --no-postprocess \
+  scripts/infer.py \
+  --mode postprocess \
+  --input-jsonl output/runs/sample/jsonl/sample.jsonl \
+  --input-video input/sample.mp4 \
+  --output-root output/runs \
   --force
 ```
+
+overlayのみ再生成したい場合は `scripts/overlay.py` を使います。
+
+```bash
+.venv_integrated/bin/python \
+  scripts/overlay.py \
+  --video input/sample.mp4 \
+  --pred-sqlite output/runs/sample/最終SQLite/女性器_predictions.sqlite \
+  --tracked-sqlite output/runs/sample/推論生SQLite/sample.tracked.sqlite \
+  --mode detailed \
+  --force
+```
+
+`scripts/run_full_flow.py`、`scripts/run_postprocess_only.py`、`scripts/infer_video_postprocess.py`、`scripts/run_integrated_pipeline.py`、`scripts/render_raw_jsonl_overlays.py` は互換・低レベル入口です。通常運用では上記3入口を使ってください。
 
 ## Outputs
 
-1動画ごとに以下を作ります。
+`scripts/infer.py` の既定出力はGUIと同じ配置です。1動画ごとに以下を作ります。
 
 ```text
 output/runs/<run_name>/
+  最終成果物.json
+  sod_job_dir/job_manifest.json
+  最終SQLite/
+    <label>_predictions.sqlite
+  推論生SQLite/
+    <video_stem>_raw_detections.sqlite
+    <video_stem>.tracked.sqlite
+  詳細オーバーレイ/
+    <label>_detailed.mp4
+  統合マスクオーバーレイ/
+    <label>_simple.mp4
+  AI生成カバーオーバーレイ/
+    <video_stem>_ai_raw_mask.mp4
+  jsonl/
+    <video_stem>.jsonl
+  logs/
+    infer_cli.log
+    infer_audit.jsonl
+    ui_job.log
+    audit.jsonl
+    job_audit_summary.json
   <detector>/
     jsonl/<video_stem>.jsonl
     summary.json
@@ -178,15 +209,11 @@ output/runs/<run_name>/
     summary.json
     preprocess/<video_stem>.tracked.sqlite
     keyframes/int_*/merged/predictions.sqlite
-  sqlite/
-    <video_stem>_tracked.sqlite
-    <video_stem>_int_*_predictions.sqlite
-  overlay/
-    <video_stem>_int_*_postprocess.mp4
   summary.json
 ```
 
-`sqlite/` と `overlay/` は後処理成果物へのsymlinkです。symlinkが作れない環境ではコピーします。
+overlayは `--overlay-mode` と `--raw-overlay/--no-raw-overlay` で選択できます。内部互換の `<detector>/jsonl`、`postprocess/`、`summary.json` も残します。
+`*_raw_detections.sqlite` は検出直後の共通raw schemaで、`metadata`、`frames`、`masks` tableを持ちます。後処理後の `*_predictions.sqlite` は最終mask schemaで、少なくとも `masks(frame, track_id, polygons)` を持ちます。
 
 ## FPS metrics
 
@@ -246,10 +273,10 @@ artifacts_to_upload/runtime_artifacts/
 
 ## GPU portability
 
-TensorRT engineはGPU、driver、CUDA、TensorRT versionに依存するため、別PCでは `tools/setup_integrated_runtime_env.sh` で再作成してください。checkpointは持ち回れます。
+TensorRT engineはGPU、driver、CUDA、TensorRT versionに依存するため、別PCでは `tools/setup_runtime.sh` で再作成してください。checkpointは持ち回れます。
 
 - RTX 5090などのBlackwell系: CUDA/PyTorch/TensorRTが `sm_120` に対応している必要があります。この検証機では RTX PRO 6000 Blackwell + PyTorch CUDA 12.9 + TensorRT 10.13 で確認済みです。
 - RTX 4090などのAda系: TensorRT engineをそのPCで再作成する前提で対応想定です。
-- DINOv3 backboneの既定はTensorRT BF16です。BF16 buildが失敗した場合、セットアップは同じengine pathにFP16で自動fallbackします。明示する場合は `TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh` を使えます。
+- DINOv3 backboneの既定はTensorRT BF16です。BF16 buildが失敗した場合、セットアップは同じengine pathにFP16で自動fallbackします。明示する場合は `TRT_PRECISION=fp16 tools/setup_runtime.sh` を使えます。
 - Co-DINOは `backend/detectors/codino/tools/rebuild_codino_trt_engines.sh` でbackbone、query encoder、decoder、mask head coreを作成します。query encoder/decoderは `MultiscaleDeformableAttnPlugin_TRT` を使います。
 - 現行の既定は `TENSORRT_PIP_SPEC=tensorrt==10.13.0.35` です。driver/CUDAに合わないTensorRT wheelはimportできてもbuilder初期化で失敗します。

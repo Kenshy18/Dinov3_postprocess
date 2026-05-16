@@ -74,7 +74,7 @@ and `checkpoints/codino`.
 ## 3. Create runtime environment
 
 ```bash
-tools/setup_integrated_runtime_env.sh
+tools/setup_runtime.sh
 ```
 
 The setup script performs:
@@ -90,10 +90,11 @@ The setup script performs:
 - local GPU/VRAM profiling into `.runtime/runtime_profile.json`
 - optional smoke/import checks
 
-For GUI machines, this wrapper is the recommended entrypoint:
+Compatibility setup wrappers remain available:
 
 ```bash
 tools/setup_gui_runtime.sh
+tools/setup_integrated_runtime_env.sh
 ```
 
 The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `.runtime/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and TensorRT engine paths are written to `.runtime/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `.runtime/runtime_profile.json`, `.runtime/runtime_benchmark.json`, and `.runtime/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. Legacy `configs/runtime_profile.json` is still read as a fallback during migration. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
@@ -101,15 +102,15 @@ The generated runtime profile is used by the integrated pipeline defaults. Setup
 Useful options:
 
 ```bash
-ENV_DIR=/path/to/venv tools/setup_integrated_runtime_env.sh
-BASE_PYTHON=/path/to/python3.10 tools/setup_integrated_runtime_env.sh
-REFERENCE_VENV=/path/to/known-good-venv tools/setup_integrated_runtime_env.sh
-RUN_DINO_SMOKE=0 tools/setup_integrated_runtime_env.sh
-BUILD_DETECTRON2=1 tools/setup_integrated_runtime_env.sh
-TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh
-TENSORRT_PIP_SPEC=tensorrt==10.13.0.35 tools/setup_integrated_runtime_env.sh
-REBUILD_CODINO_TRT=1 tools/setup_integrated_runtime_env.sh
-CODINO_TRT_BATCH_SIZE=1 tools/setup_integrated_runtime_env.sh
+ENV_DIR=/path/to/venv tools/setup_runtime.sh
+BASE_PYTHON=/path/to/python3.10 tools/setup_runtime.sh
+REFERENCE_VENV=/path/to/known-good-venv tools/setup_runtime.sh
+RUN_DINO_SMOKE=0 tools/setup_runtime.sh
+BUILD_DETECTRON2=1 tools/setup_runtime.sh
+TRT_PRECISION=fp16 tools/setup_runtime.sh
+TENSORRT_PIP_SPEC=tensorrt==10.13.0.35 tools/setup_runtime.sh
+REBUILD_CODINO_TRT=1 tools/setup_runtime.sh
+CODINO_TRT_BATCH_SIZE=1 tools/setup_runtime.sh
 ```
 
 `BUILD_DETECTRON2=auto` is the default. It builds the bundled Detectron2/EVA02 extension only when `eva02/eva02_det/detectron2/_C*.so` is missing.
@@ -138,28 +139,26 @@ GPU notes:
 Recommended production-style entrypoint:
 
 ```bash
-.venv_integrated/bin/python scripts/infer_video_postprocess.py \
+.venv_integrated/bin/python scripts/infer.py \
   --input input/sample.mp4 \
   --output-root output/runs \
-  --overlay \
   --force
 ```
 
-Detailed entrypoint:
+Inference-only:
 
 ```bash
-.venv_integrated/bin/python scripts/run_integrated_pipeline.py \
+.venv_integrated/bin/python scripts/infer.py \
   --input input/sample.mp4 \
   --output-root output/runs \
-  --classifier \
-  --render-overlays \
+  --mode inference \
   --force
 ```
 
 Co-DINO detector:
 
 ```bash
-.venv_integrated/bin/python scripts/infer_video_postprocess.py \
+.venv_integrated/bin/python scripts/infer.py \
   --detector codino \
   --input input/sample.mp4 \
   --output-root output/runs \
@@ -169,7 +168,7 @@ Co-DINO detector:
 If polygon predictor artifacts are not available:
 
 ```bash
-.venv_integrated/bin/python scripts/run_integrated_pipeline.py \
+.venv_integrated/bin/python scripts/infer.py \
   --input input/sample.mp4 \
   --output-root output/runs \
   --class-policy-json configs/class_policy_ellipse_only.json \

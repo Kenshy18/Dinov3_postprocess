@@ -70,6 +70,7 @@ from .pipeline_defaults import (
     LOCAL_ATOSYORI_REPO,
 )
 from .pipeline_outputs import collect_postprocess_outputs, model_status, summarize_detector, write_json
+from backend.schemas.mask_sqlite import jsonl_to_raw_sqlite
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
@@ -145,6 +146,20 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
         )
     )
     jsonl_path, detector_summary = summarize_detector(detector_out, video)
+    raw_sqlite_summary: dict[str, Any] | None = None
+    raw_sqlite_path: Path | None = None
+    if args.raw_sqlite:
+        raw_sqlite_path = run_dir / "sqlite" / f"{video.stem}_raw_detections.sqlite"
+        raw_sqlite_summary = jsonl_to_raw_sqlite(
+            jsonl_path,
+            raw_sqlite_path,
+            detector=args.detector,
+            video=video,
+        )
+        print(
+            f"[raw-sqlite] {raw_sqlite_path} frames={raw_sqlite_summary['frames']} masks={raw_sqlite_summary['masks']}",
+            flush=True,
+        )
 
     postprocess_summary: dict[str, Any] | None = None
     if args.postprocess:
@@ -171,6 +186,7 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
         "class_policy_json": None if args.class_policy_json is None else str(args.class_policy_json),
         "artifacts": {
             "detector_jsonl": str(jsonl_path),
+            "raw_sqlite": None if raw_sqlite_path is None else str(raw_sqlite_path),
             "detector_summary": str(detector_out / "summary.json"),
             "dinov3_jsonl": str(jsonl_path) if args.detector == "dinov3" else None,
             "dinov3_summary": str(detector_out / "summary.json") if args.detector == "dinov3" else None,
@@ -178,6 +194,7 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             "codino_summary": str(detector_out / "summary.json") if args.detector == "codino" else None,
             "postprocess_summary": None if postprocess_summary is None else postprocess_summary["summary"],
         },
+        "raw_sqlite": raw_sqlite_summary,
         "detector_summary": {
             "classifier_enabled": detector_summary.get("classifier_enabled"),
             "class_names": detector_summary.get("class_names"),
@@ -246,6 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--async-writer", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu-prefetch", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--write-detector-overlay", action="store_true")
+    parser.add_argument("--raw-sqlite", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--eva02-target-size", type=int, default=EVA02_DEFAULT_TARGET_SIZE)
     parser.add_argument("--eva02-score-thresh", type=float, default=EVA02_DEFAULT_SCORE_THRESH)

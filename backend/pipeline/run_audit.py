@@ -84,6 +84,7 @@ def build_output_audit(
     sqlite_outputs: dict[str, str],
     overlay_outputs: dict[str, str],
     pipeline_summary: dict[str, Any],
+    raw_detector_sqlite: Path | None = None,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     detector_contract: dict[str, Any] | None = None
@@ -98,8 +99,11 @@ def build_output_audit(
 
     sqlite_audit = {label: sqlite_summary(Path(path)) for label, path in sorted(sqlite_outputs.items())}
     tracked_audit = sqlite_summary(tracked_sqlite)
+    raw_detector_audit = sqlite_summary(raw_detector_sqlite)
     if pipeline_summary.get("postprocess") and not sqlite_outputs:
         warnings.append("postprocess_enabled_but_no_final_sqlite")
+    if raw_detector_sqlite is not None and raw_detector_audit and not raw_detector_audit.get("exists"):
+        warnings.append("raw_detector_sqlite_missing")
     if tracked_audit and tracked_audit.get("exists"):
         row_counts = dict(tracked_audit.get("row_counts") or {})
         if "raw_tracked_masks" not in row_counts or "raw_tracks" not in row_counts:
@@ -113,6 +117,7 @@ def build_output_audit(
     return {
         "detector_jsonl": file_summary(detector_jsonl),
         "detector_contract": detector_contract,
+        "raw_detector_sqlite": raw_detector_audit,
         "tracked_sqlite": tracked_audit,
         "final_sqlite": sqlite_audit,
         "overlays": overlay_audit,
@@ -143,6 +148,9 @@ def audit_run_dir(run_dir: Path) -> dict[str, Any]:
     final_summary = load_json(final_summary_path) if final_summary_path.is_file() else {}
 
     detector_jsonl = _path_or_none(artifacts.get("detector_jsonl") or artifacts.get("dinov3_jsonl")) or Path("")
+    raw_summary_obj = summary.get("raw_sqlite") or {}
+    raw_summary = raw_summary_obj if isinstance(raw_summary_obj, dict) else {}
+    raw_detector_sqlite = _path_or_none(artifacts.get("raw_sqlite") or raw_summary.get("path"))
     tracked_sqlite = _path_or_none(postprocess.get("tracked_sqlite") or postprocess.get("tracked_sqlite_link"))
     sqlite_outputs = postprocess.get("prediction_sqlite_links") or {}
     overlay_outputs = postprocess.get("overlay_links") or {}
@@ -156,6 +164,7 @@ def audit_run_dir(run_dir: Path) -> dict[str, Any]:
 
     output_audit = build_output_audit(
         detector_jsonl=detector_jsonl,
+        raw_detector_sqlite=raw_detector_sqlite,
         tracked_sqlite=tracked_sqlite,
         sqlite_outputs={str(key): str(value) for key, value in sqlite_outputs.items()},
         overlay_outputs={str(key): str(value) for key, value in overlay_outputs.items()},
@@ -200,4 +209,3 @@ def audit_to_markdown(audit: dict[str, Any]) -> str:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- `{item}`" for item in warnings)
     return "\n".join(lines) + "\n"
-

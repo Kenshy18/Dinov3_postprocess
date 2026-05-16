@@ -10,12 +10,21 @@ User-facing commands should stay short and stable:
 ```text
 apps/qt_ui/run_app.sh
 UI/run_app.sh
+tools/setup_runtime.sh
+scripts/infer.py
+scripts/overlay.py
+tools/verify_runtime.py
+```
+
+Compatibility or low-level entrypoints may remain callable, but should not be
+the main README path:
+
+```text
 scripts/infer_video_postprocess.py
 scripts/run_full_flow.py
 scripts/run_postprocess_only.py
 scripts/run_integrated_pipeline.py
 tools/setup_gui_runtime.sh
-tools/verify_runtime.py
 ```
 
 Implementation should live behind those entrypoints:
