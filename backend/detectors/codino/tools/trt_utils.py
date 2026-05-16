@@ -17,12 +17,6 @@ def default_tensorrt_site_packages() -> Path | None:
         path = Path(raw_path)
         if (path / "tensorrt").exists():
             return path
-    home = Path.home()
-    for env_name in ("eva02_trt", "trt_env"):
-        for pyver in ("python3.10", "python3.11", "python3.12", "python3.8"):
-            path = home / "miniconda3" / "envs" / env_name / "lib" / pyver / "site-packages"
-            if (path / "tensorrt").exists():
-                return path
     return None
 
 

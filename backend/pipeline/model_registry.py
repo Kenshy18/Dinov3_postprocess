@@ -110,14 +110,6 @@ def _default_trt_site_packages() -> Path | None:
     if raw:
         path = Path(raw).expanduser()
         return path if path.exists() else None
-    home = Path.home()
-    candidates: list[Path] = []
-    for env_name in ("eva02_trt", "trt_env"):
-        for pyver in ("python3.10", "python3.11", "python3.12", "python3.8"):
-            candidates.append(home / "miniconda3" / "envs" / env_name / "lib" / pyver / "site-packages")
-    for path in candidates:
-        if (path / "tensorrt").exists():
-            return path
     return None
 
 

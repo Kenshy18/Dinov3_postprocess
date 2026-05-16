@@ -25,7 +25,7 @@ Runtime notes:
 
 - Use a Python environment with Co-DINO-compatible `mmcv` (`>=1.3.17, <=1.7.2`)
   and a PyTorch/CUDA build that supports the installed GPU.
-- TensorRT Python bindings are discovered from `TENSORRT_SITE_PACKAGES` or a
-  local TensorRT conda environment such as `~/miniconda3/envs/eva02_trt`.
+- TensorRT Python bindings should come from the active runtime environment.
+  `TENSORRT_SITE_PACKAGES` is only an explicit override for non-standard setups.
 - The runtime checks CUDA architecture compatibility before model load so an
   unsupported PyTorch build fails before TensorRT can segfault.

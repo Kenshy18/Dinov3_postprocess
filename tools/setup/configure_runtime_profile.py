@@ -136,12 +136,6 @@ def tensorrt_site_packages() -> Path | None:
     if raw:
         path = Path(raw).expanduser()
         return path if path.exists() else None
-    home = Path.home()
-    for env_name in ("eva02_trt", "trt_env"):
-        for pyver in ("python3.10", "python3.11", "python3.12", "python3.8"):
-            path = home / "miniconda3" / "envs" / env_name / "lib" / pyver / "site-packages"
-            if (path / "tensorrt").exists():
-                return path
     return None
 
 
@@ -245,8 +239,6 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
     codino_trt_engines = tuple(Path(value) for value in trt_paths.values())
     if not all(path.is_file() for path in codino_trt_engines):
         notes.append("One or more Co-DINO TensorRT engines are missing under checkpoints/codino/trt.")
-    if trt_site is None:
-        notes.append("TensorRT site-packages were not found; set TENSORRT_SITE_PACKAGES for Co-DINO TRT inference.")
     if total_gib and total_gib < 16:
         notes.append("VRAM is below 16 GiB; EVA02 batch is intentionally kept at 1 to avoid shared-memory fallback.")
 
