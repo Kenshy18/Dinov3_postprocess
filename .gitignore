@@ -48,6 +48,7 @@ external/atosyori-pipeline-dev/**/*.sqlite
 external/atosyori-pipeline-dev/**/*.jsonl
 external/atosyori-pipeline-dev/**/*.mp4
 external/codino/.git/
+external/codino/**/*.egg-info/
 external/codino/**/__pycache__/
 external/codino/**/*.pyc
 external/codino/work_dirs/
