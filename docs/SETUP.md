@@ -56,7 +56,6 @@ checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 checkpoints/dinov3/classifier/best.pt
 checkpoints/Eva02/detector/model_final.pth
 checkpoints/Eva02/classifier/best.pt
-checkpoints/codino/detector/resolved_config.py
 checkpoints/codino/detector/epoch_2.pth
 checkpoints/codino/classifier/best.pt
 checkpoints/postprocess/k2_v5/best_exact.pt

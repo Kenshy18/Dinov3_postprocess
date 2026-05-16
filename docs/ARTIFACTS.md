@@ -2,8 +2,10 @@
 
 Large runtime artifacts are intentionally kept outside Git. Upload them to
 Google Drive or another artifact store, then let the setup script restore the
-same layout under `checkpoints/`. TensorRT engines are local-device artifacts
-and are rebuilt by setup instead of being required from Drive.
+same layout under `checkpoints/`. Small Python/config files such as
+`checkpoints/codino/detector/resolved_config.py` are tracked in Git. TensorRT
+engines are local-device artifacts and are rebuilt by setup instead of being
+required from Drive.
 
 Expected local runtime layout after download/placement:
 
@@ -73,7 +75,6 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/dinov3/classifier/best.pt
   checkpoints/Eva02/detector/model_final.pth
   checkpoints/Eva02/classifier/best.pt
-  checkpoints/codino/detector/resolved_config.py
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt
   checkpoints/postprocess/k2_v5/best_exact.pt

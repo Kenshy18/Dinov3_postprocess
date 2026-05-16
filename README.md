@@ -72,6 +72,7 @@ tools/sync_atosyori_source.sh
 ## Checkpoints
 
 Drive artifact取得後、推論から後処理まで実行するには以下が配置されます。
+`codino/detector/resolved_config.py` は小さいPython設定ファイルのためGitで管理します。
 
 ```text
 checkpoints/
@@ -230,7 +231,6 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/classifier/best.pt
   checkpoints/eva02/detector/model_final.pth
   checkpoints/eva02/classifier/best.pt
-  checkpoints/codino/detector/resolved_config.py
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt
   checkpoints/postprocess/k2_v5/best_exact.pt
