@@ -19,10 +19,8 @@ artifacts_to_upload/*
 !artifacts_to_upload/README.md
 !artifacts_to_upload/runtime_artifacts/
 artifacts_to_upload/runtime_artifacts/*
-!artifacts_to_upload/runtime_artifacts/README_UPLOAD.md
 !artifacts_to_upload/dinov3_runtime_artifacts/
 artifacts_to_upload/dinov3_runtime_artifacts/*
-!artifacts_to_upload/dinov3_runtime_artifacts/README_UPLOAD.md
 
 input/*
 !input/.gitkeep
