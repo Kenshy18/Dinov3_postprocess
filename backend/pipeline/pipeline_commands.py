@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from backend.detectors.codino.commands import build_command as build_codino_detector_command
 from backend.detectors.dinov3.commands import build_command as build_dinov3_detector_command
 from backend.detectors.eva02.commands import build_command as build_eva02_detector_command
 from backend.postprocess.commands import build_env as build_atosyori_env
@@ -20,11 +21,17 @@ def build_eva02_command(args: argparse.Namespace, video: Path, eva02_out: Path) 
     return build_eva02_detector_command(args, video, eva02_out)
 
 
+def build_codino_command(args: argparse.Namespace, video: Path, codino_out: Path) -> list[str]:
+    return build_codino_detector_command(args, video, codino_out)
+
+
 def build_detector_command(args: argparse.Namespace, video: Path, detector_out: Path) -> list[str]:
     if args.detector == "dinov3":
         return build_dinov3_command(args, video, detector_out)
     if args.detector == "eva02":
         return build_eva02_command(args, video, detector_out)
+    if args.detector == "codino":
+        return build_codino_command(args, video, detector_out)
     raise RuntimeError(f"unsupported detector: {args.detector}")
 
 

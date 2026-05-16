@@ -13,6 +13,28 @@
       "warmup_frames": 0,
       "classifier_batch_size": 1024
     },
+    "codino": {
+      "batch_size": 2,
+      "warmup_frames": 60,
+      "target_size": "1280x720",
+      "score_thresh": 0.3,
+      "model_score_thr": 0.05,
+      "amp": "fp16",
+      "tf32": true,
+      "json_backend": "orjson",
+      "mask_approx": "none",
+      "async_writer": true,
+      "disable_mask_iou_head": true,
+      "runtime_script": "/home/kenke/workspace/CV/unified_training_codino_eva02/codino/tools/infer_dinov3_codino_video_fast.py",
+      "config": "/home/kenke/workspace/CV/unified_training_codino_eva02/codino/work_dirs/dinov3_codino_inst_0423_lrrestart_from0414ep10_b8_bb1e5_head2e5_cosine_freq4_20260514_112019/resolved_config.py",
+      "checkpoint": "/home/kenke/workspace/CV/unified_training_codino_eva02/codino/work_dirs/dinov3_codino_inst_0423_lrrestart_from0414ep10_b8_bb1e5_head2e5_cosine_freq4_20260514_112019/epoch_2.pth",
+      "classifier_checkpoint": "/home/kenke/workspace/CV/unified_training_codino_eva02/inference/dinov3_cascade_unified/two_stage_multiclass_20260426/outputs/roi_classifier_codino_maskroi_spatial_gap_full_fp16/run_20260516_041219/checkpoints/best.pt",
+      "trt_backbone_engine": "/home/kenke/workspace/CV/unified_training_codino_eva02/outputs/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine",
+      "trt_query_encoder_engine": "/home/kenke/workspace/CV/unified_training_codino_eva02/outputs/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine",
+      "trt_decoder_engine": "/home/kenke/workspace/CV/unified_training_codino_eva02/outputs/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine",
+      "trt_mask_head_engine": "/home/kenke/workspace/CV/unified_training_codino_eva02/outputs/trt/codino_mask_head_core_n1_736x1280_fp16.engine",
+      "trt_query_encoder_shapes": "184x320,92x160,46x80,23x40,12x20"
+    },
     "postprocess": {
       "k2_device": "auto",
       "polygon_predictor_device": "auto",
@@ -24,31 +46,36 @@
       "vram_gib": "< 10",
       "dinov3_batch_size": 2,
       "eva02_batch_size": 1,
-      "eva02_classifier_batch_size": 512
+      "eva02_classifier_batch_size": 512,
+      "codino_batch_size": 1
     },
     {
       "vram_gib": "10-15",
       "dinov3_batch_size": 4,
       "eva02_batch_size": 1,
-      "eva02_classifier_batch_size": 1024
+      "eva02_classifier_batch_size": 1024,
+      "codino_batch_size": 1
     },
     {
       "vram_gib": "16-23",
       "dinov3_batch_size": 6,
       "eva02_batch_size": 2,
-      "eva02_classifier_batch_size": 1536
+      "eva02_classifier_batch_size": 1536,
+      "codino_batch_size": 1
     },
     {
       "vram_gib": "24-39",
       "dinov3_batch_size": 8,
       "eva02_batch_size": 4,
-      "eva02_classifier_batch_size": 2048
+      "eva02_classifier_batch_size": 2048,
+      "codino_batch_size": 2
     },
     {
       "vram_gib": ">= 40",
       "dinov3_batch_size": 8,
       "eva02_batch_size": 8,
-      "eva02_classifier_batch_size": 4096
+      "eva02_classifier_batch_size": 4096,
+      "codino_batch_size": 2
     }
   ],
   "notes": [

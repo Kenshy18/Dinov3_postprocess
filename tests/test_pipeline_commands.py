@@ -15,10 +15,14 @@ import run_full_flow  # noqa: E402
 import pipeline_commands  # noqa: E402
 import run_postprocess_only  # noqa: E402
 import run_integrated_pipeline  # noqa: E402
+from backend.detectors.codino.commands import build_command as build_codino_adapter_command  # noqa: E402
 from backend.detectors.dinov3.commands import build_command as build_dinov3_adapter_command  # noqa: E402
 from backend.detectors.eva02.commands import build_command as build_eva02_adapter_command  # noqa: E402
 from backend.postprocess.commands import build_run_command as build_atosyori_adapter_command  # noqa: E402
 from pipeline_defaults import (  # noqa: E402
+    CODINO_DEFAULT_BATCH_SIZE,
+    CODINO_DEFAULT_MODEL_SCORE_THR,
+    CODINO_DEFAULT_WARMUP_FRAMES,
     DINO_DEFAULT_BATCH_SIZE,
     DINO_DEFAULT_WARMUP_FRAMES,
     EVA02_DEFAULT_BATCH_SIZE,
@@ -108,6 +112,35 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertIn("--no-async-writer", command)
         self.assertEqual(command[command.index("--max-frames") + 1], "1")
 
+    def test_detailed_entrypoint_builds_codino_command(self) -> None:
+        args = run_integrated_pipeline.normalize_args(
+            run_integrated_pipeline.build_parser().parse_args(
+                [
+                    "--input",
+                    "input/sample.mp4",
+                    "--detector",
+                    "codino",
+                    "--max-frames",
+                    "1",
+                    "--no-postprocess",
+                ]
+            )
+        )
+
+        command = pipeline_commands.build_codino_command(args, args.input, ROOT / "out" / "codino")
+
+        self.assertEqual(command[0], str(args.python))
+        self.assertIn("infer_video_codino_jsonl.py", command[1])
+        self.assertEqual(command[command.index("--target-size") + 1], "1280x720")
+        self.assertEqual(command[command.index("--model-score-thr") + 1], str(CODINO_DEFAULT_MODEL_SCORE_THR))
+        self.assertEqual(command[command.index("--batch-size") + 1], str(CODINO_DEFAULT_BATCH_SIZE))
+        self.assertEqual(command[command.index("--warmup-frames") + 1], str(CODINO_DEFAULT_WARMUP_FRAMES))
+        self.assertEqual(command[command.index("--json-backend") + 1], "orjson")
+        self.assertEqual(command[command.index("--mask-approx") + 1], "none")
+        self.assertIn("--tf32", command)
+        self.assertIn("--disable-mask-iou-head", command)
+        self.assertEqual(command[command.index("--max-frames") + 1], "1")
+
     def test_detector_adapters_are_pipeline_command_source(self) -> None:
         args = run_integrated_pipeline.normalize_args(
             run_integrated_pipeline.build_parser().parse_args(
@@ -132,6 +165,13 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertEqual(
             pipeline_commands.build_eva02_command(args, args.input, out_dir),
             build_eva02_adapter_command(args, args.input, out_dir),
+        )
+
+        args.detector = "codino"
+        out_dir = ROOT / "out" / "codino"
+        self.assertEqual(
+            pipeline_commands.build_codino_command(args, args.input, out_dir),
+            build_codino_adapter_command(args, args.input, out_dir),
         )
 
     def test_generated_policy_supports_class_overrides(self) -> None:

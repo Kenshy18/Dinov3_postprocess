@@ -14,7 +14,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from backend.pipeline.pipeline_defaults import DINO_DEFAULT_BATCH_SIZE, DINO_DEFAULT_WARMUP_FRAMES
+from backend.pipeline.pipeline_defaults import (
+    CODINO_DEFAULT_BATCH_SIZE,
+    CODINO_DEFAULT_WARMUP_FRAMES,
+    DINO_DEFAULT_BATCH_SIZE,
+    DINO_DEFAULT_WARMUP_FRAMES,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -30,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--overlay", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--detector", choices=("dinov3", "eva02"), default="dinov3")
+    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
     parser.add_argument("--classifier", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ellipse-only", action="store_true", help="Use ellipse-only class policy")
     parser.add_argument("--max-frames", type=int, default=None)
@@ -64,6 +69,16 @@ def build_command(args: argparse.Namespace) -> list[str]:
             command.extend(["--eva02-warmup-frames", str(args.warmup_frames)])
         if args.batch_size is not None:
             command.extend(["--eva02-batch-size", str(args.batch_size)])
+    elif args.detector == "codino":
+        command.extend(
+            [
+                "--codino-warmup-frames",
+                str(CODINO_DEFAULT_WARMUP_FRAMES if args.warmup_frames is None else args.warmup_frames),
+            ]
+        )
+        command.extend(
+            ["--codino-batch-size", str(CODINO_DEFAULT_BATCH_SIZE if args.batch_size is None else args.batch_size)]
+        )
     else:
         command.extend(
             ["--warmup-frames", str(DINO_DEFAULT_WARMUP_FRAMES if args.warmup_frames is None else args.warmup_frames)]

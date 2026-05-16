@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
 
-    parser.add_argument("--detector", choices=("dinov3", "eva02"), default="dinov3")
+    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
     parser.add_argument("--postprocess", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--overlay", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--overlay-encoder", choices=("cpu", "nvenc"), default="cpu")
@@ -86,6 +86,13 @@ def build_command(args: argparse.Namespace, run_dir: Path, policy_path: Path | N
             command.extend(["--eva02-warmup-frames", str(args.warmup_frames)])
         if args.score_thresh is not None:
             command.extend(["--eva02-score-thresh", str(args.score_thresh)])
+    elif args.detector == "codino":
+        if args.batch_size is not None:
+            command.extend(["--codino-batch-size", str(args.batch_size)])
+        if args.warmup_frames is not None:
+            command.extend(["--codino-warmup-frames", str(args.warmup_frames)])
+        if args.score_thresh is not None:
+            command.extend(["--codino-score-thresh", str(args.score_thresh)])
     else:
         if args.batch_size is not None:
             command.extend(["--batch-size", str(args.batch_size)])

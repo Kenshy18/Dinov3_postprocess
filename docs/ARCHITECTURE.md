@@ -29,6 +29,12 @@ backend/detectors/eva02
   EVA02 detector boundary. Owns backend-facing command construction plus the
   EVA02 runtime implementation under runtime/.
 
+backend/detectors/codino
+  DINOv3 + Co-DINO detector boundary. Owns backend-facing command construction
+  plus the Co-DINO JSONL runtime wrapper under runtime/. Heavy Co-DINO model
+  code can remain in the canonical Co-DINO working tree and is imported through
+  this runtime boundary.
+
 backend/detectors/jsonl_writer.py
   Shared streaming JSONL writer used by detector runtimes.
 
@@ -121,9 +127,9 @@ paths when documenting user commands, because they are stable and short.
 
 ## Data Contract
 
-Both detector runtimes must emit the same detector JSONL shape and a
+All detector runtimes must emit the same detector JSONL shape and a
 `summary.json`. The postprocess layer should only depend on that shared JSONL
-contract, not on DINOv3/EVA02-specific internals.
+contract, not on DINOv3/EVA02/Co-DINO-specific internals.
 
 The common raw detector contract is:
 
@@ -139,8 +145,8 @@ detection:
   polygons or segmentation
 ```
 
-`backend.schemas.detection_jsonl` accepts both DINOv3 and EVA02 historic field
-names and validates the JSONL by streaming one line at a time. Pipeline
+`backend.schemas.detection_jsonl` accepts DINOv3, EVA02, and Co-DINO field
+spellings and validates the JSONL by streaming one line at a time. Pipeline
 summaries include `jsonl_contract` counts so malformed JSONL, missing masks, or
 unexpected empty output are visible before postprocess debugging.
 

@@ -65,6 +65,34 @@ class DetectionJsonlContractTests(unittest.TestCase):
         self.assertEqual(det["class_score"], 0.88)
         self.assertEqual(det["bbox_xyxy"], [100.0, 120.0, 150.0, 190.0])
 
+    def test_codino_record_normalizes_to_common_contract(self) -> None:
+        record = normalize_frame_record(
+            {
+                "frame_index": 11,
+                "width": 1280,
+                "height": 720,
+                "detections": [
+                    {
+                        "class_name": "結合部分",
+                        "category_id": 3,
+                        "category_index": 2,
+                        "score": 0.67,
+                        "detector_score": 0.67,
+                        "class_score": 0.91,
+                        "class_probs": [0.03, 0.06, 0.91],
+                        "bbox_xyxy": [25.0, 30.0, 75.0, 90.0],
+                        "polygons": [[25, 30, 75, 30, 75, 90, 25, 90]],
+                    }
+                ],
+            }
+        )
+
+        det = record["detections"][0]
+        self.assertEqual(record["frame_idx"], 11)
+        self.assertEqual(det["category_index"], 2)
+        self.assertEqual(det["bbox"], [25.0, 30.0, 50.0, 60.0])
+        self.assertEqual(det["segmentation"], [[25, 30, 75, 30, 75, 90, 25, 90]])
+
     def test_streaming_summary_counts_masks_without_loading_whole_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample.jsonl"

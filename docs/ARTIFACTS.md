@@ -17,6 +17,17 @@ checkpoints/
       model_final.pth
     classifier/
       best.pt
+  codino/
+    detector/
+      resolved_config.py
+      epoch_2.pth
+    classifier/
+      best.pt
+    trt/
+      codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine
+      codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine
+      codino_decoder_b2_736x1280_msda_plugin_fp16.engine
+      codino_mask_head_core_n1_736x1280_fp16.engine
   trt/
     dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   postprocess/
@@ -60,6 +71,10 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/dinov3/classifier/best.pt
   checkpoints/Eva02/detector/model_final.pth
   checkpoints/Eva02/classifier/best.pt
+  checkpoints/codino/detector/resolved_config.py
+  checkpoints/codino/detector/epoch_2.pth
+  checkpoints/codino/classifier/best.pt
+  checkpoints/codino/trt/*.engine
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py

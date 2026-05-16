@@ -19,7 +19,30 @@ from typing import Any
 
 from .pipeline_commands import atosyori_env, build_detector_command, build_postprocess_command
 from .pipeline_defaults import (
+    CODINO_DEFAULT_AMP,
+    CODINO_DEFAULT_ASYNC_WRITER,
+    CODINO_DEFAULT_BATCH_SIZE,
+    CODINO_DEFAULT_DISABLE_MASK_IOU_HEAD,
+    CODINO_DEFAULT_JSON_BACKEND,
+    CODINO_DEFAULT_MASK_APPROX,
+    CODINO_DEFAULT_MODEL_SCORE_THR,
+    CODINO_DEFAULT_SCORE_THRESH,
+    CODINO_DEFAULT_TARGET_SIZE,
+    CODINO_DEFAULT_TF32,
+    CODINO_DEFAULT_TRT_QUERY_ENCODER_SHAPES,
+    CODINO_DEFAULT_WARMUP_FRAMES,
     DEFAULT_CLASSIFIER_CHECKPOINT,
+    DEFAULT_CODINO_CHECKPOINT,
+    DEFAULT_CODINO_CLASSIFIER_CHECKPOINT,
+    DEFAULT_CODINO_CONFIG,
+    DEFAULT_CODINO_RUNTIME,
+    DEFAULT_CODINO_RUNTIME_SCRIPT,
+    DEFAULT_CODINO_TRT_BACKBONE_ENGINE,
+    DEFAULT_CODINO_TRT_DECODER_ENGINE,
+    DEFAULT_CODINO_TRT_EXTRA_SITE_PACKAGES,
+    DEFAULT_CODINO_TRT_FEATURE_ENGINE,
+    DEFAULT_CODINO_TRT_MASK_HEAD_ENGINE,
+    DEFAULT_CODINO_TRT_QUERY_ENCODER_ENGINE,
     DEFAULT_DETECTOR_CHECKPOINT,
     DEFAULT_DINOV3_RUNTIME,
     DEFAULT_DINOV3_WEIGHTS,
@@ -109,12 +132,17 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
     run_dir.mkdir(parents=True, exist_ok=True)
     detector_out = run_dir / args.detector
     postprocess_out = run_dir / "postprocess"
+    detector_runtime = {
+        "dinov3": args.dinov3_runtime,
+        "eva02": args.eva02_runtime,
+        "codino": args.codino_runtime,
+    }[args.detector]
 
     timings: list[dict[str, Any]] = []
     timings.append(
         run_command(
             build_detector_command(args, video, detector_out),
-            cwd=args.dinov3_runtime if args.detector == "dinov3" else args.eva02_runtime,
+            cwd=detector_runtime,
             label=f"{args.detector} inference: {video.name}",
         )
     )
@@ -136,9 +164,10 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
         "video": str(video),
         "run_dir": str(run_dir),
         "detector": args.detector,
-        "detector_runtime": str(args.dinov3_runtime if args.detector == "dinov3" else args.eva02_runtime),
+        "detector_runtime": str(detector_runtime),
         "dinov3_runtime": str(args.dinov3_runtime),
         "eva02_runtime": str(args.eva02_runtime),
+        "codino_runtime": str(args.codino_runtime),
         "atosyori_repo": str(args.atosyori_repo),
         "postprocess_model_status": model_status(args.postprocess_model_root),
         "class_policy_json": None if args.class_policy_json is None else str(args.class_policy_json),
@@ -147,6 +176,8 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             "detector_summary": str(detector_out / "summary.json"),
             "dinov3_jsonl": str(jsonl_path) if args.detector == "dinov3" else None,
             "dinov3_summary": str(detector_out / "summary.json") if args.detector == "dinov3" else None,
+            "codino_jsonl": str(jsonl_path) if args.detector == "codino" else None,
+            "codino_summary": str(detector_out / "summary.json") if args.detector == "codino" else None,
             "postprocess_summary": None if postprocess_summary is None else postprocess_summary["summary"],
         },
         "detector_summary": {
@@ -158,6 +189,12 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             "classifier_enabled": detector_summary.get("classifier_enabled") if args.detector == "dinov3" else None,
             "class_names": detector_summary.get("class_names") if args.detector == "dinov3" else None,
             "runs": detector_summary.get("runs", []) if args.detector == "dinov3" else [],
+        },
+        "codino": {
+            "classifier_enabled": detector_summary.get("classifier_enabled") if args.detector == "codino" else None,
+            "class_names": detector_summary.get("class_names") if args.detector == "codino" else None,
+            "runs": detector_summary.get("runs", []) if args.detector == "codino" else [],
+            "trt": detector_summary.get("trt") if args.detector == "codino" else None,
         },
         "postprocess": postprocess_summary,
         "timings": timings,
@@ -177,9 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
-    parser.add_argument("--detector", choices=("dinov3", "eva02"), default="dinov3")
+    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
     parser.add_argument("--dinov3-runtime", type=Path, default=DEFAULT_DINOV3_RUNTIME)
     parser.add_argument("--eva02-runtime", type=Path, default=DEFAULT_EVA02_RUNTIME)
+    parser.add_argument("--codino-runtime", type=Path, default=DEFAULT_CODINO_RUNTIME)
     parser.add_argument("--atosyori-repo", type=Path, default=DEFAULT_ATOSYORI_REPO)
     parser.add_argument("--postprocess-model-root", type=Path, default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--force", action="store_true")
@@ -189,6 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-checkpoint", type=Path, default=DEFAULT_DETECTOR_CHECKPOINT)
     parser.add_argument("--eva02-classifier-checkpoint", type=Path, default=DEFAULT_EVA02_CLASSIFIER_CHECKPOINT)
     parser.add_argument("--eva02-detector-checkpoint", type=Path, default=DEFAULT_EVA02_DETECTOR_CHECKPOINT)
+    parser.add_argument("--codino-runtime-script", type=Path, default=DEFAULT_CODINO_RUNTIME_SCRIPT)
+    parser.add_argument("--codino-config", type=Path, default=DEFAULT_CODINO_CONFIG)
+    parser.add_argument("--codino-checkpoint", type=Path, default=DEFAULT_CODINO_CHECKPOINT)
+    parser.add_argument("--codino-classifier-checkpoint", type=Path, default=DEFAULT_CODINO_CLASSIFIER_CHECKPOINT)
     parser.add_argument("--trt-backbone-engine", type=Path, default=DEFAULT_TRT_BACKBONE_ENGINE)
     parser.add_argument("--backbone-weights", type=Path, default=DEFAULT_DINOV3_WEIGHTS)
     parser.add_argument("--target-size", default="1280x720")
@@ -218,6 +260,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eva02-mask-approx", choices=("none", "simple"), default=EVA02_DEFAULT_MASK_APPROX)
     parser.add_argument("--eva02-async-writer", action=argparse.BooleanOptionalAction, default=EVA02_DEFAULT_ASYNC_WRITER)
 
+    parser.add_argument("--codino-target-size", default=CODINO_DEFAULT_TARGET_SIZE)
+    parser.add_argument("--codino-score-thresh", type=float, default=CODINO_DEFAULT_SCORE_THRESH)
+    parser.add_argument("--codino-model-score-thr", type=float, default=CODINO_DEFAULT_MODEL_SCORE_THR)
+    parser.add_argument("--codino-batch-size", type=int, default=CODINO_DEFAULT_BATCH_SIZE)
+    parser.add_argument("--codino-warmup-frames", type=int, default=CODINO_DEFAULT_WARMUP_FRAMES)
+    parser.add_argument("--codino-json-backend", choices=("json", "orjson"), default=CODINO_DEFAULT_JSON_BACKEND)
+    parser.add_argument("--codino-mask-approx", choices=("none", "simple"), default=CODINO_DEFAULT_MASK_APPROX)
+    parser.add_argument("--codino-async-writer", action=argparse.BooleanOptionalAction, default=CODINO_DEFAULT_ASYNC_WRITER)
+    parser.add_argument("--codino-amp", choices=("fp16", "bf16", "off"), default=CODINO_DEFAULT_AMP)
+    parser.add_argument("--codino-tf32", action=argparse.BooleanOptionalAction, default=CODINO_DEFAULT_TF32)
+    parser.add_argument(
+        "--codino-disable-mask-iou-head",
+        action=argparse.BooleanOptionalAction,
+        default=CODINO_DEFAULT_DISABLE_MASK_IOU_HEAD,
+    )
+    parser.add_argument("--codino-trt-backbone-engine", type=Path, default=DEFAULT_CODINO_TRT_BACKBONE_ENGINE)
+    parser.add_argument("--codino-trt-feature-engine", type=Path, default=DEFAULT_CODINO_TRT_FEATURE_ENGINE)
+    parser.add_argument("--codino-trt-feature-names", default="feat0,feat1,feat2,feat3,feat4")
+    parser.add_argument("--codino-trt-query-encoder-engine", type=Path, default=DEFAULT_CODINO_TRT_QUERY_ENCODER_ENGINE)
+    parser.add_argument("--codino-trt-query-encoder-shapes", default=CODINO_DEFAULT_TRT_QUERY_ENCODER_SHAPES)
+    parser.add_argument("--codino-trt-decoder-engine", type=Path, default=DEFAULT_CODINO_TRT_DECODER_ENGINE)
+    parser.add_argument("--codino-trt-mask-head-engine", type=Path, default=DEFAULT_CODINO_TRT_MASK_HEAD_ENGINE)
+    parser.add_argument("--codino-trt-extra-site-packages", type=Path, default=DEFAULT_CODINO_TRT_EXTRA_SITE_PACKAGES)
+
     parser.add_argument("--postprocess", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--intervals", default="3")
     parser.add_argument("--class-policy-json", type=Path, default=DEFAULT_POLICY)
@@ -245,6 +311,7 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.python = abs_path_preserve_symlink(args.python)
     args.dinov3_runtime = abs_path(args.dinov3_runtime)
     args.eva02_runtime = abs_path(args.eva02_runtime)
+    args.codino_runtime = abs_path(args.codino_runtime)
     args.atosyori_repo = abs_path(args.atosyori_repo)
     args.postprocess_model_root = abs_path(args.postprocess_model_root)
     for name in (
@@ -252,9 +319,19 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         "detector_checkpoint",
         "eva02_classifier_checkpoint",
         "eva02_detector_checkpoint",
+        "codino_runtime_script",
+        "codino_config",
+        "codino_checkpoint",
+        "codino_classifier_checkpoint",
         "trt_backbone_engine",
         "backbone_weights",
         "class_policy_json",
+        "codino_trt_backbone_engine",
+        "codino_trt_feature_engine",
+        "codino_trt_query_encoder_engine",
+        "codino_trt_decoder_engine",
+        "codino_trt_mask_head_engine",
+        "codino_trt_extra_site_packages",
     ):
         value = getattr(args, name)
         if value is not None:

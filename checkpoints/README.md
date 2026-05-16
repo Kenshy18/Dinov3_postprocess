@@ -15,6 +15,11 @@ checkpoints/
   eva02/
     detector/model_final.pth
     classifier/best.pt
+  codino/
+    detector/resolved_config.py
+    detector/epoch_2.pth
+    classifier/best.pt
+    trt/*.engine
   trt/
     dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   postprocess/
@@ -32,4 +37,8 @@ checkpoints/dinov3/detector/model_final.pth
 checkpoints/dinov3/classifier/best.pt
 checkpoints/Eva02/detector/model_final.pth
 checkpoints/Eva02/classifier/best.pt
+checkpoints/codino/detector/resolved_config.py
+checkpoints/codino/detector/epoch_2.pth
+checkpoints/codino/classifier/best.pt
+checkpoints/codino/trt/*.engine
 ```

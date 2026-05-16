@@ -151,6 +151,7 @@ def runtime_summary_text() -> str:
     benchmark_exists = bool(benchmark.get("exists")) if isinstance(benchmark, dict) else False
     dinov3 = rec.get("dinov3", {}) if isinstance(rec.get("dinov3"), dict) else {}
     eva02 = rec.get("eva02", {}) if isinstance(rec.get("eva02"), dict) else {}
+    codino = rec.get("codino", {}) if isinstance(rec.get("codino"), dict) else {}
     engine = selected_trt_engine()
     return (
         f"python={default_python()} | "
@@ -158,6 +159,7 @@ def runtime_summary_text() -> str:
         f"benchmark={'ok' if benchmark_exists else 'none'} | "
         f"DINOv3 batch={dinov3.get('batch_size', '既定')} | "
         f"EVA02 batch={eva02.get('batch_size', '既定')} | "
+        f"Co-DINO batch={codino.get('batch_size', '既定')} | "
         f"EVA02 cls={eva02.get('classifier_batch_size', '既定')} | "
         f"engine={'ok' if engine.is_file() else 'missing'}"
     )
@@ -312,6 +314,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.detector_combo = ClosingComboBox()
         self.detector_combo.addItem("DINOv3", "dinov3")
         self.detector_combo.addItem("EVA02", "eva02")
+        self.detector_combo.addItem("Co-DINO", "codino")
         self.detector_combo.setCurrentIndex(1)
 
         self.detailed_overlay_check = QtWidgets.QCheckBox("詳細オーバーレイ（元マスク + 後処理輪郭 + ID/クラス）")
@@ -1007,6 +1010,28 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                 pipeline_command.extend(["--eva02-warmup-frames", str(eva02_warmup)])
             if eva02_classifier_batch:
                 pipeline_command.extend(["--eva02-classifier-batch-size", str(eva02_classifier_batch)])
+        elif detector == "codino":
+            codino_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("codino", "batch_size")
+            codino_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("codino", "warmup_frames")
+            codino_trt_backbone = profile_path("codino", "trt_backbone_engine")
+            codino_trt_feature = profile_path("codino", "trt_feature_engine")
+            codino_trt_query = profile_path("codino", "trt_query_encoder_engine")
+            codino_trt_decoder = profile_path("codino", "trt_decoder_engine")
+            codino_trt_mask = profile_path("codino", "trt_mask_head_engine")
+            if codino_batch:
+                pipeline_command.extend(["--codino-batch-size", str(codino_batch)])
+            if codino_warmup is not None:
+                pipeline_command.extend(["--codino-warmup-frames", str(codino_warmup)])
+            if codino_trt_backbone is not None and codino_trt_backbone.is_file():
+                pipeline_command.extend(["--codino-trt-backbone-engine", str(codino_trt_backbone)])
+            if codino_trt_feature is not None and codino_trt_feature.is_file():
+                pipeline_command.extend(["--codino-trt-feature-engine", str(codino_trt_feature)])
+            if codino_trt_query is not None and codino_trt_query.is_file():
+                pipeline_command.extend(["--codino-trt-query-encoder-engine", str(codino_trt_query)])
+            if codino_trt_decoder is not None and codino_trt_decoder.is_file():
+                pipeline_command.extend(["--codino-trt-decoder-engine", str(codino_trt_decoder)])
+            if codino_trt_mask is not None and codino_trt_mask.is_file():
+                pipeline_command.extend(["--codino-trt-mask-head-engine", str(codino_trt_mask)])
         else:
             dinov3_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("dinov3", "batch_size")
             dinov3_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("dinov3", "warmup_frames")
@@ -1018,7 +1043,12 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             if trt_engine.is_file():
                 pipeline_command.extend(["--trt-backbone-engine", str(trt_engine)])
         if self.score_enable.isChecked():
-            score_flag = "--eva02-score-thresh" if detector == "eva02" else "--score-thresh"
+            if detector == "eva02":
+                score_flag = "--eva02-score-thresh"
+            elif detector == "codino":
+                score_flag = "--codino-score-thresh"
+            else:
+                score_flag = "--score-thresh"
             pipeline_command.extend([score_flag, f"{self.score_spin.value():.3f}"])
         if postprocess:
             pipeline_command.extend(

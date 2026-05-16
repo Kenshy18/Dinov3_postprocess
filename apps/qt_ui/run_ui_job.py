@@ -143,12 +143,16 @@ def runtime_snapshot(pipeline_command: list[str]) -> dict[str, Any]:
             "batch_size": option_value(pipeline_command, "--batch-size"),
             "eva02_batch_size": option_value(pipeline_command, "--eva02-batch-size"),
             "eva02_classifier_batch_size": option_value(pipeline_command, "--eva02-classifier-batch-size"),
+            "codino_batch_size": option_value(pipeline_command, "--codino-batch-size"),
             "warmup_frames": option_value(pipeline_command, "--warmup-frames"),
             "eva02_warmup_frames": option_value(pipeline_command, "--eva02-warmup-frames"),
+            "codino_warmup_frames": option_value(pipeline_command, "--codino-warmup-frames"),
             "max_frames": option_value(pipeline_command, "--max-frames"),
             "score_thresh": option_value(pipeline_command, "--score-thresh"),
             "eva02_score_thresh": option_value(pipeline_command, "--eva02-score-thresh"),
+            "codino_score_thresh": option_value(pipeline_command, "--codino-score-thresh"),
             "trt_backbone_engine": option_value(pipeline_command, "--trt-backbone-engine"),
+            "codino_trt_backbone_engine": option_value(pipeline_command, "--codino-trt-backbone-engine"),
         },
     }
 

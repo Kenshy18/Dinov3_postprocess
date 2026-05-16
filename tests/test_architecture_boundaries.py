@@ -16,6 +16,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_detector_runtime_defaults_live_under_backend_detectors(self) -> None:
         dinov3_runtime = pipeline_defaults.DEFAULT_DINOV3_RUNTIME
         eva02_runtime = pipeline_defaults.DEFAULT_EVA02_RUNTIME
+        codino_runtime = pipeline_defaults.DEFAULT_CODINO_RUNTIME
 
         self.assertEqual(
             dinov3_runtime,
@@ -25,8 +26,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             eva02_runtime,
             ROOT / "backend" / "detectors" / "eva02" / "runtime",
         )
+        self.assertEqual(
+            codino_runtime,
+            ROOT / "backend" / "detectors" / "codino" / "runtime",
+        )
         self.assertTrue((dinov3_runtime / "infer_video_dinov3_jsonl.py").is_file())
         self.assertTrue((eva02_runtime / "infer_video_eva02_jsonl.py").is_file())
+        self.assertTrue((codino_runtime / "infer_video_codino_jsonl.py").is_file())
 
     def test_legacy_inference_tree_was_removed(self) -> None:
         self.assertFalse((ROOT / "inference").exists())
@@ -45,6 +51,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         for expected in (
             "backend/detectors/dinov3",
             "backend/detectors/eva02",
+            "backend/detectors/codino",
             "backend/classifiers",
             "backend/schemas",
             "backend/postprocess",

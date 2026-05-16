@@ -77,13 +77,14 @@ Both wrappers stream child process progress to the terminal and also write logs:
 <run>/logs/postprocess.log
 ```
 
-Use `--detector dinov3` or `--detector eva02`. The default remains `dinov3`.
+Use `--detector dinov3`, `--detector eva02`, or `--detector codino`. The default remains `dinov3`.
 
 It calls one of:
 
 ```text
 backend/detectors/dinov3/runtime/infer_video_dinov3_jsonl.py
 backend/detectors/eva02/runtime/infer_video_eva02_jsonl.py
+backend/detectors/codino/runtime/infer_video_codino_jsonl.py
 ```
 
 The DINOv3 runtime uses bundled code under:
