@@ -252,3 +252,4 @@ TensorRT engineはGPU、driver、CUDA、TensorRT versionに依存するため、
 - RTX 4090などのAda系: TensorRT engineをそのPCで再作成する前提で対応想定です。
 - DINOv3 backboneの既定はTensorRT BF16です。BF16 buildが失敗した場合、セットアップは同じengine pathにFP16で自動fallbackします。明示する場合は `TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh` を使えます。
 - Co-DINOは `backend/detectors/codino/tools/rebuild_codino_trt_engines.sh` でbackbone、query encoder、decoder、mask head coreを作成します。query encoder/decoderは `MultiscaleDeformableAttnPlugin_TRT` を使います。
+- 現行の既定は `TENSORRT_PIP_SPEC=tensorrt==10.13.0.35` です。driver/CUDAに合わないTensorRT wheelはimportできてもbuilder初期化で失敗します。

@@ -108,6 +108,7 @@ REFERENCE_VENV=/path/to/known-good-venv tools/setup_integrated_runtime_env.sh
 RUN_DINO_SMOKE=0 tools/setup_integrated_runtime_env.sh
 BUILD_DETECTRON2=1 tools/setup_integrated_runtime_env.sh
 TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh
+TENSORRT_PIP_SPEC=tensorrt==10.13.0.35 tools/setup_integrated_runtime_env.sh
 REBUILD_CODINO_TRT=1 tools/setup_integrated_runtime_env.sh
 CODINO_TRT_BATCH_SIZE=1 tools/setup_integrated_runtime_env.sh
 ```
@@ -123,6 +124,9 @@ the setup default chooses batch 2 on GPUs with at least 20 GiB VRAM and batch 1
 below that. Co-DINO query encoder/decoder ONNX export maps mmcv deformable
 attention to NVIDIA `MultiscaleDeformableAttnPlugin_TRT`, so TensorRT Python
 bindings and plugin libraries must import correctly in the setup venv.
+On the current Blackwell workstation with driver 573/CUDA 12.8, the default
+`TENSORRT_PIP_SPEC` is pinned to `tensorrt==10.13.0.35`; newer CUDA 13-oriented
+TensorRT wheels can import but fail during builder initialization.
 
 GPU notes:
 

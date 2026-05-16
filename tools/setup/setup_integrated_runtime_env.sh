@@ -312,6 +312,11 @@ import sys
 
 for name in ("torch", "cv2", "orjson", "atosyori_postprocess", "mmcv", "mmdet", "tensorrt"):
     importlib.import_module(name)
+import tensorrt as trt
+logger = trt.Logger(trt.Logger.WARNING)
+builder = trt.Builder(logger)
+if builder is None:
+    raise SystemExit("[ERROR] TensorRT builder initialization failed")
 print(f"[CHECK] imports ok: {sys.executable}")
 PY
   "$PY" -m atosyori_postprocess doctor --model-root "$POSTPROCESS_MODEL_ROOT" || true

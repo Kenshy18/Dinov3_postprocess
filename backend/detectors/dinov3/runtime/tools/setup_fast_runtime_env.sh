@@ -26,6 +26,7 @@ REBUILD_TRT="${REBUILD_TRT:-auto}"
 ENGINE_PATH="${ENGINE_PATH:-$REPO_ROOT/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
 TRT_PRECISION="${TRT_PRECISION:-bf16}"
 TRT_FALLBACK_FP16="${TRT_FALLBACK_FP16:-1}"
+TENSORRT_PIP_SPEC="${TENSORRT_PIP_SPEC:-tensorrt==10.13.0.35}"
 
 python_works() {
   local candidate="$1"
@@ -94,7 +95,7 @@ fi
   fairscale \
   opencv-python \
   ninja \
-  tensorrt
+  "$TENSORRT_PIP_SPEC"
 
 "$PY" - <<'PY'
 import importlib
@@ -130,10 +131,16 @@ if missing:
     raise SystemExit(2)
 
 import torch
+import tensorrt as trt
 print(f"[CHECK] python={sys.version.split()[0]}")
 print(f"[CHECK] torch={torch.__version__} cuda={torch.version.cuda} cuda_available={torch.cuda.is_available()}")
 if not torch.cuda.is_available():
     raise SystemExit("[ERROR] CUDA is not available; fast TensorRT inference requires CUDA")
+logger = trt.Logger(trt.Logger.WARNING)
+builder = trt.Builder(logger)
+if builder is None:
+    raise SystemExit("[ERROR] TensorRT builder initialization failed")
+print(f"[CHECK] tensorrt={trt.__version__} builder_ok=True")
 PY
 
 if [[ -z "$SMOKE_BATCH_SIZE" ]]; then
