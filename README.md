@@ -233,6 +233,7 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/classifier/best.pt
   checkpoints/eva02/detector/model_final.pth
   checkpoints/eva02/classifier/best.pt
+  checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   checkpoints/codino/detector/resolved_config.py
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt

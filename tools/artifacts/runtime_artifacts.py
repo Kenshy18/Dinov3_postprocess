@@ -191,6 +191,7 @@ RUNTIME_MAPPINGS: tuple[Mapping, ...] = (
     CLASSIFIER.mapping,
     EVA02_DETECTOR.mapping,
     EVA02_CLASSIFIER.mapping,
+    TRT_BACKBONE.mapping,
     CODINO_CONFIG.mapping,
     CODINO_CHECKPOINT.mapping,
     CODINO_CLASSIFIER.mapping,
