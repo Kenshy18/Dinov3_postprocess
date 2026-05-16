@@ -1,13 +1,13 @@
 # SOD推論システム Qt UI
 
 `backend.pipeline` の互換入口 `scripts/run_integrated_pipeline.py` をQtから実行するフロントエンドです。
-DINOv3/EVA02の切り替え、入力動画キュー、結果保存先、オーバーレイ、後処理パラメータを画面から指定できます。
+DINOv3/EVA02/Co-DINOの切り替え、入力動画キュー、結果保存先、オーバーレイ、後処理パラメータを画面から指定できます。
 インターレース入力、AVI、ProRes/MOV、回転メタ、非正方ピクセル、VFR、10bit/4:2:2系pix_fmtなどは実行前にH.264/MP4へ自動正規化し、変換後のプログレッシブ動画を推論に使います。
 
 ## 起動
 
 ```bash
-cd /home/kenke/Dinov3_postprocess
+cd Dinov3_postprocess
 tools/setup_gui_runtime.sh
 apps/qt_ui/run_app.sh
 ```
@@ -25,7 +25,7 @@ Windows/PowerShell から起動する場合は `apps/qt_ui/run_app.ps1` を使�
 
 主な対応項目:
 
-- Backend: `DINOv3` / `EVA02`
+- Backend: `DINOv3` / `EVA02` / `Co-DINO`
 - 入力: 動画ファイル複数選択、またはフォルダ
 - 後処理: on/off、楕円/ポリゴン、キーフレーム間隔、recall、confidence
 - overlay: 詳細後処理overlay、簡易後処理overlay、推論JSONL overlay（複数同時選択可）

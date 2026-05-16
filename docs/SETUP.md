@@ -2,22 +2,27 @@
 
 ## 1. Clone this directory/repository
 
-The bundle contains the required source code for DINOv3/EVA02 inference and Atosyori postprocess.
+The bundle contains the required source code for DINOv3/EVA02/Co-DINO inference
+and Atosyori postprocess.
 
 Key source directories:
 
 ```text
 backend/detectors/dinov3/runtime/
+backend/detectors/codino/runtime/
 scripts/
 configs/
 dinov3/
 eva02/eva02_det/
+external/codino/
 external/atosyori-pipeline-dev/
 ```
 
-## 2. Configure artifact download
+## 2. Configure Drive artifacts
 
-The integrated runtime artifact Google Drive folder URL is already set in the setup script. Only copy the example env file when you need to override it.
+Runtime checkpoints, classifiers, postprocess models, and TensorRT engines are
+stored outside Git. Upload the runtime artifact folder to Google Drive, then set
+the shared folder URL.
 
 ```bash
 cp configs/artifact_sources.env.example configs/artifact_sources.env
@@ -27,6 +32,12 @@ Edit:
 
 ```bash
 RUNTIME_ARTIFACTS_URL="https://drive.google.com/drive/folders/..."
+```
+
+Check the current placement after setup/download with:
+
+```bash
+python tools/check_artifacts.py
 ```
 
 This single folder should contain the detection, classification, K2, and polygon predictor artifacts.
@@ -45,6 +56,10 @@ checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 checkpoints/dinov3/classifier/best.pt
 checkpoints/Eva02/detector/model_final.pth
 checkpoints/Eva02/classifier/best.pt
+checkpoints/codino/detector/resolved_config.py
+checkpoints/codino/detector/epoch_2.pth
+checkpoints/codino/classifier/best.pt
+checkpoints/codino/trt/*.engine
 checkpoints/postprocess/k2_v5/best_exact.pt
 checkpoints/postprocess/k2_v5/run_config.json
 checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -54,15 +69,9 @@ checkpoints/postprocess/polygon_point_predictor/run_config.json
 checkpoints/postprocess/polygon_point_predictor/train_mask_point_predictor.py
 ```
 
-You can check the current placement with:
-
-```bash
-python tools/check_artifacts.py
-```
-
 The downloader places those grouped Drive paths into the local runtime layout
-under `checkpoints/detector`, `checkpoints/classifier`, and
-`checkpoints/eva02`.
+under `checkpoints/detector`, `checkpoints/classifier`, `checkpoints/eva02`,
+and `checkpoints/codino`.
 
 ## 3. Create runtime environment
 
@@ -72,7 +81,8 @@ tools/setup_integrated_runtime_env.sh
 
 The setup script performs:
 
-- artifact download and placement into `checkpoints/`
+- artifact verification under `checkpoints/`
+- optional artifact download when `DOWNLOAD_ARTIFACTS=1`
 - venv creation
 - dependency installation
 - UI dependency installation
@@ -104,7 +114,11 @@ TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh
 
 For Blackwell GPUs, use a PyTorch/CUDA build that supports the GPU architecture. On this machine the known-good runtime is the existing EVA02 inference venv, which can be passed through `REFERENCE_VENV`.
 
-TensorRT engines are not treated as portable artifacts. Rebuild them on each target PC. The default build uses BF16; if BF16 engine creation fails, setup retries with FP16 at the same default engine path. Set `TRT_FALLBACK_FP16=0` to make BF16 failure hard-fail.
+TensorRT engines are stored as runtime artifacts for the validated deployment
+machine, but they are not universally portable. Rebuild them on each different
+GPU/driver/TensorRT combination when loading fails. The default build uses BF16;
+if BF16 engine creation fails, setup retries with FP16 at the same default
+engine path. Set `TRT_FALLBACK_FP16=0` to make BF16 failure hard-fail.
 
 GPU notes:
 
@@ -132,6 +146,16 @@ Detailed entrypoint:
   --output-root output/runs \
   --classifier \
   --render-overlays \
+  --force
+```
+
+Co-DINO detector:
+
+```bash
+.venv_integrated/bin/python scripts/infer_video_postprocess.py \
+  --detector codino \
+  --input input/sample.mp4 \
+  --output-root output/runs \
   --force
 ```
 

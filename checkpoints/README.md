@@ -2,7 +2,8 @@
 
 Runtime checkpoint and engine files are placed here.
 
-These files are intentionally not tracked in Git. Keep them in Google Drive or another artifact store. The download script places them into this local layout before running.
+Runtime artifact bodies are not tracked in Git. Restore them from the shared
+Drive folder or another artifact store before inference.
 
 ```text
 checkpoints/
@@ -28,9 +29,10 @@ checkpoints/
     polygon_point_predictor/feature_stats.npz
 ```
 
-TensorRT engine is GPU/CUDA/TensorRT dependent. If it is missing or incompatible, rebuild it with the tools under `inference/dinov3_video_jsonl_runtime/tools/`.
+TensorRT engines are GPU/CUDA/TensorRT dependent. If an engine is missing or
+incompatible on a different machine, rebuild it with the setup tools.
 
-The shared Drive upload currently groups detector artifacts by backbone:
+The shared Drive upload groups detector artifacts by backbone:
 
 ```text
 checkpoints/dinov3/detector/model_final.pth

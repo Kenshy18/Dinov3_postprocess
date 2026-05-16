@@ -15,11 +15,7 @@ fi
 
 DINO_RUNTIME_DIR="${DINO_RUNTIME_DIR:-$(cd "$ROOT_DIR/backend/detectors/dinov3/runtime" && pwd)}"
 if [[ -z "${ATOSYORI_REPO:-}" ]]; then
-  if [[ -d "$ROOT_DIR/external/atosyori-pipeline-dev/src/atosyori_postprocess" ]]; then
-    ATOSYORI_REPO="$ROOT_DIR/external/atosyori-pipeline-dev"
-  else
-    ATOSYORI_REPO="/home/kenke/workspace/CV/atosyori-pipeline-dev"
-  fi
+  ATOSYORI_REPO="$ROOT_DIR/external/atosyori-pipeline-dev"
 fi
 ENV_DIR="${ENV_DIR:-$ROOT_DIR/.venv_integrated}"
 RUN_DINO_SMOKE="${RUN_DINO_SMOKE:-1}"
@@ -30,8 +26,8 @@ BASE_PYTHON="${BASE_PYTHON:-}"
 DOWNLOAD_ARTIFACTS="${DOWNLOAD_ARTIFACTS:-1}"
 ARTIFACT_OVERWRITE="${ARTIFACT_OVERWRITE:-0}"
 ARTIFACT_DOWNLOAD_DIR="${ARTIFACT_DOWNLOAD_DIR:-$ROOT_DIR/output/download_cache/artifacts}"
-POSTPROCESS_ARTIFACTS_URL="${POSTPROCESS_ARTIFACTS_URL:-https://drive.google.com/drive/folders/10-Zc2ShIkJn7T1JIcvUgiEgdSoIANJcT?usp=sharing}"
-RUNTIME_ARTIFACTS_URL="${RUNTIME_ARTIFACTS_URL:-https://drive.google.com/drive/folders/1cj9gPOt4MIRu6cFW80vfTZHK9oLQB6qn?usp=sharing}"
+POSTPROCESS_ARTIFACTS_URL="${POSTPROCESS_ARTIFACTS_URL:-}"
+RUNTIME_ARTIFACTS_URL="${RUNTIME_ARTIFACTS_URL:-}"
 RUNTIME_ARTIFACTS_DIR="${RUNTIME_ARTIFACTS_DIR:-}"
 DINOV3_ARTIFACTS_URL="${DINOV3_ARTIFACTS_URL:-}"
 DINOV3_ARTIFACTS_DIR="${DINOV3_ARTIFACTS_DIR:-}"
@@ -67,8 +63,7 @@ python_works() {
 if [[ -z "${REFERENCE_VENV:-}" ]]; then
   for candidate in \
     "$ROOT_DIR/.venv_integrated" \
-    "$ROOT_DIR/../eva02_cascade_experimental/venv" \
-    "/home/kenke/workspace/CV/unified_training_codino_eva02/inference/eva02_cascade_experimental/venv"; do
+    "$ROOT_DIR/../eva02_cascade_experimental/venv"; do
     if [[ "$candidate" != "$ENV_DIR" && -x "$candidate/bin/python" ]]; then
       REFERENCE_VENV="$candidate"
       break
@@ -82,7 +77,6 @@ if [[ -z "$BASE_PYTHON" ]]; then
   else
     for candidate in \
       "$ROOT_DIR/.venv_integrated/bin/python" \
-      /home/kenke/miniconda3/envs/eva02_trt/bin/python \
       "$(command -v python3.10 2>/dev/null || true)" \
       "$(command -v python3 2>/dev/null || true)" \
       /usr/bin/python3; do
@@ -141,23 +135,17 @@ else
   echo "[SETUP] artifact download disabled"
 fi
 
-for required in \
-  "$ROOT_DIR/checkpoints/detector/model_final.pth" \
-  "$ROOT_DIR/checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth" \
-  "$ROOT_DIR/checkpoints/classifier/best.pt"; do
-  if [[ ! -f "$required" ]]; then
-    cat >&2 <<EOF
-[ERROR] required DINOv3 artifact is missing:
-  $required
+if ! "$PY" "$ROOT_DIR/tools/artifacts/check_artifacts.py"; then
+  cat >&2 <<EOF
+[ERROR] required runtime artifacts are missing.
 
-Set RUNTIME_ARTIFACTS_URL to the Google Drive folder uploaded from:
-  artifacts_to_upload/runtime_artifacts
+For a normal clone, set RUNTIME_ARTIFACTS_URL in configs/artifact_sources.env
+to the shared Drive folder and rerun this setup script.
 
-Or place those files manually and rerun this setup script.
+For local artifact storage, set RUNTIME_ARTIFACTS_DIR=/path/to/runtime_artifacts.
 EOF
-    exit 2
-  fi
-done
+  exit 2
+fi
 
 RUN_SMOKE="$RUN_DINO_SMOKE" \
   ENV_DIR="$ENV_DIR" \

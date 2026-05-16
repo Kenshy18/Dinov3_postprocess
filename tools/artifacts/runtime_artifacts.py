@@ -79,6 +79,41 @@ TRT_BACKBONE = RuntimeArtifact(
     "checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
     ("checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",),
 )
+CODINO_CONFIG = RuntimeArtifact(
+    "Co-DINO config",
+    "checkpoints/codino/detector/resolved_config.py",
+    ("checkpoints/codino/detector/resolved_config.py",),
+)
+CODINO_CHECKPOINT = RuntimeArtifact(
+    "Co-DINO detector checkpoint",
+    "checkpoints/codino/detector/epoch_2.pth",
+    ("checkpoints/codino/detector/epoch_2.pth",),
+)
+CODINO_CLASSIFIER = RuntimeArtifact(
+    "Co-DINO ROI classifier checkpoint",
+    "checkpoints/codino/classifier/best.pt",
+    ("checkpoints/codino/classifier/best.pt",),
+)
+CODINO_TRT_BACKBONE = RuntimeArtifact(
+    "Co-DINO TensorRT DINOv3 backbone engine",
+    "checkpoints/codino/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine",
+    ("checkpoints/codino/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine",),
+)
+CODINO_TRT_QUERY_ENCODER = RuntimeArtifact(
+    "Co-DINO TensorRT query encoder engine",
+    "checkpoints/codino/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine",
+    ("checkpoints/codino/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine",),
+)
+CODINO_TRT_DECODER = RuntimeArtifact(
+    "Co-DINO TensorRT decoder engine",
+    "checkpoints/codino/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine",
+    ("checkpoints/codino/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine",),
+)
+CODINO_TRT_MASK_HEAD = RuntimeArtifact(
+    "Co-DINO TensorRT mask head engine",
+    "checkpoints/codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine",
+    ("checkpoints/codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine",),
+)
 POSTPROCESS_K2 = RuntimeArtifact(
     "postprocess K2 checkpoint",
     "checkpoints/postprocess/k2_v5/best_exact.pt",
@@ -102,6 +137,13 @@ REQUIRED_ARTIFACTS = (
     EVA02_DETECTOR,
     EVA02_CLASSIFIER,
     TRT_BACKBONE,
+    CODINO_CONFIG,
+    CODINO_CHECKPOINT,
+    CODINO_CLASSIFIER,
+    CODINO_TRT_BACKBONE,
+    CODINO_TRT_QUERY_ENCODER,
+    CODINO_TRT_DECODER,
+    CODINO_TRT_MASK_HEAD,
     POSTPROCESS_K2,
     POSTPROCESS_POLYGON,
     POSTPROCESS_POLYGON_STATS,
@@ -149,5 +191,12 @@ RUNTIME_MAPPINGS: tuple[Mapping, ...] = (
     CLASSIFIER.mapping,
     EVA02_DETECTOR.mapping,
     EVA02_CLASSIFIER.mapping,
+    CODINO_CONFIG.mapping,
+    CODINO_CHECKPOINT.mapping,
+    CODINO_CLASSIFIER.mapping,
+    CODINO_TRT_BACKBONE.mapping,
+    CODINO_TRT_QUERY_ENCODER.mapping,
+    CODINO_TRT_DECODER.mapping,
+    CODINO_TRT_MASK_HEAD.mapping,
     *POSTPROCESS_MAPPINGS,
 )

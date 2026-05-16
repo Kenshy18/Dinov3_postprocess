@@ -8,5 +8,6 @@ checkpoints/eva02/
   classifier/best.pt
 ```
 
-In this workspace these paths are local symlinks to the latest validated EVA02
-Cascade detector and rich ROI classifier under `CV/unified_training_codino_eva02`.
+These paths are repo-local runtime artifacts. They may be hardlinked from the
+validated training workspace during development, but normal clones restore them
+from the shared Drive artifact folder.

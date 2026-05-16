@@ -1,14 +1,14 @@
 {
   "detector": {
     "path": "checkpoints/eva02/detector/model_final.pth",
-    "source": "/home/kenke/workspace/CV/unified_training_codino_eva02/outputs/pth/eva02_cascade_0226_base/model_final.pth",
+    "source": "repo-local file restored from Drive artifact",
     "run": "eva02_cascade_0226_base",
     "mtime": "2026-03-01 09:03:04 +0900",
     "notes": "latest validated EVA02 Cascade Mask R-CNN detector used by external/clean eval records"
   },
   "classifier": {
     "path": "checkpoints/eva02/classifier/best.pt",
-    "source": "/home/kenke/workspace/CV/unified_training_codino_eva02/inference/eva02_cascade_experimental/two_stage_multiclass_20260211_212014/outputs/roi_classifier_ck0226_sota_retrain/run_20260302_205038/checkpoints/best.pt",
+    "source": "repo-local file restored from Drive artifact",
     "run": "roi_classifier_ck0226_sota_retrain/run_20260302_205038",
     "mtime": "2026-03-02 20:54:28 +0900",
     "notes": "rich_spatial_attn_fusion ROI classifier trained for the ck0226 EVA02 detector features"

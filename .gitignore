@@ -37,6 +37,8 @@ external/*
 !external/README.md
 !external/atosyori-pipeline-dev/
 !external/atosyori-pipeline-dev/**
+!external/codino/
+!external/codino/**
 external/atosyori-pipeline-dev/.git/
 external/atosyori-pipeline-dev/input/*
 external/atosyori-pipeline-dev/output/*
@@ -46,6 +48,18 @@ external/atosyori-pipeline-dev/**/*.ckpt
 external/atosyori-pipeline-dev/**/*.sqlite
 external/atosyori-pipeline-dev/**/*.jsonl
 external/atosyori-pipeline-dev/**/*.mp4
+external/codino/.git/
+external/codino/**/__pycache__/
+external/codino/**/*.pyc
+external/codino/work_dirs/
+external/codino/data/
+external/codino/demo/
+external/codino/**/*.pt
+external/codino/**/*.pth
+external/codino/**/*.ckpt
+external/codino/**/*.sqlite
+external/codino/**/*.jsonl
+external/codino/**/*.mp4
 
 checkpoints/detector/*
 !checkpoints/detector/.gitkeep
@@ -56,6 +70,13 @@ checkpoints/classifier/*
 checkpoints/trt/*
 !checkpoints/trt/.gitkeep
 !checkpoints/README.md
+checkpoints/codino/detector/*
+!checkpoints/codino/detector/.gitkeep
+checkpoints/codino/classifier/*
+!checkpoints/codino/classifier/.gitkeep
+checkpoints/codino/trt/*
+!checkpoints/codino/trt/.gitkeep
+!checkpoints/codino/README.md
 
 checkpoints/postprocess/k2_v5/*
 !checkpoints/postprocess/k2_v5/.gitkeep

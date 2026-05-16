@@ -21,11 +21,11 @@ def _env_path(key: str, default: str) -> str:
 
 DATA_ROOT = _env_path(
     "UNIFIED_DATA_ROOT",
-    "/home/kenke/EVA02/1220_datasets_original",
+    str(REPO_ROOT / "datasets" / "images"),
 )
 ANN_ALL_JSON = _env_path(
     "UNIFIED_ANN_ALL_JSON",
-    "/home/kenke/EVA02/1220_datasets_processed/annotations/annotations_all.json",
+    str(REPO_ROOT / "datasets" / "annotations" / "annotations_all.json"),
 )
 ANN_ROOT = Path(
     _env_path("UNIFIED_ANN_ROOT", str(REPO_ROOT / "datasets" / "annotations"))
@@ -46,7 +46,7 @@ DINOv3_WEIGHTS = _env_path(
 )
 EVA02_WEIGHTS = _env_path(
     "UNIFIED_EVA02_WEIGHTS",
-    "/home/kenke/EVA02/checkpoints/eva02_L_coco_det_sys_o365.pth",
+    str(REPO_ROOT / "checkpoints" / "eva02" / "detector" / "model_final.pth"),
 )
 
 OUTPUT_ROOT = Path(_env_path("UNIFIED_OUTPUT_ROOT", str(REPO_ROOT / "output" / "training_outputs")))

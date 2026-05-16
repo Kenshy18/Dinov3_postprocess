@@ -27,9 +27,7 @@ from backend.postprocess.commands import build_run_command as build_atosyori_run
 
 
 def default_atosyori_repo() -> Path:
-    if (LOCAL_ATOSYORI_REPO / "src" / "atosyori_postprocess").is_dir():
-        return LOCAL_ATOSYORI_REPO
-    return Path(os.environ.get("ATOSYORI_REPO", "/home/kenke/workspace/CV/atosyori-pipeline-dev"))
+    return Path(os.environ.get("ATOSYORI_REPO", str(LOCAL_ATOSYORI_REPO)))
 
 
 def build_parser() -> argparse.ArgumentParser:

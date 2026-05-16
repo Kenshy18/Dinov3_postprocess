@@ -10,8 +10,7 @@ BASE_PYTHON="${BASE_PYTHON:-}"
 if [[ -z "${REFERENCE_VENV:-}" ]]; then
   for candidate in \
     "$REPO_ROOT/.venv_integrated" \
-    "$REPO_ROOT/../eva02_cascade_experimental/venv" \
-    "/home/kenke/workspace/CV/unified_training_codino_eva02/inference/eva02_cascade_experimental/venv"; do
+    "$REPO_ROOT/../eva02_cascade_experimental/venv"; do
     if [[ "$candidate" != "$ENV_DIR" && -x "$candidate/bin/python" ]]; then
       REFERENCE_VENV="$candidate"
       break
@@ -40,7 +39,6 @@ if [[ -z "$BASE_PYTHON" ]]; then
   else
     for candidate in \
       "$REPO_ROOT/.venv_integrated/bin/python" \
-      /home/kenke/miniconda3/envs/eva02_trt/bin/python \
       "$(command -v python3.10 2>/dev/null || true)" \
       "$(command -v python3 2>/dev/null || true)" \
       /usr/bin/python3; do

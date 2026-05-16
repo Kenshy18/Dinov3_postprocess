@@ -29,18 +29,20 @@
   - 他PCへ持ち出す際の注意点。
 - `two_stage_multiclass_20260426/scripts/two_stage_roi_classifier.py`
   - optional classifierのモデル定義とcheckpoint loader。
-- `output/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine`
-  - TensorRT BF16 DINOv3 backbone engineへのsymlink。
-- `two_stage_multiclass_20260426/outputs/.../checkpoints/best.pt`
-  - no-expanded rich attention classifier checkpointへのsymlink。
+- `checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine`
+  - TensorRT BF16 DINOv3 backbone engine。
+- `checkpoints/classifier/best.pt`
+  - no-expanded rich attention classifier checkpoint。
 - `checkpoints/detector/last_checkpoint`
   - detector checkpointのdefault resolver用。
 - `checkpoints/detector/model_final.pth`
-  - DINOv3 Cascade detector checkpointへのsymlink。
+  - DINOv3 Cascade detector checkpoint。
 - `checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth`
-  - DINOv3 pretrained weightsへのsymlink。
+  - DINOv3 pretrained weights。
 
-The detector checkpoint, DINOv3 pretrained weights, TensorRT engine, and classifier checkpoint are all reachable from this runtime directory. Large files are symlinked instead of copied.
+The detector checkpoint, DINOv3 pretrained weights, TensorRT engine, and
+classifier checkpoint are repo-local files restored from the shared artifact
+folder.
 
 ## Usage
 

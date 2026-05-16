@@ -1,7 +1,7 @@
 {
-  "input_jsonl": "/home/kenke/Atosyori0331/standalone_k1_k2_v5_clean/experiments/linear_polygon_bezier_workspace_20260410/output/teacher_dataset_5k_20260411_run2/teacher_dataset.jsonl",
-  "output_dir": "/home/kenke/Atosyori0331/standalone_k1_k2_v5_clean/experiments/linear_polygon_bezier_workspace_20260410/output/mask_point_predictor_wide96_20260411",
-  "dataset_root": "/home/kenke/Atosyori0331/standalone_k1_k2_v5_clean/experiments/linear_polygon_bezier_workspace_20260410/output/teacher_dataset_5k_20260411_run2",
+  "input_jsonl": "training_artifacts/polygon_teacher_dataset.jsonl",
+  "output_dir": "training_outputs/mask_point_predictor_wide96_20260411",
+  "dataset_root": "training_artifacts/polygon_teacher_dataset_5k_20260411_run2",
   "train_count": 3996,
   "val_count": 1004,
   "image_size": 96,

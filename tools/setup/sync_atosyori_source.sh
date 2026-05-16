@@ -3,8 +3,13 @@ set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$TOOLS_DIR/../.." && pwd)"
-SOURCE="${ATOSYORI_REPO:-/home/kenke/workspace/CV/atosyori-pipeline-dev}"
+SOURCE="${ATOSYORI_REPO:-}"
 DEST="${DEST:-$ROOT_DIR/external/atosyori-pipeline-dev}"
+
+if [[ -z "$SOURCE" ]]; then
+  echo "[ERROR] Set ATOSYORI_REPO=/path/to/atosyori-pipeline-dev to sync a source tree." >&2
+  exit 2
+fi
 
 if [[ ! -d "$SOURCE/src/atosyori_postprocess" ]]; then
   echo "[ERROR] Atosyori source not found: $SOURCE" >&2

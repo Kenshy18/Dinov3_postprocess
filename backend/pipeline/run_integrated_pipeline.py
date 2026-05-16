@@ -29,8 +29,10 @@ from .pipeline_defaults import (
     CODINO_DEFAULT_SCORE_THRESH,
     CODINO_DEFAULT_TARGET_SIZE,
     CODINO_DEFAULT_TF32,
+    CODINO_DEFAULT_TRT_FEATURE_NAMES,
     CODINO_DEFAULT_TRT_QUERY_ENCODER_SHAPES,
     CODINO_DEFAULT_WARMUP_FRAMES,
+    DETECTOR_CHOICES,
     DEFAULT_CLASSIFIER_CHECKPOINT,
     DEFAULT_CODINO_CHECKPOINT,
     DEFAULT_CODINO_CLASSIFIER_CHECKPOINT,
@@ -75,11 +77,7 @@ VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 DEFAULT_ATOSYORI_REPO = Path(
     os.environ.get(
         "ATOSYORI_REPO",
-        str(
-            LOCAL_ATOSYORI_REPO
-            if (LOCAL_ATOSYORI_REPO / "src" / "atosyori_postprocess").is_dir()
-            else Path("/home/kenke/workspace/CV/atosyori-pipeline-dev")
-        ),
+        str(LOCAL_ATOSYORI_REPO),
     )
 )
 
@@ -214,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
-    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
+    parser.add_argument("--detector", choices=DETECTOR_CHOICES, default="dinov3")
     parser.add_argument("--dinov3-runtime", type=Path, default=DEFAULT_DINOV3_RUNTIME)
     parser.add_argument("--eva02-runtime", type=Path, default=DEFAULT_EVA02_RUNTIME)
     parser.add_argument("--codino-runtime", type=Path, default=DEFAULT_CODINO_RUNTIME)
@@ -277,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--codino-trt-backbone-engine", type=Path, default=DEFAULT_CODINO_TRT_BACKBONE_ENGINE)
     parser.add_argument("--codino-trt-feature-engine", type=Path, default=DEFAULT_CODINO_TRT_FEATURE_ENGINE)
-    parser.add_argument("--codino-trt-feature-names", default="feat0,feat1,feat2,feat3,feat4")
+    parser.add_argument("--codino-trt-feature-names", default=CODINO_DEFAULT_TRT_FEATURE_NAMES)
     parser.add_argument("--codino-trt-query-encoder-engine", type=Path, default=DEFAULT_CODINO_TRT_QUERY_ENCODER_ENGINE)
     parser.add_argument("--codino-trt-query-encoder-shapes", default=CODINO_DEFAULT_TRT_QUERY_ENCODER_SHAPES)
     parser.add_argument("--codino-trt-decoder-engine", type=Path, default=DEFAULT_CODINO_TRT_DECODER_ENGINE)

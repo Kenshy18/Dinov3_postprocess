@@ -137,6 +137,7 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertEqual(command[command.index("--warmup-frames") + 1], str(CODINO_DEFAULT_WARMUP_FRAMES))
         self.assertEqual(command[command.index("--json-backend") + 1], "orjson")
         self.assertEqual(command[command.index("--mask-approx") + 1], "none")
+        self.assertEqual(command[command.index("--trt-feature-names") + 1], "feat0,feat1,feat2,feat3,feat4")
         self.assertIn("--tf32", command)
         self.assertIn("--disable-mask-iou-head", command)
         self.assertEqual(command[command.index("--max-frames") + 1], "1")

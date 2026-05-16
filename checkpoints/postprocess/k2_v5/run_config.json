@@ -1,8 +1,8 @@
 {
-  "train_jsonl": "/home/kenke/final_standalone_t5000_env/restart_workspace_20260326/ellipse_distill_jsonl_200k/k2_model_rows.jsonl",
-  "output_dir": "/home/kenke/final_standalone_t5000_env/restart_workspace_20260326/outputs/train_k2_slot_set_spd_standalone_v5",
-  "manifest_cache": "/home/kenke/final_standalone_t5000_env/restart_workspace_20260326/outputs/k2_slot_set_spd_manifest.pkl",
-  "init_checkpoint": "/home/kenke/final_standalone_t5000_env/restart_workspace_20260326/outputs/train_k2_slot_set_spd_standalone/best_exact.pt",
+  "train_jsonl": "training_artifacts/k2_model_rows.jsonl",
+  "output_dir": "training_outputs/train_k2_slot_set_spd_standalone_v5",
+  "manifest_cache": "training_outputs/k2_slot_set_spd_manifest.pkl",
+  "init_checkpoint": "checkpoints/postprocess/k2_v5/best_exact.pt",
   "load_optimizer_state": false,
   "image_size": 192,
   "batch_size": 24,
@@ -65,7 +65,7 @@
     "v5",
     "teacher_geometry"
   ],
-  "manifest_cache_resolved": "/home/kenke/final_standalone_t5000_env/restart_workspace_20260326/outputs/k2_slot_set_spd_manifest_95002397c35f.pkl",
+  "manifest_cache_resolved": "training_outputs/k2_slot_set_spd_manifest_95002397c35f.pkl",
   "manifest_loaded_from_cache": true,
   "manifest_build_sec": 0.40360331535339355,
   "device_resolved": "cuda",

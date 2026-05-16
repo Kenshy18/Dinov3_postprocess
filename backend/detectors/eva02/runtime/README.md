@@ -1,7 +1,7 @@
 # EVA02 video JSONL runtime
 
-This runtime wraps the latest optimized EVA02 + Cascade Mask R-CNN inference
-path from `CV/unified_training_codino_eva02`.
+This runtime wraps the repo-local optimized EVA02 + Cascade Mask R-CNN
+inference path.
 
 Default artifacts:
 

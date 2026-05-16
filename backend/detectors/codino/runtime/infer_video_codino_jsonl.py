@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """DINOv3 + Co-DINO video inference normalized to the shared detector JSONL contract.
 
-This runtime intentionally keeps Co-DINO model execution in the canonical
-Co-DINO working tree and owns only the integration boundary for this
-postprocess repository:
+This runtime keeps Co-DINO model execution inside this repository and owns the
+integration boundary for the postprocess pipeline:
 
 video -> Co-DINO detections/masks -> optional ROI classifier -> JSONL + summary.
 """
@@ -13,7 +12,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -31,61 +29,19 @@ if str(REPO_ROOT) not in sys.path:
 from backend.detectors.jsonl_writer import make_jsonl_writer  # noqa: E402
 
 BUNDLE_CHECKPOINTS = REPO_ROOT / "checkpoints"
-
-EXTERNAL_ROOT = Path(
-    os.environ.get("CODINO_EXTERNAL_ROOT", "/home/kenke/workspace/CV/unified_training_codino_eva02")
-).expanduser()
-EXTERNAL_CODINO_ROOT = Path(os.environ.get("CODINO_ROOT", EXTERNAL_ROOT / "codino")).expanduser()
-EXTERNAL_CODINO_RUN_DIR = (
-    EXTERNAL_CODINO_ROOT
-    / "work_dirs/dinov3_codino_inst_0423_lrrestart_from0414ep10_b8_bb1e5_head2e5_cosine_freq4_20260514_112019"
-)
-EXTERNAL_TWO_STAGE_ROOT = (
-    EXTERNAL_ROOT / "inference/dinov3_cascade_unified/two_stage_multiclass_20260426"
-)
-
 LOCAL_CODINO_DETECTOR_DIR = BUNDLE_CHECKPOINTS / "codino" / "detector"
 LOCAL_CODINO_CLASSIFIER_DIR = BUNDLE_CHECKPOINTS / "codino" / "classifier"
 LOCAL_CODINO_TRT_DIR = BUNDLE_CHECKPOINTS / "codino" / "trt"
 
 
-def _prefer_existing(local: Path, fallback: Path) -> Path:
-    return local if local.is_file() else fallback
-
-
-DEFAULT_CODINO_RUNTIME_SCRIPT = EXTERNAL_CODINO_ROOT / "tools/infer_dinov3_codino_video_fast.py"
-DEFAULT_CONFIG = _prefer_existing(
-    LOCAL_CODINO_DETECTOR_DIR / "resolved_config.py",
-    EXTERNAL_CODINO_RUN_DIR / "resolved_config.py",
-)
-DEFAULT_CHECKPOINT = _prefer_existing(
-    LOCAL_CODINO_DETECTOR_DIR / "epoch_2.pth",
-    EXTERNAL_CODINO_RUN_DIR / "epoch_2.pth",
-)
-DEFAULT_CLASSIFIER_CKPT = _prefer_existing(
-    LOCAL_CODINO_CLASSIFIER_DIR / "best.pt",
-    EXTERNAL_TWO_STAGE_ROOT
-    / "outputs/roi_classifier_codino_maskroi_spatial_gap_full_fp16/run_20260516_041219/checkpoints/best.pt",
-)
-DEFAULT_TRT_BACKBONE_ENGINE = _prefer_existing(
-    LOCAL_CODINO_TRT_DIR / "codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine",
-    EXTERNAL_ROOT / "outputs/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine",
-)
-DEFAULT_TRT_QUERY_ENCODER_ENGINE = _prefer_existing(
-    LOCAL_CODINO_TRT_DIR / "codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine",
-    EXTERNAL_ROOT / "outputs/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine",
-)
-DEFAULT_TRT_DECODER_ENGINE = _prefer_existing(
-    LOCAL_CODINO_TRT_DIR / "codino_decoder_b2_736x1280_msda_plugin_fp16.engine",
-    EXTERNAL_ROOT / "outputs/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine",
-)
-DEFAULT_TRT_MASK_HEAD_ENGINE = _prefer_existing(
-    LOCAL_CODINO_TRT_DIR / "codino_mask_head_core_n1_736x1280_fp16.engine",
-    EXTERNAL_ROOT / "outputs/trt/codino_mask_head_core_n1_736x1280_fp16.engine",
-)
-DEFAULT_TRT_EXTRA_SITE_PACKAGES = (
-    EXTERNAL_ROOT / "inference/eva02_cascade_experimental/venv/lib/python3.10/site-packages"
-)
+DEFAULT_CODINO_RUNTIME_SCRIPT = BASE_DIR / "codino_video_fast_runtime.py"
+DEFAULT_CONFIG = LOCAL_CODINO_DETECTOR_DIR / "resolved_config.py"
+DEFAULT_CHECKPOINT = LOCAL_CODINO_DETECTOR_DIR / "epoch_2.pth"
+DEFAULT_CLASSIFIER_CKPT = LOCAL_CODINO_CLASSIFIER_DIR / "best.pt"
+DEFAULT_TRT_BACKBONE_ENGINE = LOCAL_CODINO_TRT_DIR / "codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine"
+DEFAULT_TRT_QUERY_ENCODER_ENGINE = LOCAL_CODINO_TRT_DIR / "codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
+DEFAULT_TRT_DECODER_ENGINE = LOCAL_CODINO_TRT_DIR / "codino_decoder_b2_736x1280_msda_plugin_fp16.engine"
+DEFAULT_TRT_MASK_HEAD_ENGINE = LOCAL_CODINO_TRT_DIR / "codino_mask_head_core_n1_736x1280_fp16.engine"
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 CLASS_COLORS = [
@@ -420,7 +376,7 @@ def _infer_one_video(
             if not hasattr(codino_video, "infer_batch_with_roi_classifier"):
                 raise RuntimeError(
                     "Co-DINO runtime script does not expose infer_batch_with_roi_classifier; "
-                    "use the updated infer_dinov3_codino_video_fast.py."
+                    "use the repo-local codino_video_fast_runtime.py."
                 )
             results = codino_video.infer_batch_with_roi_classifier(
                 model,
@@ -587,7 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trt-query-encoder-shapes", default="184x320,92x160,46x80,23x40,12x20")
     parser.add_argument("--trt-decoder-engine", type=Path, default=None)
     parser.add_argument("--trt-mask-head-engine", type=Path, default=None)
-    parser.add_argument("--trt-extra-site-packages", type=Path, default=DEFAULT_TRT_EXTRA_SITE_PACKAGES)
+    parser.add_argument("--trt-extra-site-packages", type=Path, default=None)
     return parser
 
 
@@ -598,12 +554,28 @@ def _resolve_optional_existing(path: Path | None) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
+def _assert_cuda_runtime_compatible(device: str) -> None:
+    if not str(device).startswith("cuda") or not torch.cuda.is_available():
+        return
+    torch_device = torch.device(device)
+    capability = torch.cuda.get_device_capability(torch_device)
+    required = f"sm_{capability[0]}{capability[1]}"
+    supported = set(torch.cuda.get_arch_list())
+    if supported and required not in supported:
+        raise RuntimeError(
+            f"current PyTorch build does not support this GPU capability ({required}). "
+            f"supported={sorted(supported)}. Use a Co-DINO runtime Python with a PyTorch/CUDA build "
+            "that supports the installed GPU, then rerun the same repo-local command."
+        )
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.batch_size < 1:
         raise ValueError("--batch-size must be >= 1")
     if args.frame_stride < 1:
         raise ValueError("--frame-stride must be >= 1")
+    _assert_cuda_runtime_compatible(args.device)
 
     input_path = Path(args.input).expanduser().resolve()
     output_dir = Path(args.output).expanduser().resolve()

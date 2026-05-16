@@ -52,6 +52,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "backend/detectors/dinov3",
             "backend/detectors/eva02",
             "backend/detectors/codino",
+            "external/codino",
             "backend/classifiers",
             "backend/schemas",
             "backend/postprocess",
@@ -59,6 +60,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "Old inference/* runtime wrappers have been removed",
         ):
             self.assertIn(expected, architecture)
+
+    def test_codino_defaults_are_repo_local(self) -> None:
+        external_training_root = "/home/kenke/workspace/CV/unified_training_codino_eva02"
+        self.assertNotIn(external_training_root, str(pipeline_defaults.DEFAULT_CODINO_RUNTIME_SCRIPT))
+        self.assertNotIn(external_training_root, str(pipeline_defaults.DEFAULT_CODINO_CONFIG))
+        self.assertNotIn(external_training_root, str(pipeline_defaults.DEFAULT_CODINO_CHECKPOINT))
+        self.assertTrue((ROOT / "external" / "codino" / "mmdet").is_dir())
 
     def test_classifier_implementations_live_under_backend_classifiers(self) -> None:
         dinov3_classifier = ROOT / "backend" / "classifiers" / "dinov3_roi" / "runtime" / "two_stage_roi_classifier.py"

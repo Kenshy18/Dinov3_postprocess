@@ -73,7 +73,7 @@ os.environ.setdefault("DINOV3_USE_XFORMERS", "1")
 # Detectron2 path setup -------------------------------------------------------
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-LEGACY_REPO_ROOT = Path("/home/kenke/unified_training_codino_eva02")
+LEGACY_REPO_ROOT = Path(os.environ.get("LEGACY_REPO_ROOT", str(ROOT_DIR)))
 DEFAULT_SUPERSET_V2_DIR = ROOT_DIR / "datasets" / "0226_gtmask_full_superset_cc_v2"
 DEFAULT_SUPERSET_V2_TRAIN_JSON = DEFAULT_SUPERSET_V2_DIR / "annotations_train_cc.json"
 DEFAULT_SUPERSET_V2_VAL_JSON = DEFAULT_SUPERSET_V2_DIR / "annotations_val_cc.json"
@@ -90,13 +90,9 @@ from configs import paths as unified_paths
 DEFAULT_EVA02_DET_PATH = str(ROOT_DIR / "eva02" / "eva02_det")
 EVA02_DET_PATH = os.environ.get("EVA02_DET_PATH", DEFAULT_EVA02_DET_PATH)
 if not Path(EVA02_DET_PATH).is_dir():
-    candidate = Path("/home/kenke/EVA02/EVA/EVA-02/det")
-    if candidate.is_dir():
-        EVA02_DET_PATH = str(candidate)
-    else:
-        raise FileNotFoundError(
-            f"EVA-02 det path not found. Set EVA02_DET_PATH or ensure {candidate} exists."
-        )
+    raise FileNotFoundError(
+        f"EVA-02 det path not found. Set EVA02_DET_PATH or ensure {DEFAULT_EVA02_DET_PATH} exists."
+    )
 sys.path.insert(0, EVA02_DET_PATH)
 os.chdir(EVA02_DET_PATH)
 
@@ -325,7 +321,7 @@ class QuickEvalConfig:
 @dataclass
 class NegativeSamplingConfig:
     enabled: bool = False
-    directory: str = "/home/kenke/EVA02/1220_datasets_original/negative_sampling"
+    directory: str = str(ROOT_DIR / "datasets" / "negative_sampling")
     recursive: bool = True
     add_to_val: bool = False
     max_images: Optional[int] = None
@@ -335,13 +331,11 @@ class NegativeSamplingConfig:
 
 @dataclass
 class CheckpointConfig:
-    backbone_checkpoint: str = (
-        "/home/kenke/EVA02/checkpoints/eva02_L_coco_det_sys_o365.pth"
+    backbone_checkpoint: str = str(
+        ROOT_DIR / "checkpoints" / "eva02" / "detector" / "model_final.pth"
     )
     use_pretrained: bool = True
-    pretrained_path: Optional[str] = (
-        "/home/kenke/EVA02/EVA/EVA-02/det/output_atss_5/model_0259025.pth"
-    )
+    pretrained_path: Optional[str] = None
     resume_from_latest: bool = False
     resume_path: Optional[str] = None
 
@@ -351,10 +345,10 @@ class TrainingConfig:
     model_size: str = "eva02_L_8attn_1280"
     dataset: DatasetConfig = field(
         default_factory=lambda: DatasetConfig(
-            train_json="/home/kenke/EVA02/dataset1027_tentative_combined_processed/annotations/annotations_all.json",
-            train_dir="/home/kenke/EVA02/dataset1027_tentative_combined",
-            val_json="/home/kenke/EVA02/dataset1027_tentative_combined_processed/annotations/annotations_all.json",
-            val_dir="/home/kenke/EVA02/dataset1027_tentative_combined",
+            train_json=str(DEFAULT_SUPERSET_V2_TRAIN_JSON),
+            train_dir=str(DEFAULT_SUPERSET_V2_DIR),
+            val_json=str(DEFAULT_SUPERSET_V2_VAL_JSON),
+            val_dir=str(DEFAULT_SUPERSET_V2_DIR),
         )
     )
     split: SplitConfig = field(default_factory=lambda: SplitConfig(ratio=0.93))

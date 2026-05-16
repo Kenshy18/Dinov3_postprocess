@@ -30,6 +30,10 @@ DEFAULT_TRT_ENGINE = env_path(
     "DINOV3_TRT_BACKBONE_ENGINE",
     ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
 )
+DEFAULT_CODINO_TRT_BACKBONE = ROOT / "checkpoints/codino/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine"
+DEFAULT_CODINO_TRT_QUERY_ENCODER = ROOT / "checkpoints/codino/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
+DEFAULT_CODINO_TRT_DECODER = ROOT / "checkpoints/codino/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine"
+DEFAULT_CODINO_TRT_MASK_HEAD = ROOT / "checkpoints/codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine"
 DEFAULT_BENCHMARK = env_path("DINOV3_BATCH_BENCHMARK", ROOT / ".runtime" / "runtime_benchmark.json")
 
 
@@ -111,6 +115,20 @@ def tensorrt_info() -> dict[str, Any]:
     return {"available": True, "version": getattr(trt, "__version__", None)}
 
 
+def tensorrt_site_packages() -> Path | None:
+    raw = os.environ.get("TENSORRT_SITE_PACKAGES")
+    if raw:
+        path = Path(raw).expanduser()
+        return path if path.exists() else None
+    home = Path.home()
+    for env_name in ("eva02_trt", "trt_env"):
+        for pyver in ("python3.10", "python3.11", "python3.12", "python3.8"):
+            path = home / "miniconda3" / "envs" / env_name / "lib" / pyver / "site-packages"
+            if (path / "tensorrt").exists():
+                return path
+    return None
+
+
 def choose_vram_mib(torch_data: dict[str, Any], smi_data: dict[str, Any] | None) -> int | None:
     for source in (torch_data, smi_data or {}):
         value = source.get("memory_total_mib")
@@ -128,34 +146,51 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
     if total_gib <= 0:
         dinov3_batch = 1
         eva02_batch = 1
+        codino_batch = 1
         classifier_batch = 512
     elif total_gib < 10:
         dinov3_batch = 2
         eva02_batch = 1
+        codino_batch = 1
         classifier_batch = 512
     elif total_gib < 16:
         dinov3_batch = 4
         eva02_batch = 1
+        codino_batch = 1
         classifier_batch = 1024
     elif total_gib < 24:
         dinov3_batch = 6
         eva02_batch = 2
+        codino_batch = 1
         classifier_batch = 1536
     elif total_gib < 40:
         dinov3_batch = 8
         eva02_batch = 4
+        codino_batch = 2
         classifier_batch = 2048
     else:
         dinov3_batch = 8
         eva02_batch = 8
+        codino_batch = 2
         classifier_batch = 4096
 
     notes = []
+    trt_site = tensorrt_site_packages()
     if not tensorrt_available:
         notes.append("TensorRT import failed; DINOv3 will be much slower unless dependencies are fixed.")
         dinov3_batch = min(dinov3_batch, 2)
     if not engine_exists:
         notes.append("DINOv3 TensorRT engine is missing; run setup with REBUILD_TRT=1 or allow auto rebuild.")
+    codino_trt_engines = (
+        DEFAULT_CODINO_TRT_BACKBONE,
+        DEFAULT_CODINO_TRT_QUERY_ENCODER,
+        DEFAULT_CODINO_TRT_DECODER,
+        DEFAULT_CODINO_TRT_MASK_HEAD,
+    )
+    if not all(path.is_file() for path in codino_trt_engines):
+        notes.append("One or more Co-DINO TensorRT engines are missing under checkpoints/codino/trt.")
+    if trt_site is None:
+        notes.append("TensorRT site-packages were not found; set TENSORRT_SITE_PACKAGES for Co-DINO TRT inference.")
     if total_gib and total_gib < 16:
         notes.append("VRAM is below 16 GiB; EVA02 batch is intentionally kept at 1 to avoid shared-memory fallback.")
 
@@ -170,6 +205,29 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
             "batch_size": eva02_batch,
             "warmup_frames": 0,
             "classifier_batch_size": classifier_batch,
+        },
+        "codino": {
+            "batch_size": codino_batch,
+            "warmup_frames": 0,
+            "target_size": "1280x720",
+            "score_thresh": 0.3,
+            "model_score_thr": 0.05,
+            "amp": "fp16",
+            "tf32": True,
+            "json_backend": "orjson",
+            "mask_approx": "none",
+            "async_writer": True,
+            "disable_mask_iou_head": True,
+            "runtime_script": str(ROOT / "backend/detectors/codino/runtime/codino_video_fast_runtime.py"),
+            "config": str(ROOT / "checkpoints/codino/detector/resolved_config.py"),
+            "checkpoint": str(ROOT / "checkpoints/codino/detector/epoch_2.pth"),
+            "classifier_checkpoint": str(ROOT / "checkpoints/codino/classifier/best.pt"),
+            "trt_backbone_engine": str(DEFAULT_CODINO_TRT_BACKBONE),
+            "trt_query_encoder_engine": str(DEFAULT_CODINO_TRT_QUERY_ENCODER),
+            "trt_decoder_engine": str(DEFAULT_CODINO_TRT_DECODER),
+            "trt_mask_head_engine": str(DEFAULT_CODINO_TRT_MASK_HEAD),
+            "trt_extra_site_packages": None if trt_site is None else str(trt_site),
+            "trt_query_encoder_shapes": "184x320,92x160,46x80,23x40,12x20",
         },
         "postprocess": {
             "k2_device": "auto",

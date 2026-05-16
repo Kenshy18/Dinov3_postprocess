@@ -7,6 +7,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from backend.pipeline.pipeline_defaults import DETECTOR_CHOICES
+
 from .flow_cli_common import (
     ROOT,
     add_policy_args,
@@ -35,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
 
-    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
+    parser.add_argument("--detector", choices=DETECTOR_CHOICES, default="dinov3")
     parser.add_argument("--postprocess", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--overlay", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--overlay-encoder", choices=("cpu", "nvenc"), default="cpu")

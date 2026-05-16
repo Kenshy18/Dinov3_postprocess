@@ -51,6 +51,7 @@ def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> li
     maybe_add(command, "--classifier-checkpoint", args.codino_classifier_checkpoint)
     maybe_add(command, "--trt-backbone-engine", args.codino_trt_backbone_engine)
     maybe_add(command, "--trt-feature-engine", args.codino_trt_feature_engine)
+    maybe_add(command, "--trt-feature-names", args.codino_trt_feature_names)
     maybe_add(command, "--trt-query-encoder-engine", args.codino_trt_query_encoder_engine)
     maybe_add(command, "--trt-decoder-engine", args.codino_trt_decoder_engine)
     maybe_add(command, "--trt-mask-head-engine", args.codino_trt_mask_head_engine)
@@ -62,4 +63,3 @@ def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> li
     if args.codino_disable_mask_iou_head:
         command.append("--disable-mask-iou-head")
     return command
-

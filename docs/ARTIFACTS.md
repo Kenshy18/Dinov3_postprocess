@@ -1,6 +1,9 @@
 # Artifacts
 
-Large runtime artifacts are not tracked in Git. The first setup script can restore them from Google Drive and then build the TensorRT engine locally.
+Large runtime artifacts are intentionally kept outside Git. Upload them to
+Google Drive or another artifact store, then let the setup script restore the
+same layout under `checkpoints/`. The setup script can also rebuild TensorRT
+engines when they are missing or incompatible.
 
 Expected local runtime layout after download/placement:
 
@@ -48,7 +51,7 @@ Check placement:
 python tools/check_artifacts.py
 ```
 
-## Download sources
+## Download Sources
 
 Configure URLs in:
 
@@ -102,4 +105,7 @@ Notes:
 - TensorRT engines are device/CUDA/TensorRT dependent. Rebuild them on a new machine if loading fails.
 - The setup script rebuilds the TensorRT engine automatically when it is missing.
 - `run_config.json` and model definition files are small and tracked.
-- Checkpoint bodies, `.engine`, `.pt`, `.pth`, `.npz`, videos, JSONL, SQLite, and overlays are ignored.
+- Runtime checkpoint bodies, `.engine`, `.pt`, `.pth`, and `.npz` files under
+  the documented `checkpoints/` paths are ignored by Git and should come from
+  Drive or a local artifact directory. Videos, JSONL, SQLite, overlays, work
+  dirs, and ad-hoc experiment outputs are ignored.

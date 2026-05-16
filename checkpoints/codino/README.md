@@ -15,6 +15,6 @@ checkpoints/codino/
     codino_mask_head_core_n1_736x1280_fp16.engine
 ```
 
-The integrated pipeline can also use the canonical training workspace under
-`/home/kenke/workspace/CV/unified_training_codino_eva02`; local files here take
-precedence when present.
+The integrated pipeline resolves Co-DINO artifacts from this local layout by
+default. Use `.runtime/runtime_profile.json` only when intentionally overriding
+these paths for local experiments.

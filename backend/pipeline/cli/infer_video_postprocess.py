@@ -17,6 +17,7 @@ from pathlib import Path
 from backend.pipeline.pipeline_defaults import (
     CODINO_DEFAULT_BATCH_SIZE,
     CODINO_DEFAULT_WARMUP_FRAMES,
+    DETECTOR_CHOICES,
     DINO_DEFAULT_BATCH_SIZE,
     DINO_DEFAULT_WARMUP_FRAMES,
 )
@@ -35,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--overlay", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
+    parser.add_argument("--detector", choices=DETECTOR_CHOICES, default="dinov3")
     parser.add_argument("--classifier", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ellipse-only", action="store_true", help="Use ellipse-only class policy")
     parser.add_argument("--max-frames", type=int, default=None)
