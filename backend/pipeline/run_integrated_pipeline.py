@@ -70,6 +70,7 @@ from .pipeline_defaults import (
     LOCAL_ATOSYORI_REPO,
 )
 from .pipeline_outputs import collect_postprocess_outputs, model_status, summarize_detector, write_json
+from .progress import ProgressReporter, limited_total
 from backend.schemas.mask_sqlite import jsonl_to_raw_sqlite
 
 
@@ -111,6 +112,7 @@ def run_command(
     label: str,
 ) -> dict[str, Any]:
     print(f"[run] {label}", flush=True)
+    print(f"[phase-start] command: {label}", flush=True)
     print("[cmd] " + " ".join(command), flush=True)
     start = time.perf_counter()
     completed = subprocess.run(command, cwd=str(cwd) if cwd is not None else None, env=env, check=False)
@@ -118,6 +120,7 @@ def run_command(
     if completed.returncode != 0:
         raise RuntimeError(f"{label} failed with exit code {completed.returncode}")
     print(f"[done] {label}: {elapsed:.2f}s", flush=True)
+    print(f"[phase-done] command: {label} elapsed={elapsed:.2f}s", flush=True)
     return {
         "label": label,
         "cmd": command,
@@ -125,6 +128,17 @@ def run_command(
         "returncode": int(completed.returncode),
         "wall_seconds": float(elapsed),
     }
+
+
+def detector_processed_frames(summary: dict[str, Any]) -> int | None:
+    runs = summary.get("runs")
+    if not isinstance(runs, list):
+        return None
+    total = 0
+    for item in runs:
+        if isinstance(item, dict):
+            total += int(item.get("processed_frames") or item.get("frames") or 0)
+    return total or None
 
 
 def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[str, Any]:
@@ -150,12 +164,22 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
     raw_sqlite_path: Path | None = None
     if args.raw_sqlite:
         raw_sqlite_path = run_dir / "sqlite" / f"{video.stem}_raw_detections.sqlite"
+        raw_progress = ProgressReporter(
+            "raw_sqlite",
+            total=limited_total(detector_processed_frames(detector_summary), args.max_frames),
+            unit="frames",
+            interval_sec=float(args.progress_interval_sec),
+            static_fields={"video": video.name, "detector": args.detector},
+        )
+        raw_progress.emit(0, force=True)
         raw_sqlite_summary = jsonl_to_raw_sqlite(
             jsonl_path,
             raw_sqlite_path,
             detector=args.detector,
             video=video,
+            progress_callback=lambda frames, masks: raw_progress.emit(frames, extra={"masks": masks}),
         )
+        raw_progress.emit(int(raw_sqlite_summary["frames"]), force=True, extra={"masks": raw_sqlite_summary["masks"]})
         print(
             f"[raw-sqlite] {raw_sqlite_path} frames={raw_sqlite_summary['frames']} masks={raw_sqlite_summary['masks']}",
             flush=True,
@@ -264,6 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu-prefetch", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--write-detector-overlay", action="store_true")
     parser.add_argument("--raw-sqlite", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--progress-interval-sec", type=float, default=float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5")))
 
     parser.add_argument("--eva02-target-size", type=int, default=EVA02_DEFAULT_TARGET_SIZE)
     parser.add_argument("--eva02-score-thresh", type=float, default=EVA02_DEFAULT_SCORE_THRESH)

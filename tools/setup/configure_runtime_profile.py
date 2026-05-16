@@ -53,6 +53,20 @@ DEFAULT_CODINO_TRT_MANIFEST = env_path(
 DEFAULT_BENCHMARK = env_path("DINOV3_BATCH_BENCHMARK", ROOT / ".runtime" / "runtime_benchmark.json")
 
 
+def _codino_default_paths_for_batch(batch: int) -> dict[str, str]:
+    trt_dir = ROOT / "checkpoints/codino/trt"
+    return {
+        "trt_backbone_engine": str(
+            trt_dir / f"codino_dinov3_vitl_backbone_736x1280_fp32_b{batch}_fixed_bf16.engine"
+        ),
+        "trt_query_encoder_engine": str(
+            trt_dir / f"codino_query_encoder_b{batch}_736x1280_msda_plugin_sbc_fp16.engine"
+        ),
+        "trt_decoder_engine": str(trt_dir / f"codino_decoder_b{batch}_736x1280_msda_plugin_fp16.engine"),
+        "trt_mask_head_engine": str(trt_dir / "codino_mask_head_core_n1_736x1280_fp16.engine"),
+    }
+
+
 def run_text(command: list[str]) -> str | None:
     try:
         completed = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -157,15 +171,17 @@ def load_codino_trt_manifest(path: Path = DEFAULT_CODINO_TRT_MANIFEST) -> dict[s
     return None
 
 
-def codino_trt_paths() -> dict[str, str]:
+def codino_trt_paths(batch: int | None = None) -> dict[str, str]:
     paths = {
         "trt_backbone_engine": str(DEFAULT_CODINO_TRT_BACKBONE),
         "trt_query_encoder_engine": str(DEFAULT_CODINO_TRT_QUERY_ENCODER),
         "trt_decoder_engine": str(DEFAULT_CODINO_TRT_DECODER),
         "trt_mask_head_engine": str(DEFAULT_CODINO_TRT_MASK_HEAD),
     }
+    if batch is not None and batch > 0:
+        paths.update(_codino_default_paths_for_batch(batch))
     manifest = load_codino_trt_manifest()
-    engines = manifest.get("engines", {}) if isinstance(manifest, dict) else {}
+    engines = manifest.get("engines", {}) if batch is None and isinstance(manifest, dict) else {}
     if isinstance(engines, dict):
         mapping = {
             "backbone": "trt_backbone_engine",
@@ -191,7 +207,13 @@ def codino_manifest_batch() -> int | None:
     return batch if batch > 0 else None
 
 
-def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_exists: bool) -> dict[str, Any]:
+def recommendations(
+    total_mib: int | None,
+    *,
+    tensorrt_available: bool,
+    engine_exists: bool,
+    benchmark: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if total_mib is None:
         total_gib = 0.0
     else:
@@ -235,7 +257,15 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
         dinov3_batch = min(dinov3_batch, 2)
     if not engine_exists:
         notes.append("DINOv3 TensorRT engine is missing; run setup with REBUILD_TRT=1 or allow auto rebuild.")
-    trt_paths = codino_trt_paths()
+    benchmark_codino_batch: int | None = None
+    selected = benchmark.get("selected") if isinstance(benchmark, dict) else None
+    selected_codino = selected.get("codino") if isinstance(selected, dict) else None
+    if isinstance(selected_codino, dict):
+        try:
+            benchmark_codino_batch = int(selected_codino.get("batch_size"))
+        except Exception:
+            benchmark_codino_batch = None
+    trt_paths = codino_trt_paths(benchmark_codino_batch)
     codino_trt_engines = tuple(Path(value) for value in trt_paths.values())
     if not all(path.is_file() for path in codino_trt_engines):
         notes.append("One or more Co-DINO TensorRT engines are missing under checkpoints/codino/trt.")
@@ -255,7 +285,7 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
             "classifier_batch_size": classifier_batch,
         },
         "codino": {
-            "batch_size": codino_manifest_batch() or codino_batch,
+            "batch_size": benchmark_codino_batch or codino_manifest_batch() or codino_batch,
             "warmup_frames": 0,
             "target_size": "1280x720",
             "score_thresh": 0.3,
@@ -310,6 +340,8 @@ def apply_benchmark_recommendations(recs: dict[str, Any], benchmark: dict[str, A
         if batch_size <= 0:
             continue
         recs.setdefault(section, {})["batch_size"] = batch_size
+        if detector == "codino":
+            recs.setdefault(section, {}).update(_codino_default_paths_for_batch(batch_size))
         recs.setdefault("notes", []).append(
             f"{detector} batch-size was selected by setup benchmark: batch={batch_size}, "
             f"metric_fps={float(item.get('metric_fps') or 0):.4f}."
@@ -322,12 +354,13 @@ def build_profile(benchmark_path: Path = DEFAULT_BENCHMARK) -> dict[str, Any]:
     trt_data = tensorrt_info()
     engine_exists = DEFAULT_TRT_ENGINE.is_file()
     total_mib = choose_vram_mib(torch_data, smi_data)
+    benchmark = load_benchmark(benchmark_path)
     recs = recommendations(
         total_mib,
         tensorrt_available=bool(trt_data.get("available")),
         engine_exists=engine_exists,
+        benchmark=benchmark,
     )
-    benchmark = load_benchmark(benchmark_path)
     apply_benchmark_recommendations(recs, benchmark)
     profile = {
         "schema_version": 1,

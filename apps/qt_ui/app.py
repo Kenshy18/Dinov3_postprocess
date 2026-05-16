@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shlex
 import subprocess
 import sys
 import time
@@ -12,19 +10,34 @@ from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_STATE_DIR = ROOT / ".runtime"
-VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
-DEFAULT_RAW_REMOVE_SHORT_TRACKS_MAX_FRAMES = 10
-DEFAULT_OVERLAY_ENCODER = "nvenc"
-GUI_RUNTIME_ENV = Path(os.environ.get("GUI_RUNTIME_ENV", RUNTIME_STATE_DIR / "gui_runtime.env"))
-LEGACY_GUI_RUNTIME_ENV = ROOT / "configs" / "gui_runtime.env"
-DEFAULT_RUNTIME_PROFILE = RUNTIME_STATE_DIR / "runtime_profile.json"
-LEGACY_RUNTIME_PROFILE = ROOT / "configs" / "runtime_profile.json"
-DEFAULT_BATCH_BENCHMARK = RUNTIME_STATE_DIR / "runtime_benchmark.json"
-LEGACY_BATCH_BENCHMARK = ROOT / "configs" / "runtime_benchmark.json"
-FALLBACK_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from apps.qt_ui.progress_view import ProgressDashboard, phase_key, phase_label, progress_float
+from apps.qt_ui.runtime_config import (
+    DEFAULT_BATCH_BENCHMARK,
+    DEFAULT_OVERLAY_ENCODER,
+    DEFAULT_RAW_REMOVE_SHORT_TRACKS_MAX_FRAMES,
+    LEGACY_BATCH_BENCHMARK,
+    ROOT,
+    VIDEO_EXTS,
+    as_command_text,
+    clean_run_part,
+    default_python,
+    ensure_repo_on_path,
+    load_gui_runtime_env,
+    profile_int,
+    profile_path,
+    runtime_profile_path,
+    runtime_summary_text,
+    selected_trt_engine,
+    timestamp,
+)
+from apps.qt_ui.widgets import ClosingComboBox
+
+ensure_repo_on_path()
+from backend.pipeline.progress import format_duration, parse_progress_line  # noqa: E402
 
 
 def configure_qt_environment() -> None:
@@ -39,194 +52,6 @@ def configure_qt_environment() -> None:
 
 
 configure_qt_environment()
-
-
-def _valid_executable(path: Path) -> bool:
-    return path.is_file() and os.access(path, os.X_OK)
-
-
-def load_gui_runtime_env() -> dict[str, str]:
-    values: dict[str, str] = {}
-    env_path = GUI_RUNTIME_ENV if GUI_RUNTIME_ENV.is_file() else LEGACY_GUI_RUNTIME_ENV
-    if not env_path.is_file():
-        return values
-    try:
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            try:
-                tokens = shlex.split(line, comments=True, posix=True)
-            except ValueError:
-                tokens = [line]
-            if not tokens:
-                continue
-            key, value = tokens[0].split("=", 1)
-            values[key] = value
-    except Exception:
-        return {}
-    return values
-
-
-def runtime_profile_path() -> Path:
-    runtime_env = load_gui_runtime_env()
-    raw = os.environ.get("DINOV3_RUNTIME_PROFILE") or runtime_env.get("DINOV3_RUNTIME_PROFILE")
-    if raw:
-        path = Path(raw).expanduser()
-        return path if path.is_absolute() else ROOT / path
-    return DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE.is_file() else LEGACY_RUNTIME_PROFILE
-
-
-def load_runtime_profile() -> dict:
-    try:
-        path = runtime_profile_path()
-        if path.is_file():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return {}
-
-
-def default_python() -> Path:
-    runtime_env = load_gui_runtime_env()
-    profile = load_runtime_profile()
-    candidates = [
-        os.environ.get("GUI_RUNTIME_PYTHON"),
-        runtime_env.get("GUI_RUNTIME_PYTHON"),
-        profile.get("runtime", {}).get("python") if isinstance(profile.get("runtime"), dict) else None,
-        profile.get("python"),
-        str(ROOT / ".venv_integrated" / "bin" / "python"),
-        sys.executable,
-    ]
-    for raw in candidates:
-        if not raw:
-            continue
-        path = Path(str(raw)).expanduser()
-        if not path.is_absolute():
-            path = ROOT / path
-        if _valid_executable(path):
-            return path
-    integrated = ROOT / ".venv_integrated" / "bin" / "python"
-    return integrated if integrated.is_file() else Path(sys.executable)
-
-
-def profile_recommendations() -> dict:
-    recommendations = load_runtime_profile().get("recommendations", {})
-    return recommendations if isinstance(recommendations, dict) else {}
-
-
-def profile_int(section: str, key: str) -> int | None:
-    try:
-        value = profile_recommendations().get(section, {}).get(key)
-        return int(value) if value is not None else None
-    except Exception:
-        return None
-
-
-def profile_path(section: str, key: str) -> Path | None:
-    try:
-        value = profile_recommendations().get(section, {}).get(key)
-        if not value:
-            return None
-        path = Path(str(value)).expanduser()
-        return path if path.is_absolute() else ROOT / path
-    except Exception:
-        return None
-
-
-def selected_trt_engine() -> Path:
-    runtime_env = load_gui_runtime_env()
-    raw = os.environ.get("DINOV3_TRT_BACKBONE_ENGINE") or runtime_env.get("DINOV3_TRT_BACKBONE_ENGINE")
-    if raw:
-        path = Path(raw).expanduser()
-        return path if path.is_absolute() else ROOT / path
-    return profile_path("dinov3", "trt_backbone_engine") or FALLBACK_TRT_ENGINE
-
-
-def runtime_summary_text() -> str:
-    profile = load_runtime_profile()
-    rec = profile.get("recommendations", {})
-    rec = rec if isinstance(rec, dict) else {}
-    benchmark = profile.get("batch_benchmark", {})
-    benchmark_exists = bool(benchmark.get("exists")) if isinstance(benchmark, dict) else False
-    dinov3 = rec.get("dinov3", {}) if isinstance(rec.get("dinov3"), dict) else {}
-    eva02 = rec.get("eva02", {}) if isinstance(rec.get("eva02"), dict) else {}
-    codino = rec.get("codino", {}) if isinstance(rec.get("codino"), dict) else {}
-    engine = selected_trt_engine()
-    return (
-        f"python={default_python()} | "
-        f"profile={runtime_profile_path()} | "
-        f"benchmark={'ok' if benchmark_exists else 'none'} | "
-        f"DINOv3 batch={dinov3.get('batch_size', '既定')} | "
-        f"EVA02 batch={eva02.get('batch_size', '既定')} | "
-        f"Co-DINO batch={codino.get('batch_size', '既定')} | "
-        f"EVA02 cls={eva02.get('classifier_batch_size', '既定')} | "
-        f"engine={'ok' if engine.is_file() else 'missing'}"
-    )
-
-
-def timestamp() -> str:
-    return time.strftime("%Y%m%d_%H%M%S")
-
-
-def clean_run_part(text: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", text.strip())
-    return cleaned.strip("_") or "video"
-
-
-def as_command_text(command: list[str]) -> str:
-    return " ".join(f'"{part}"' if " " in str(part) else str(part) for part in command)
-
-
-class ClosingComboBox(QtWidgets.QComboBox):
-    def __init__(self) -> None:
-        super().__init__()
-        self.activated.connect(lambda _index: self.hidePopup())
-
-
-class SegmentedOption(QtWidgets.QWidget):
-    changed = QtCore.pyqtSignal(object)
-
-    def __init__(self, options: list[tuple[str, object]], *, columns: int | None = None) -> None:
-        super().__init__()
-        self._data_by_button: dict[QtWidgets.QAbstractButton, object] = {}
-        self._group = QtWidgets.QButtonGroup(self)
-        self._group.setExclusive(True)
-        layout: QtWidgets.QBoxLayout
-        if columns is None:
-            layout = QtWidgets.QHBoxLayout(self)
-        else:
-            layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        for index, (label, data) in enumerate(options):
-            button = QtWidgets.QPushButton(label)
-            button.setObjectName("segmentButton")
-            button.setCheckable(True)
-            button.setCursor(QtCore.Qt.PointingHandCursor)
-            button.setMinimumHeight(24)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-            self._group.addButton(button, index)
-            self._data_by_button[button] = data
-            layout.addWidget(button)
-            if index == 0:
-                button.setChecked(True)
-        self._group.buttonClicked.connect(self._emit_changed)
-
-    def currentData(self) -> object:
-        button = self._group.checkedButton()
-        return self._data_by_button.get(button)
-
-    def setCurrentData(self, data: object) -> None:
-        for button, value in self._data_by_button.items():
-            if value == data:
-                button.setChecked(True)
-                self.changed.emit(value)
-                return
-
-    def _emit_changed(self, button: QtWidgets.QAbstractButton) -> None:
-        self.changed.emit(self._data_by_button.get(button))
 
 
 class PipelineUiWindow(QtWidgets.QMainWindow):
@@ -249,6 +74,11 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.completed_steps = 0
         self.total_steps = 0
         self.steps_per_item = 1
+        self.queue_start_time = 0.0
+        self.progress_phase_weights: dict[str, float] = {}
+        self.progress_phase_offsets: dict[str, float] = {}
+        self.active_progress_phase_key = ""
+        self.last_overall_percent = 0.0
 
         self.elapsed_timer = QtCore.QTimer(self)
         self.elapsed_timer.setInterval(1000)
@@ -388,7 +218,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.advanced_box = self.build_advanced_box()
         root.addWidget(self.advanced_box)
         self.advanced_box.setVisible(False)
-        box.setMaximumHeight(182)
+        box.setMaximumHeight(238)
         return box
 
     def build_advanced_box(self) -> QtWidgets.QGroupBox:
@@ -482,75 +312,9 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         return box
 
     def build_status_panel(self) -> QtWidgets.QGroupBox:
-        box = QtWidgets.QGroupBox("実行状況")
-        layout = QtWidgets.QVBoxLayout(box)
-        layout.setContentsMargins(8, 10, 8, 7)
-        layout.setSpacing(3)
-        self.status_banner = QtWidgets.QLabel("待機中")
-        self.status_banner.setObjectName("statusBanner")
-        self.status_banner.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(self.status_banner)
-
-        progress_grid = QtWidgets.QGridLayout()
-        self.total_progress = QtWidgets.QProgressBar()
-        self.total_progress.setRange(0, 1)
-        self.total_progress.setValue(0)
-        self.phase_progress = QtWidgets.QProgressBar()
-        self.phase_progress.setRange(0, 1)
-        self.phase_progress.setValue(0)
-        progress_grid.addWidget(QtWidgets.QLabel("全体進行"), 0, 0)
-        progress_grid.addWidget(self.total_progress, 0, 1)
-        progress_grid.addWidget(QtWidgets.QLabel("フェーズ"), 1, 0)
-        progress_grid.addWidget(self.phase_progress, 1, 1)
-        layout.addLayout(progress_grid)
-
-        form = QtWidgets.QGridLayout()
-        form.setHorizontalSpacing(0)
-        form.setVerticalSpacing(0)
-        self.current_video_value = self.status_value("-")
-        self.speed_value = self.status_value("-")
-        self.detail_info_value = self.status_value("-")
-        self.elapsed_value = self.status_value("-")
-        self.process_value = self.status_value("NotRunning")
-        self.stage_value = self.status_value("-")
-        self.frame_value = self.status_value("-")
-        self.phase_value = self.status_value("-")
-        self.phase_elapsed_value = self.status_value("-")
-        self.status_value_label = self.status_value("-")
-        self.count_value = self.status_value("Inference 0 / 0 | Postprocess 0 / 0")
-        self.heartbeat_value = self.status_value("-")
-        self.remaining_value = self.status_value("-")
-        self.overall_remaining_value = self.status_value("-")
-        self.output_value = self.status_value("-")
-        self.command_value = self.status_value("-")
-
-        rows: list[tuple[str, QtWidgets.QWidget, str, QtWidgets.QWidget]] = [
-            ("動画", self.current_video_value, "経過", self.elapsed_value),
-            ("速度", self.speed_value, "", self.status_value("")),
-            ("詳細情報", self.detail_info_value, "ステータス", self.status_value_label),
-            ("プロセス", self.process_value, "動画数", self.count_value),
-            ("ステージ", self.stage_value, "ハートビート", self.heartbeat_value),
-            ("フレーム", self.frame_value, "残り", self.remaining_value),
-            ("フェーズ", self.phase_value, "", self.status_value("")),
-            ("フェーズ経過", self.phase_elapsed_value, "", self.status_value("")),
-            ("全体残り", self.overall_remaining_value, "", self.status_value("")),
-            ("実行Dir", self.output_value, "", self.status_value("")),
-        ]
-        for row, (left_label, left_widget, right_label, right_widget) in enumerate(rows):
-            form.addWidget(self.status_key(left_label), row, 0)
-            form.addWidget(left_widget, row, 1)
-            form.addWidget(self.status_key(right_label), row, 2)
-            form.addWidget(right_widget, row, 3)
-        form.setColumnStretch(1, 1)
-        form.setColumnStretch(3, 3)
-        layout.addLayout(form)
-
-        self.summary_text = QtWidgets.QPlainTextEdit()
-        self.summary_text.setReadOnly(True)
-        self.summary_text.setMaximumHeight(34)
-        self.summary_text.setPlainText("status: idle")
-        layout.addWidget(self.summary_text)
-        return box
+        self.progress_dashboard = ProgressDashboard()
+        self.progress_dashboard.bind_legacy_attributes(self)
+        return self.progress_dashboard
 
     def status_key(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
@@ -591,38 +355,52 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.postprocess_check.toggled.connect(self.update_postprocess_enabled)
 
         self.class_tabs = QtWidgets.QTabWidget()
-        self.class_tabs.setFixedHeight(34)
+        self.class_tabs.setFixedHeight(118)
+        self.class_shape_combos: dict[str, ClosingComboBox] = {}
+        self.class_keyframe_spins: dict[str, QtWidgets.QSpinBox] = {}
+        self.class_recall_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self.class_confidence_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         for name in ("女性器", "男性器", "結合部分"):
             page = QtWidgets.QWidget()
+            page_layout = QtWidgets.QGridLayout(page)
+            page_layout.setContentsMargins(8, 6, 8, 6)
+            page_layout.setHorizontalSpacing(8)
+            page_layout.setVerticalSpacing(5)
+            shape = ClosingComboBox()
+            shape.addItem("楕円近似", "ellipse")
+            shape.addItem("ポリゴン", "polygon")
+            shape.setCurrentIndex(1 if name == "男性器" else 0)
+            keyframe = QtWidgets.QSpinBox()
+            keyframe.setRange(1, 300)
+            keyframe.setValue(3)
+            recall = QtWidgets.QDoubleSpinBox()
+            recall.setRange(0.001, 1.0)
+            recall.setDecimals(3)
+            recall.setSingleStep(0.005)
+            recall.setValue(0.960)
+            confidence = QtWidgets.QDoubleSpinBox()
+            confidence.setRange(0.0, 1.0)
+            confidence.setDecimals(3)
+            confidence.setSingleStep(0.005)
+            confidence.setValue(0.350)
+            self.class_shape_combos[name] = shape
+            self.class_keyframe_spins[name] = keyframe
+            self.class_recall_spins[name] = recall
+            self.class_confidence_spins[name] = confidence
+            page_layout.addWidget(QtWidgets.QLabel("マスクタイプ"), 0, 0)
+            page_layout.addWidget(shape, 0, 1)
+            page_layout.addWidget(QtWidgets.QLabel("キーフレーム間隔"), 0, 2)
+            page_layout.addWidget(keyframe, 0, 3)
+            page_layout.addWidget(QtWidgets.QLabel("recall閾値"), 1, 0)
+            page_layout.addWidget(recall, 1, 1)
+            page_layout.addWidget(QtWidgets.QLabel("confidence閾値"), 1, 2)
+            page_layout.addWidget(confidence, 1, 3)
+            page_layout.setColumnStretch(1, 1)
+            page_layout.setColumnStretch(3, 1)
             self.class_tabs.addTab(page, name)
-
-        self.shape_combo = ClosingComboBox()
-        self.shape_combo.addItem("楕円近似", "ellipse")
-        self.shape_combo.addItem("ポリゴン", "polygon")
-        self.keyframe_spin = QtWidgets.QSpinBox()
-        self.keyframe_spin.setRange(1, 300)
-        self.keyframe_spin.setValue(3)
-        self.recall_spin = QtWidgets.QDoubleSpinBox()
-        self.recall_spin.setRange(0.001, 1.0)
-        self.recall_spin.setDecimals(3)
-        self.recall_spin.setSingleStep(0.005)
-        self.recall_spin.setValue(0.960)
-        self.confidence_spin = QtWidgets.QDoubleSpinBox()
-        self.confidence_spin.setRange(0.0, 1.0)
-        self.confidence_spin.setDecimals(3)
-        self.confidence_spin.setSingleStep(0.005)
-        self.confidence_spin.setValue(0.350)
 
         grid.addWidget(self.postprocess_check, 0, 0, 1, 3)
         grid.addWidget(self.class_tabs, 1, 0, 1, 3)
-        grid.addWidget(QtWidgets.QLabel("マスクタイプ"), 2, 0)
-        grid.addWidget(self.shape_combo, 2, 1)
-        grid.addWidget(QtWidgets.QLabel("キーフレーム間隔"), 3, 0)
-        grid.addWidget(self.keyframe_spin, 3, 1)
-        grid.addWidget(QtWidgets.QLabel("recall閾値"), 4, 0)
-        grid.addWidget(self.recall_spin, 4, 1)
-        grid.addWidget(QtWidgets.QLabel("confidence閾値"), 5, 0)
-        grid.addWidget(self.confidence_spin, 5, 1)
         grid.setColumnStretch(2, 1)
         self.update_postprocess_enabled(True)
         return box
@@ -737,6 +515,22 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             QLabel#statusKey {
                 background: #f7f9fc;
             }
+            QFrame#metricCard {
+                border: 1px solid #d6dee9;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QLabel#metricKey {
+                color: #5b6778;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            QLabel#metricValue {
+                color: #172033;
+                font-size: 13px;
+                font-weight: 700;
+                min-height: 18px;
+            }
             QPlainTextEdit#logEdit {
                 background: #151b22;
                 color: #e6edf3;
@@ -757,7 +551,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 
     def toggle_advanced(self, checked: bool) -> None:
         self.advanced_box.setVisible(checked)
-        self.run_settings_box.setMaximumHeight(420 if checked else 182)
+        self.run_settings_box.setMaximumHeight(490 if checked else 238)
         self.advanced_button.setText("▾ 詳細を閉じる" if checked else "▸ 詳細を開く")
 
     def sync_overlay_checks(self, source: str, checked: bool) -> None:
@@ -766,12 +560,12 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
     def update_postprocess_enabled(self, enabled: bool) -> None:
         widgets = [
             self.class_tabs,
-            self.shape_combo,
-            self.keyframe_spin,
-            self.recall_spin,
-            self.confidence_spin,
             self.detailed_overlay_check,
             self.simple_overlay_check,
+            *self.class_shape_combos.values(),
+            *self.class_keyframe_spins.values(),
+            *self.class_recall_spins.values(),
+            *self.class_confidence_spins.values(),
         ]
         for widget in widgets:
             widget.setEnabled(enabled)
@@ -887,15 +681,118 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.stopping = False
         self.workflow_running = True
         self.completed_steps = 0
-        self.steps_per_item = 2 if self.postprocess_check.isChecked() else 1
-        self.total_steps = max(1, len(self.run_queue) * self.steps_per_item)
+        self.steps_per_item = 1
+        self.total_steps = 1000
+        self.queue_start_time = time.perf_counter()
+        self.active_progress_phase_key = ""
+        self.last_overall_percent = 0.0
+        self.configure_progress_plan()
         self.log_edit.clear()
-        self.total_progress.setRange(0, self.total_steps)
+        self.total_progress.setRange(0, 1000)
         self.total_progress.setValue(0)
         self.status_banner.setText("実行中")
         self.status_value_label.setText("running")
         self.summary_text.setPlainText("status: running")
         self.start_next_item()
+
+    def configure_progress_plan(self) -> None:
+        phases: list[tuple[str, float]] = [
+            ("normalize_input", 0.02),
+            ("inference", 0.50),
+            ("raw_sqlite", 0.05),
+        ]
+        if self.postprocess_check.isChecked():
+            phases.append(("postprocess", 0.25))
+        if self.detector_overlay_check.isChecked():
+            phases.append(("raw_overlay", 0.08))
+        if self.detailed_overlay_check.isChecked():
+            phases.append(("detailed_overlay", 0.07))
+        if self.simple_overlay_check.isChecked():
+            phases.append(("simple_overlay", 0.03))
+
+        total_weight = sum(weight for _, weight in phases) or 1.0
+        offset = 0.0
+        self.progress_phase_weights = {}
+        self.progress_phase_offsets = {}
+        for key, weight in phases:
+            normalized_weight = weight / total_weight
+            self.progress_phase_offsets[key] = offset
+            self.progress_phase_weights[key] = normalized_weight
+            offset += normalized_weight
+
+    def progress_key_for_text(self, text: str | None) -> str:
+        key = phase_key(text)
+        if key in self.progress_phase_weights:
+            return key
+        if key == "command" and text:
+            lowered = text.lower()
+            if "postprocess" in lowered:
+                return "postprocess"
+            if "overlay" in lowered:
+                return phase_key(lowered)
+            if "infer" in lowered or "detect" in lowered:
+                return "inference"
+        if key != "unknown" and phase_label(key) != key:
+            return key
+        if self.active_progress_phase_key:
+            return self.active_progress_phase_key
+        if not self.progress_phase_weights:
+            return key
+        return next(iter(self.progress_phase_weights))
+
+    def is_direct_progress_phase(self, text: str | None) -> bool:
+        key = phase_key(text)
+        return key in self.progress_phase_weights or (key != "unknown" and phase_label(key) != key)
+
+    def progress_fraction_from_fields(self, fields: dict[str, str]) -> float | None:
+        for key in ("percent", "phase_percent"):
+            value = progress_float(fields, key)
+            if value is not None:
+                return max(0.0, min(100.0, value)) / 100.0
+        return None
+
+    def overall_percent_for_phase(self, key: str, fraction: float | None) -> float | None:
+        if not self.workflow_running or not self.run_queue or self.current_index < 0:
+            return None
+        if not self.progress_phase_weights:
+            self.configure_progress_plan()
+        fraction = 0.0 if fraction is None else max(0.0, min(1.0, fraction))
+        offset = self.progress_phase_offsets.get(key, 0.0)
+        weight = self.progress_phase_weights.get(key, 0.0)
+        item_fraction = max(0.0, min(1.0, offset + weight * fraction))
+        overall = (self.current_index + item_fraction) / max(1, len(self.run_queue)) * 100.0
+        overall = max(0.0, min(100.0, overall))
+        if overall < self.last_overall_percent:
+            return self.last_overall_percent
+        self.last_overall_percent = overall
+        return overall
+
+    def overall_eta(self, overall_percent: float | None) -> str | None:
+        if overall_percent is None or overall_percent <= 0 or overall_percent >= 100 or self.queue_start_time <= 0:
+            return None
+        elapsed = time.perf_counter() - self.queue_start_time
+        remaining = elapsed * (100.0 - overall_percent) / overall_percent
+        return format_duration(remaining)
+
+    def update_phase_from_text(self, text: str, *, fraction: float | None = None) -> None:
+        key = self.progress_key_for_text(text)
+        self.active_progress_phase_key = key
+        overall = self.overall_percent_for_phase(key, fraction)
+        fields = {
+            "phase": key,
+            "stage": phase_label(key),
+            "detail": text.strip(),
+        }
+        if fraction is not None:
+            fields["percent"] = f"{max(0.0, min(1.0, fraction)) * 100.0:.3f}"
+        if overall is not None:
+            fields["overall"] = f"{overall:.3f}"
+            eta = self.overall_eta(overall)
+            if eta:
+                fields["overall_eta"] = eta
+        if self.run_queue and self.current_index >= 0:
+            fields["item"] = f"{self.current_index + 1}/{len(self.run_queue)}"
+        self.progress_dashboard.apply_progress_fields(fields)
 
     def expand_queue_paths(self) -> list[Path]:
         expanded: list[Path] = []
@@ -926,6 +823,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             return
 
         path = self.run_queue[self.current_index]
+        self.active_progress_phase_key = ""
         command = self.build_command(path, self.current_index)
         self.current_run_name = self.extract_run_name(command)
         self.current_summary_path = Path(self.output_edit.text()).expanduser() / self.current_run_name / "summary.json"
@@ -934,6 +832,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.command_value.setText(as_command_text(command))
         self.phase_value.setText("起動中")
         self.status_value_label.setText("running")
+        self.progress_dashboard.set_overall_percent(self.current_index / max(1, len(self.run_queue)) * 100.0)
         self.count_value.setText(
             f"Inference {self.current_index + 1} / {len(self.run_queue)} | "
             f"Postprocess {self.current_index + 1 if self.postprocess_check.isChecked() else 0} / {len(self.run_queue)}"
@@ -942,6 +841,34 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.append_log("")
         self.append_log(f"[queue] {self.current_index + 1}/{len(self.run_queue)} {path}")
         self.start_process(command, label=path.name, tool_only=False)
+
+    def class_policy_entries(self) -> dict[str, dict[str, object]]:
+        entries: dict[str, dict[str, object]] = {}
+        for name in ("女性器", "男性器", "結合部分"):
+            recall = float(self.class_recall_spins[name].value())
+            confidence = float(self.class_confidence_spins[name].value())
+            entries[name] = {
+                "shape_mode": str(self.class_shape_combos[name].currentData()),
+                "target_interval": int(self.class_keyframe_spins[name].value()),
+                "dense_recall_target": recall,
+                "polygon_recall_min": recall,
+                "target_recall": recall,
+                "raw_det_score_min": confidence,
+                "confidence_min": confidence,
+            }
+        entries["結合"] = dict(entries["結合部分"])
+        return entries
+
+    def class_intervals(self) -> list[int]:
+        values = {int(spin.value()) for spin in self.class_keyframe_spins.values()}
+        return sorted(values) or [3]
+
+    def class_recall_values(self) -> list[float]:
+        return [float(spin.value()) for spin in self.class_recall_spins.values()]
+
+    def global_confidence_floor(self) -> float:
+        values = [float(spin.value()) for spin in self.class_confidence_spins.values()]
+        return min(values) if values else 0.350
 
     def build_command(self, input_path: Path, index: int) -> list[str]:
         script = ROOT / "scripts" / "run_integrated_pipeline.py"
@@ -961,9 +888,9 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             overlay_mode = "simple"
         else:
             overlay_mode = "none"
-        shape_mode = str(self.shape_combo.currentData())
-        keyframe_interval = self.keyframe_spin.value()
-        recall = self.recall_spin.value()
+        intervals = self.class_intervals()
+        recall_values = self.class_recall_values()
+        fallback_recall = max(recall_values) if recall_values else 0.960
         pipeline_command = [
             self.python_edit.text().strip() or str(default_python()),
             str(script),
@@ -976,16 +903,18 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             "--detector",
             detector,
             "--postprocess" if postprocess else "--no-postprocess",
+            "--progress-interval-sec",
+            "5",
         ]
         if postprocess:
             embed_original_masks = self.detailed_overlay_check.isChecked()
-            policy_path = self.write_policy_file(output_root, run_name, shape_mode, keyframe_interval, recall)
+            policy_path = self.write_policy_file(output_root, run_name)
             pipeline_command.extend(
                 [
                     "--intervals",
-                    str(keyframe_interval),
+                    ",".join(str(value) for value in intervals),
                     "--default-shape-mode",
-                    shape_mode,
+                    "ellipse",
                     "--class-policy-json",
                     str(policy_path),
                     "--no-render-overlays",
@@ -1056,11 +985,11 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                     "--postprocess-extra-args",
                     "--embed-original-masks" if embed_original_masks else "--no-embed-original-masks",
                     "--raw-det-score-min",
-                    f"{self.confidence_spin.value():.3f}",
+                    f"{self.global_confidence_floor():.3f}",
                     "--dense-recall-target",
-                    f"{recall:.3f}",
+                    f"{fallback_recall:.3f}",
                     "--polygon-recall-min",
-                    f"{recall:.3f}",
+                    f"{fallback_recall:.3f}",
                     "--progress-interval-sec",
                     "5",
                 ]
@@ -1086,28 +1015,23 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         command.extend(pipeline_command)
         return command
 
-    def write_policy_file(
-        self,
-        output_root: Path,
-        run_name: str,
-        shape_mode: str,
-        keyframe_interval: int,
-        recall: float,
-    ) -> Path:
+    def write_policy_file(self, output_root: Path, run_name: str) -> Path:
+        class_entries = self.class_policy_entries()
+        intervals = self.class_intervals()
+        recall_values = self.class_recall_values()
+        fallback_recall = max(recall_values) if recall_values else 0.960
         entry = {
-            "shape_mode": shape_mode,
-            "target_interval": int(keyframe_interval),
-            "dense_recall_target": float(recall),
-            "polygon_recall_min": float(recall),
+            "shape_mode": "ellipse",
+            "target_interval": intervals[0] if intervals else 3,
+            "dense_recall_target": fallback_recall,
+            "polygon_recall_min": fallback_recall,
+            "target_recall": fallback_recall,
+            "raw_det_score_min": self.global_confidence_floor(),
+            "confidence_min": self.global_confidence_floor(),
         }
         policy = {
             "default": entry,
-            "classes": {
-                "男性器": dict(entry),
-                "女性器": dict(entry),
-                "結合部分": dict(entry),
-                "結合": dict(entry),
-            },
+            "classes": class_entries,
         }
         config_dir = output_root / run_name / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -1141,8 +1065,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.elapsed_timer.start()
         self.update_running_state(True)
         self.process_value.setText("Running")
-        self.phase_progress.setRange(0, 0)
-        self.phase_progress.setValue(0)
+        self.progress_dashboard.set_phase_indeterminate()
         self.append_log("[runtime] " + runtime_summary_text())
         self.append_log("[cmd] " + as_command_text(command))
         self.process.start(command[0], command[1:])
@@ -1152,8 +1075,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 
     def handle_start_failure(self, *, tool_only: bool) -> None:
         self.elapsed_timer.stop()
-        self.phase_progress.setRange(0, 1)
-        self.phase_progress.setValue(0)
+        self.progress_dashboard.set_phase_done(False)
         self.process_value.setText("NotRunning")
         self.status_banner.setText("エラー")
         self.status_value_label.setText("failed to start")
@@ -1179,25 +1101,29 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 
     def handle_process_line(self, line: str) -> None:
         self.append_log(line)
+        progress_fields = parse_progress_line(line)
+        if progress_fields:
+            self.apply_progress_fields(progress_fields)
+            self.heartbeat_value.setText(time.strftime("%Y-%m-%d %H:%M:%S"))
+            return
         if line.startswith("[run]"):
-            self.phase_value.setText(line.removeprefix("[run]").strip())
+            self.update_phase_from_text(line.removeprefix("[run]").strip(), fraction=0.0)
         elif line.startswith("[done]"):
-            self.phase_value.setText(line.removeprefix("[done]").strip())
-            if self.workflow_running and self.total_steps:
-                self.completed_steps = min(self.completed_steps + 1, self.total_steps)
-                self.total_progress.setValue(self.completed_steps)
+            text = line.removeprefix("[done]").strip()
+            self.update_phase_from_text(text, fraction=1.0 if self.is_direct_progress_phase(text) else None)
         elif line.startswith("[summary]"):
             self.summary_text.setPlainText("status: completed\n" + line)
         elif line.startswith("[index]"):
             self.summary_text.setPlainText("status: completed\n" + line)
         elif line.startswith("[phase-start]"):
-            self.phase_value.setText(line.removeprefix("[phase-start]").split(":", 1)[0].strip())
+            self.update_phase_from_text(line.removeprefix("[phase-start]").strip(), fraction=0.0)
         elif line.startswith("[phase-progress]"):
             text = line.removeprefix("[phase-progress]").strip()
-            self.phase_value.setText(text.split(":", 1)[0].strip())
+            self.update_phase_from_text(text, fraction=None)
             self.summary_text.setPlainText("status: running\n" + text)
         elif line.startswith("[phase-done]"):
-            self.phase_value.setText(line.removeprefix("[phase-done]").strip())
+            text = line.removeprefix("[phase-done]").strip()
+            self.update_phase_from_text(text, fraction=1.0 if self.is_direct_progress_phase(text) else None)
         elif line.startswith("[DONE]"):
             self.summary_text.setPlainText("status: running\n" + line)
         elif line.startswith("[error]") or "failed" in line.lower():
@@ -1206,6 +1132,22 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         elif line.startswith("[log]"):
             self.phase_value.setText(line.removeprefix("[log]").strip())
         self.heartbeat_value.setText(time.strftime("%Y-%m-%d %H:%M:%S"))
+
+    def apply_progress_fields(self, fields: dict[str, str]) -> None:
+        display_fields = dict(fields)
+        key = self.progress_key_for_text(display_fields.get("phase") or display_fields.get("stage"))
+        self.active_progress_phase_key = key
+        display_fields.setdefault("stage", phase_label(key))
+        fraction = self.progress_fraction_from_fields(display_fields)
+        overall = self.overall_percent_for_phase(key, fraction)
+        if overall is not None:
+            display_fields["overall"] = f"{overall:.3f}"
+            eta = self.overall_eta(overall)
+            if eta:
+                display_fields["overall_eta"] = eta
+        if self.run_queue and self.current_index >= 0:
+            display_fields.setdefault("item", f"{self.current_index + 1}/{len(self.run_queue)}")
+        self.progress_dashboard.apply_progress_fields(display_fields)
 
     def append_log(self, text: str) -> None:
         self.log_edit.appendPlainText(text)
@@ -1227,8 +1169,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             self.handle_process_line(self.active_log_buffer.rstrip())
             self.active_log_buffer = ""
         self.elapsed_timer.stop()
-        self.phase_progress.setRange(0, 1)
-        self.phase_progress.setValue(1)
+        self.progress_dashboard.set_phase_done(True)
         self.process_value.setText("NotRunning")
         self.process = None
         self.update_running_state(False)
@@ -1241,9 +1182,10 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             return
 
         if success:
-            expected_steps = min((self.current_index + 1) * self.steps_per_item, self.total_steps)
-            self.completed_steps = max(self.completed_steps, expected_steps)
-            self.total_progress.setValue(self.completed_steps)
+            item_done = (self.current_index + 1) / max(1, len(self.run_queue)) * 100.0
+            self.completed_steps = max(self.completed_steps, int(round(item_done * 10)))
+            self.last_overall_percent = max(self.last_overall_percent, item_done)
+            self.progress_dashboard.set_overall_percent(item_done)
             self.status_value_label.setText("completed")
             self.start_next_item()
             return
@@ -1257,13 +1199,14 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 
     def finish_queue(self, *, success: bool, exit_code: int = 0) -> None:
         self.elapsed_timer.stop()
-        self.phase_progress.setRange(0, 1)
-        self.phase_progress.setValue(1 if success else 0)
+        self.progress_dashboard.set_phase_done(success)
         self.update_running_state(False)
         self.process_value.setText("NotRunning")
         if success:
             self.status_banner.setText("完了")
             self.phase_value.setText("完了")
+            self.last_overall_percent = 100.0
+            self.progress_dashboard.set_overall_percent(100.0)
             self.status_value_label.setText("completed")
             self.summary_text.setPlainText("status: completed\nqueue: done")
         else:

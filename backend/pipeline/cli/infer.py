@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.pipeline.pipeline_defaults import DETECTOR_CHOICES, DEFAULT_MODEL_ROOT, LOCAL_ATOSYORI_REPO
+from backend.pipeline.progress import BATCH_PROGRESS_PREFIX, encode_progress_fields, parse_progress_line
 
 from .flow_cli_common import ROOT, add_policy_args, command_to_text, timestamp, validate_interval, validate_recall
 
@@ -108,6 +109,22 @@ def _extract_fps(line: str) -> str | None:
     return match.group(1) if match else None
 
 
+def pre_sqlite_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "pre_sqlite", getattr(args, "raw_sqlite", True)))
+
+
+def pre_overlay_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "pre_overlay", getattr(args, "raw_overlay", False)))
+
+
+def post_sqlite_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "post_sqlite", True))
+
+
+def post_overlay_mode(args: argparse.Namespace) -> str:
+    return str(getattr(args, "post_overlay", getattr(args, "overlay_mode", "detailed")))
+
+
 def run_streamed(
     command: list[str],
     *,
@@ -147,6 +164,36 @@ def run_streamed(
                 sys.stdout.write(line)
                 log.write(line)
                 log.flush()
+                progress_fields = parse_progress_line(line)
+                if progress_fields:
+                    phase_percent = None
+                    try:
+                        phase_percent = float(progress_fields.get("percent", ""))
+                    except ValueError:
+                        phase_percent = None
+                    overall = None
+                    if phase_percent is not None:
+                        overall = ((item_index - 1) + max(0.0, min(100.0, phase_percent)) / 100.0) / max(1, item_total) * 100.0
+                    batch_fields = {
+                        "item": f"{item_index}/{item_total}",
+                        "phase": progress_fields.get("phase"),
+                        "phase_percent": phase_percent,
+                        "overall": overall,
+                        "fps": progress_fields.get("fps"),
+                        "eta": progress_fields.get("eta"),
+                    }
+                    print(f"{BATCH_PROGRESS_PREFIX} {encode_progress_fields(batch_fields)}", flush=True)
+                    write_audit(
+                        audit_path,
+                        "phase_progress",
+                        item_index=item_index,
+                        item_total=item_total,
+                        phase=progress_fields.get("phase"),
+                        phase_percent=phase_percent,
+                        overall_percent=overall,
+                        fields=progress_fields,
+                    )
+                    continue
                 fps = _extract_fps(line)
                 if fps is not None:
                     last_fps = fps
@@ -210,10 +257,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--score-thresh", type=float, default=None)
 
-    parser.add_argument("--overlay-mode", choices=("none", "detailed", "simple", "both"), default="detailed")
-    parser.add_argument("--raw-overlay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--post-overlay",
+        "--overlay-mode",
+        dest="post_overlay",
+        choices=("none", "detailed", "simple", "both"),
+        default="detailed",
+        help="Postprocess overlay output mode. --overlay-mode is kept as a compatibility alias.",
+    )
+    parser.add_argument(
+        "--pre-overlay",
+        "--raw-overlay",
+        dest="pre_overlay",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write the pre-postprocess raw detector overlay. --raw-overlay is a compatibility alias.",
+    )
     parser.add_argument("--overlay-encoder", choices=("nvenc", "cpu"), default="nvenc")
-    parser.add_argument("--raw-sqlite", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--pre-sqlite",
+        "--raw-sqlite",
+        dest="pre_sqlite",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write pre-postprocess raw detector SQLite. --raw-sqlite is a compatibility alias.",
+    )
+    parser.add_argument("--post-sqlite", action=argparse.BooleanOptionalAction, default=True)
 
     add_policy_args(parser)
     parser.add_argument("--raw-cut-detect", action=argparse.BooleanOptionalAction, default=True)
@@ -287,7 +356,9 @@ def build_pipeline_command(args: argparse.Namespace, *, video: Path, output_root
         str(args.detector),
         "--classifier" if args.classifier else "--no-classifier",
         "--postprocess" if postprocess else "--no-postprocess",
-        "--raw-sqlite" if args.raw_sqlite else "--no-raw-sqlite",
+        "--raw-sqlite" if pre_sqlite_enabled(args) else "--no-raw-sqlite",
+        "--progress-interval-sec",
+        str(args.progress_interval_sec),
     ]
     if args.force:
         command.append("--force")
@@ -315,15 +386,13 @@ def build_pipeline_command(args: argparse.Namespace, *, video: Path, output_root
                 "--polygon-predictor-device",
                 str(args.polygon_predictor_device),
                 "--postprocess-extra-args",
-                "--embed-original-masks" if args.overlay_mode in {"detailed", "both"} else "--no-embed-original-masks",
+                "--embed-original-masks" if post_overlay_mode(args) in {"detailed", "both"} else "--no-embed-original-masks",
                 "--raw-det-score-min",
                 str(args.raw_det_score_min),
                 "--dense-recall-target",
                 str(args.recall_target),
                 "--polygon-recall-min",
                 str(args.recall_target),
-                "--progress-interval-sec",
-                str(args.progress_interval_sec),
             ]
         )
     return command
@@ -331,7 +400,7 @@ def build_pipeline_command(args: argparse.Namespace, *, video: Path, output_root
 
 def build_ui_job_command(args: argparse.Namespace, *, video: Path, output_root: Path, run_name: str, policy_path: Path | None) -> list[str]:
     pipeline_command = build_pipeline_command(args, video=video, output_root=output_root, run_name=run_name, policy_path=policy_path)
-    overlay_mode = args.overlay_mode if args.mode == "full" else "none"
+    overlay_mode = post_overlay_mode(args) if args.mode == "full" else "none"
     command = [
         sys.executable,
         str(UI_JOB_SCRIPT),
@@ -343,9 +412,11 @@ def build_ui_job_command(args: argparse.Namespace, *, video: Path, output_root: 
         run_name,
         "--overlay-mode",
         overlay_mode,
-        "--raw-overlay" if args.raw_overlay else "--no-raw-overlay",
+        "--raw-overlay" if pre_overlay_enabled(args) else "--no-raw-overlay",
         "--encoder",
         str(args.overlay_encoder),
+        "--raw-sqlite-output" if pre_sqlite_enabled(args) else "--no-raw-sqlite-output",
+        "--post-sqlite-output" if post_sqlite_enabled(args) else "--no-post-sqlite-output",
     ]
     if args.force:
         command.append("--force")
@@ -461,7 +532,7 @@ def build_postprocess_command(
         str(args.model_root),
         "--atosyori-repo",
         str(args.atosyori_repo),
-        "--overlay" if args.overlay_mode != "none" else "--no-overlay",
+        "--overlay" if post_overlay_mode(args) != "none" else "--no-overlay",
         "--overlay-encoder",
         str(args.overlay_encoder),
         "--shape-mode",
@@ -479,6 +550,8 @@ def build_postprocess_command(
         str(args.k2_device),
         "--polygon-predictor-device",
         str(args.polygon_predictor_device),
+        "--progress-interval-sec",
+        str(args.progress_interval_sec),
     ]
     if input_kind == "jsonl":
         command.extend(["--input-jsonl", str(artifact)])

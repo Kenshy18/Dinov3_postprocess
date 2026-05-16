@@ -373,6 +373,8 @@ class PipelineCommandTests(unittest.TestCase):
                 "0.96",
                 "--polygon-recall-min",
                 "0.96",
+                "--progress-interval-sec",
+                "5.0",
             ],
         )
         self.assertEqual(command, adapter_command)

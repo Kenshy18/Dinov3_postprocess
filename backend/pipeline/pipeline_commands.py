@@ -51,6 +51,8 @@ def build_postprocess_command(
         "--raw-remove-short-tracks-max-frames",
         str(args.raw_remove_short_tracks_max_frames),
         "--raw-cut-detect" if args.raw_cut_detect else "--no-raw-cut-detect",
+        "--progress-interval-sec",
+        str(getattr(args, "progress_interval_sec", 5.0)),
     ]
     if args.postprocess_extra_args:
         engine_args.extend(args.postprocess_extra_args)

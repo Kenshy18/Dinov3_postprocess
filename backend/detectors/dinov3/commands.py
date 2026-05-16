@@ -49,6 +49,7 @@ def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> li
     maybe_add(command, "--classifier-checkpoint", args.classifier_checkpoint)
     maybe_add(command, "--trt-backbone-engine", args.trt_backbone_engine)
     maybe_add(command, "--backbone-weights", args.backbone_weights)
+    maybe_add(command, "--progress-interval-sec", getattr(args, "progress_interval_sec", None))
     if args.write_detector_overlay:
         command.append("--write-overlay")
     if args.gpu_prefetch is not None:

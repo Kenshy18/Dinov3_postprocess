@@ -48,13 +48,13 @@ cp configs/artifact_sources.env.example configs/artifact_sources.env
 tools/setup_runtime.sh
 ```
 
-`tools/setup_runtime.sh` は正規セットアップ入口です。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、GPU/VRAMに応じたbatch設定生成まで行います。互換入口として `tools/setup_integrated_runtime_env.sh` と `tools/setup_gui_runtime.sh` も残しています。
+`tools/setup_runtime.sh` は正規セットアップ入口です。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、GPU/VRAMに応じた3モデル共通のbatch探索まで行います。互換入口として `tools/setup_integrated_runtime_env.sh` と `tools/setup_gui_runtime.sh` も残しています。
 
 ```bash
 tools/setup_gui_runtime.sh
 ```
 
-生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でbatch-size候補を順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はVRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headをローカルTensorRT engineとして作成し、そのbatch-sizeをprofileへ反映します。
+生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でDINOv3、EVA02、Co-DINOのbatch-size候補を順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はTensorRT engineを作らない構成でも実測batch探索を行いますが、VRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headを候補batchごとにローカルTensorRT engineとして作成し、その後の実測で選ばれたbatch-sizeをprofileへ反映します。
 
 別のAtosyori repoを使う場合:
 
@@ -173,7 +173,26 @@ overlayのみ再生成したい場合は `scripts/overlay.py` を使います。
   --force
 ```
 
+NVENC overlay encodeは既定で `h264_nvenc -preset p5 -cq 23` を使います。
+画質優先なら `OVERLAY_NVENC_CQ=20`、環境別の追加検証では
+`OVERLAY_NVENC_PRESET` と `OVERLAY_FFMPEG_EXTRA_ARGS` でffmpeg引数を上書きできます。
+
+長時間処理では `--progress-interval-sec` 間隔で `[phase-progress]` が出ます。
+GUIは同じ行を読んでフェーズ進捗、FPS、ETA、経過時間を更新します。
+
 `scripts/run_full_flow.py`、`scripts/run_postprocess_only.py`、`scripts/infer_video_postprocess.py`、`scripts/run_integrated_pipeline.py`、`scripts/render_raw_jsonl_overlays.py` は互換・低レベル入口です。通常運用では上記3入口を使ってください。
+
+`scripts/infer.py` の出力は後処理前と後処理後の2フェーズで選べます。
+
+```bash
+# 後処理前: raw detector SQLite + raw overlay
+--pre-sqlite --pre-overlay
+
+# 後処理後: final SQLite + postprocess overlay
+--post-sqlite --post-overlay detailed
+```
+
+互換のため `--raw-sqlite`、`--raw-overlay`、`--overlay-mode` も残していますが、新規の運用では `pre/post` 名を使ってください。
 
 ## Outputs
 
@@ -212,8 +231,10 @@ output/runs/<run_name>/
   summary.json
 ```
 
-overlayは `--overlay-mode` と `--raw-overlay/--no-raw-overlay` で選択できます。内部互換の `<detector>/jsonl`、`postprocess/`、`summary.json` も残します。
+overlayは `--pre-overlay` と `--post-overlay` で選択できます。内部互換の `<detector>/jsonl`、`postprocess/`、`summary.json` も残します。
 `*_raw_detections.sqlite` は検出直後の共通raw schemaで、`metadata`、`frames`、`masks` tableを持ちます。後処理後の `*_predictions.sqlite` は最終mask schemaで、少なくとも `masks(frame, track_id, polygons)` を持ちます。
+
+`input/` と `output/` はローカル作業用です。フォルダ内の動画、SQLite、overlay、推論結果は `.gitignore` 対象で、Gitにはpushしません。
 
 ## FPS metrics
 

@@ -44,35 +44,58 @@ def run_text(command: list[str]) -> str | None:
     return completed.stdout.strip()
 
 
+def _parse_float(raw: str | None) -> float | None:
+    if raw is None:
+        return None
+    match = re.search(r"([0-9.]+)", raw)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
 def nvidia_smi() -> dict[str, Any]:
     text = run_text(
         [
             "nvidia-smi",
-            "--query-gpu=name,memory.total,memory.used,memory.free,driver_version",
+            "--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,power.draw,driver_version",
             "--format=csv,noheader,nounits",
         ]
     )
     if not text:
         return {"available": False}
     parts = [part.strip() for part in text.splitlines()[0].split(",")]
-    if len(parts) < 5:
+    if len(parts) < 7:
         return {"available": False, "raw": text}
     out: dict[str, Any] = {
         "available": True,
         "name": parts[0],
-        "driver_version": parts[4],
+        "driver_version": parts[6],
     }
     for key, value in (("memory_total_mib", parts[1]), ("memory_used_mib", parts[2]), ("memory_free_mib", parts[3])):
         try:
             out[key] = int(float(value))
         except ValueError:
             out[key] = None
+    out["utilization_gpu_percent"] = _parse_float(parts[4])
+    out["power_draw_w"] = _parse_float(parts[5])
     return out
 
 
-def current_gpu_used_mib() -> int | None:
+def current_gpu_sample() -> dict[str, Any]:
     info = nvidia_smi()
-    value = info.get("memory_used_mib")
+    return {
+        "memory_used_mib": info.get("memory_used_mib"),
+        "memory_total_mib": info.get("memory_total_mib"),
+        "utilization_gpu_percent": info.get("utilization_gpu_percent"),
+        "power_draw_w": info.get("power_draw_w"),
+    }
+
+
+def current_gpu_used_mib() -> int | None:
+    value = current_gpu_sample().get("memory_used_mib")
     return int(value) if isinstance(value, int) else None
 
 
@@ -123,28 +146,43 @@ def parse_candidates(raw: str | None) -> list[int]:
 
 def auto_candidates(detector: str, total_mib: int | None) -> list[int]:
     if detector == "codino":
-        try:
-            return [max(1, int(os.environ.get("CODINO_TRT_BATCH_SIZE", "2")))]
-        except ValueError:
-            return [2]
+        total_gib = (total_mib or 0) / 1024.0
+        max_batch = int(os.environ.get("CODINO_TRT_MAX_BATCH", "8"))
+        if total_gib <= 0:
+            candidates = [1]
+        elif total_gib < 20:
+            candidates = [1]
+        elif total_gib < 40:
+            candidates = [1, 2]
+        elif total_gib < 80:
+            candidates = [2, 4, 6]
+        else:
+            candidates = [2, 4, 6, 8]
+        return [batch for batch in candidates if batch <= max_batch]
     total_gib = (total_mib or 0) / 1024.0
     if detector == "eva02":
+        max_batch = int(os.environ.get("EVA02_BATCH_MAX", "8"))
         if total_gib <= 0:
-            return [1]
-        if total_gib < 10:
-            return [1, 2]
-        if total_gib < 16:
-            return [1, 2, 3, 4]
-        if total_gib < 24:
-            return [1, 2, 3, 4, 6]
-        return [1, 2, 4, 6, 8]
+            candidates = [1]
+        elif total_gib < 10:
+            candidates = [1, 2]
+        elif total_gib < 16:
+            candidates = [1, 2, 3, 4]
+        elif total_gib < 24:
+            candidates = [1, 2, 3, 4, 6]
+        else:
+            candidates = [1, 2, 4, 6, 8]
+        return [batch for batch in candidates if batch <= max_batch]
+    max_batch = int(os.environ.get("DINOV3_BATCH_MAX", "8"))
     if total_gib <= 0:
-        return [1]
-    if total_gib < 10:
-        return [1, 2, 4]
-    if total_gib < 16:
-        return [2, 4, 6, 8]
-    return [4, 6, 8]
+        candidates = [1]
+    elif total_gib < 10:
+        candidates = [1, 2, 4]
+    elif total_gib < 16:
+        candidates = [2, 4, 6, 8]
+    else:
+        candidates = [4, 6, 8]
+    return [batch for batch in candidates if batch <= max_batch]
 
 
 def create_dummy_video(path: Path, *, width: int, height: int, frames: int, fps: float) -> None:
@@ -156,14 +194,14 @@ def create_dummy_video(path: Path, *, width: int, height: int, frames: int, fps:
     writer = cv2.VideoWriter(str(path), fourcc, fps, (width, height))
     if not writer.isOpened():
         raise RuntimeError(f"failed to create dummy video: {path}")
-    x_grad = np.linspace(0, 255, width, dtype=np.uint8)[None, :]
-    y_grad = np.linspace(0, 255, height, dtype=np.uint8)[:, None]
+    x_grad = np.linspace(0, 255, width, dtype=np.uint16)[None, :]
+    y_grad = np.linspace(0, 255, height, dtype=np.uint16)[:, None]
     try:
         for index in range(frames):
             frame = np.empty((height, width, 3), dtype=np.uint8)
-            frame[:, :, 0] = (x_grad + index * 3) % 255
-            frame[:, :, 1] = (y_grad + index * 5) % 255
-            frame[:, :, 2] = ((x_grad // 2) + (y_grad // 2) + index * 7) % 255
+            frame[:, :, 0] = ((x_grad + index * 3) % 255).astype(np.uint8)
+            frame[:, :, 1] = ((y_grad + index * 5) % 255).astype(np.uint8)
+            frame[:, :, 2] = (((x_grad // 2) + (y_grad // 2) + index * 7) % 255).astype(np.uint8)
             cx = int((index * 31) % width)
             cy = int(height * 0.5 + np.sin(index / 6.0) * height * 0.22)
             cv2.ellipse(frame, (cx, cy), (max(24, width // 12), max(18, height // 10)), index * 9, 0, 360, (245, 245, 245), -1)
@@ -222,6 +260,36 @@ def parse_measured_fps(text: str, summary_path: Path | None) -> float | None:
     return None
 
 
+def codino_engine_paths_for_batch(batch: int) -> dict[str, Path]:
+    def env_or_default(name: str, default: Path) -> Path:
+        raw = os.environ.get(name)
+        if not raw:
+            return default
+        if "{batch}" in raw:
+            return Path(raw.format(batch=batch)).expanduser()
+        path = Path(raw).expanduser()
+        # A single fixed engine path is only valid for the matching fixed-batch engine.
+        if f"_b{batch}_" in path.name or path == DEFAULT_CODINO_TRT_MASK_HEAD:
+            return path
+        return default
+
+    return {
+        "backbone": env_or_default(
+            "CODINO_TRT_BACKBONE_ENGINE",
+            DEFAULT_CODINO_TRT_DIR / f"codino_dinov3_vitl_backbone_736x1280_fp32_b{batch}_fixed_bf16.engine",
+        ),
+        "query_encoder": env_or_default(
+            "CODINO_TRT_QUERY_ENCODER_ENGINE",
+            DEFAULT_CODINO_TRT_DIR / f"codino_query_encoder_b{batch}_736x1280_msda_plugin_sbc_fp16.engine",
+        ),
+        "decoder": env_or_default(
+            "CODINO_TRT_DECODER_ENGINE",
+            DEFAULT_CODINO_TRT_DIR / f"codino_decoder_b{batch}_736x1280_msda_plugin_fp16.engine",
+        ),
+        "mask_head": env_or_default("CODINO_TRT_MASK_HEAD_ENGINE", DEFAULT_CODINO_TRT_MASK_HEAD),
+    }
+
+
 def classify_failure(text: str, returncode: int, timed_out: bool) -> str | None:
     lower = text.lower()
     if timed_out:
@@ -276,6 +344,7 @@ def command_for_candidate(
             "--overwrite",
         ]
     if detector == "codino":
+        codino_engines = codino_engine_paths_for_batch(batch)
         return [
             str(python),
             str(ROOT / "backend" / "detectors" / "codino" / "runtime" / "infer_video_codino_jsonl.py"),
@@ -305,13 +374,13 @@ def command_for_candidate(
             "--async-writer",
             "--disable-mask-iou-head",
             "--trt-backbone-engine",
-            str(Path(os.environ.get("CODINO_TRT_BACKBONE_ENGINE", DEFAULT_CODINO_TRT_BACKBONE))),
+            str(codino_engines["backbone"]),
             "--trt-query-encoder-engine",
-            str(Path(os.environ.get("CODINO_TRT_QUERY_ENCODER_ENGINE", DEFAULT_CODINO_TRT_QUERY_ENCODER))),
+            str(codino_engines["query_encoder"]),
             "--trt-decoder-engine",
-            str(Path(os.environ.get("CODINO_TRT_DECODER_ENGINE", DEFAULT_CODINO_TRT_DECODER))),
+            str(codino_engines["decoder"]),
             "--trt-mask-head-engine",
-            str(Path(os.environ.get("CODINO_TRT_MASK_HEAD_ENGINE", DEFAULT_CODINO_TRT_MASK_HEAD))),
+            str(codino_engines["mask_head"]),
             "--overwrite",
         ]
     return [
@@ -348,8 +417,10 @@ def command_for_candidate(
 
 
 def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, poll_sec: float) -> dict[str, Any]:
-    start_used = current_gpu_used_mib()
+    start_sample = current_gpu_sample()
+    start_used = start_sample.get("memory_used_mib")
     peak_used = start_used
+    samples: list[dict[str, Any]] = []
     start = time.perf_counter()
     lines: list[str] = []
     timed_out = False
@@ -372,7 +443,9 @@ def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, pol
                 line = key.fileobj.readline()
                 if line:
                     lines.append(line.rstrip())
-            used = current_gpu_used_mib()
+            sample = current_gpu_sample()
+            samples.append(sample)
+            used = sample.get("memory_used_mib")
             if used is not None:
                 peak_used = used if peak_used is None else max(peak_used, used)
             if process.poll() is not None:
@@ -403,6 +476,23 @@ def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, pol
     metric_fps = float(measured_fps if measured_fps and measured_fps > 0 else wall_fps)
     failure = classify_failure(text, returncode, timed_out)
     success = bool(returncode == 0 and jsonl_lines > 0 and not timed_out)
+    util_values = [
+        float(sample["utilization_gpu_percent"])
+        for sample in samples
+        if isinstance(sample.get("utilization_gpu_percent"), (int, float))
+    ]
+    active_util_values = [value for value in util_values if value > 5]
+    power_values = [
+        float(sample["power_draw_w"])
+        for sample in samples
+        if isinstance(sample.get("power_draw_w"), (int, float))
+    ]
+    total_mib_values = [
+        int(sample["memory_total_mib"])
+        for sample in samples
+        if isinstance(sample.get("memory_total_mib"), int) and sample["memory_total_mib"] > 0
+    ]
+    total_mib = total_mib_values[-1] if total_mib_values else start_sample.get("memory_total_mib")
     return {
         "command": command,
         "returncode": returncode,
@@ -415,6 +505,14 @@ def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, pol
         "metric_fps": metric_fps,
         "gpu_memory_used_start_mib": start_used,
         "gpu_memory_used_peak_mib": peak_used,
+        "gpu_memory_total_mib": total_mib,
+        "gpu_memory_peak_fraction": (float(peak_used) / float(total_mib)) if peak_used and total_mib else None,
+        "gpu_utilization_avg_percent": (sum(util_values) / len(util_values)) if util_values else None,
+        "gpu_utilization_active_avg_percent": (sum(active_util_values) / len(active_util_values)) if active_util_values else None,
+        "gpu_utilization_max_percent": max(util_values) if util_values else None,
+        "gpu_power_avg_w": (sum(power_values) / len(power_values)) if power_values else None,
+        "gpu_power_max_w": max(power_values) if power_values else None,
+        "gpu_sample_count": len(samples),
         "stdout_tail": "\n".join(lines[-120:]),
     }
 
@@ -432,6 +530,7 @@ def benchmark_detector(
     timeout_sec: int,
     poll_sec: float,
     eva02_compile_backbone: str,
+    max_vram_fraction: float,
 ) -> dict[str, Any]:
     results = []
     selected: dict[str, Any] | None = None
@@ -453,9 +552,21 @@ def benchmark_detector(
         print(f"[BENCH] {detector} batch={batch}", flush=True)
         result = run_candidate(command, output_dir=output_dir, timeout_sec=timeout_sec, poll_sec=poll_sec)
         result["batch_size"] = batch
+        peak_mib = result.get("gpu_memory_used_peak_mib")
+        total_mib = result.get("gpu_memory_total_mib")
+        limit_mib = None
+        memory_within_limit = True
+        if isinstance(peak_mib, int) and isinstance(total_mib, int) and total_mib > 0 and max_vram_fraction > 0:
+            limit_mib = int(total_mib * max_vram_fraction)
+            memory_within_limit = peak_mib <= limit_mib
+        result["gpu_memory_limit_fraction"] = max_vram_fraction
+        result["gpu_memory_limit_mib"] = limit_mib
+        result["gpu_memory_within_limit"] = memory_within_limit
         results.append(result)
         if result["success"]:
-            if selected is None or float(result["metric_fps"]) > float(selected["metric_fps"]):
+            if memory_within_limit and (
+                selected is None or float(result["metric_fps"]) > float(selected["metric_fps"])
+            ):
                 selected = {
                     "batch_size": batch,
                     "metric_fps": float(result["metric_fps"]),
@@ -466,9 +577,18 @@ def benchmark_detector(
                 }
             print(
                 f"[BENCH] ok {detector} batch={batch} metric_fps={float(result['metric_fps']):.4f} "
-                f"peak_mib={result.get('gpu_memory_used_peak_mib')}",
+                f"gpu_active={float(result.get('gpu_utilization_active_avg_percent') or 0):.1f}% "
+                f"peak_mib={result.get('gpu_memory_used_peak_mib')} "
+                f"mem_ok={str(memory_within_limit).lower()}",
                 flush=True,
             )
+            if not memory_within_limit:
+                print(
+                    f"[BENCH] stop higher {detector} batches after memory limit "
+                    f"peak_mib={peak_mib} limit_mib={limit_mib}",
+                    flush=True,
+                )
+                break
         else:
             print(f"[BENCH] fail {detector} batch={batch} reason={result.get('failure')}", flush=True)
             if result.get("failure") in {"cuda_oom", "timeout"}:
@@ -486,13 +606,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
-    parser.add_argument("--detectors", default=os.environ.get("BATCH_BENCHMARK_DETECTORS", "eva02"))
+    parser.add_argument("--detectors", default=os.environ.get("BATCH_BENCHMARK_DETECTORS", "eva02,dinov3,codino"))
     parser.add_argument("--frames", type=int, default=int(os.environ.get("BATCH_BENCHMARK_FRAMES", "24")))
     parser.add_argument("--width", type=int, default=int(os.environ.get("BATCH_BENCHMARK_WIDTH", "1280")))
     parser.add_argument("--height", type=int, default=int(os.environ.get("BATCH_BENCHMARK_HEIGHT", "720")))
     parser.add_argument("--fps", type=float, default=float(os.environ.get("BATCH_BENCHMARK_FPS", "30")))
     parser.add_argument("--timeout-sec", type=int, default=int(os.environ.get("BATCH_BENCHMARK_TIMEOUT_SEC", "360")))
     parser.add_argument("--poll-sec", type=float, default=0.25)
+    parser.add_argument(
+        "--max-vram-fraction",
+        type=float,
+        default=float(os.environ.get("BATCH_BENCHMARK_MAX_VRAM_FRACTION", "0.95")),
+        help="Do not select a batch size whose measured dedicated VRAM peak exceeds this fraction of total VRAM.",
+    )
     parser.add_argument("--eva02-candidates", default=os.environ.get("EVA02_BATCH_CANDIDATES", ""))
     parser.add_argument("--dinov3-candidates", default=os.environ.get("DINOV3_BATCH_CANDIDATES", ""))
     parser.add_argument("--codino-candidates", default=os.environ.get("CODINO_BATCH_CANDIDATES", ""))
@@ -534,6 +660,7 @@ def main() -> int:
             "timeout_sec": int(args.timeout_sec),
             "cleanup": bool(args.cleanup),
             "eva02_compile_backbone": str(args.eva02_compile_backbone),
+            "max_vram_fraction": float(args.max_vram_fraction),
         },
         "gpu": {
             "torch": torch_info,
@@ -572,6 +699,7 @@ def main() -> int:
                 timeout_sec=int(args.timeout_sec),
                 poll_sec=float(args.poll_sec),
                 eva02_compile_backbone=str(args.eva02_compile_backbone),
+                max_vram_fraction=float(args.max_vram_fraction),
             )
             result["detectors"][detector] = detector_result
             if detector_result.get("selected"):

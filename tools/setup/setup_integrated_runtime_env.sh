@@ -36,6 +36,8 @@ REBUILD_TRT="${REBUILD_TRT:-auto}"
 ENGINE_PATH="${ENGINE_PATH:-$ROOT_DIR/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
 REBUILD_CODINO_TRT="${REBUILD_CODINO_TRT:-auto}"
 CODINO_TRT_BATCH_SIZE="${CODINO_TRT_BATCH_SIZE:-auto}"
+CODINO_TRT_BATCH_CANDIDATES="${CODINO_TRT_BATCH_CANDIDATES:-auto}"
+CODINO_TRT_MAX_BATCH="${CODINO_TRT_MAX_BATCH:-8}"
 CODINO_TRT_BACKBONE_PRECISION="${CODINO_TRT_BACKBONE_PRECISION:-bf16}"
 CODINO_TRT_QUERY_PRECISION="${CODINO_TRT_QUERY_PRECISION:-fp16}"
 CODINO_TRT_DECODER_PRECISION="${CODINO_TRT_DECODER_PRECISION:-fp16}"
@@ -47,6 +49,11 @@ BATCH_BENCHMARK_OUTPUT="${BATCH_BENCHMARK_OUTPUT:-$ROOT_DIR/.runtime/runtime_ben
 BATCH_BENCHMARK_DETECTORS="${BATCH_BENCHMARK_DETECTORS:-eva02,dinov3,codino}"
 BATCH_BENCHMARK_FRAMES="${BATCH_BENCHMARK_FRAMES:-24}"
 BATCH_BENCHMARK_TIMEOUT_SEC="${BATCH_BENCHMARK_TIMEOUT_SEC:-360}"
+BATCH_BENCHMARK_MAX_VRAM_FRACTION="${BATCH_BENCHMARK_MAX_VRAM_FRACTION:-0.95}"
+DINOV3_BATCH_CANDIDATES="${DINOV3_BATCH_CANDIDATES:-auto}"
+DINOV3_BATCH_MAX="${DINOV3_BATCH_MAX:-8}"
+EVA02_BATCH_CANDIDATES="${EVA02_BATCH_CANDIDATES:-auto}"
+EVA02_BATCH_MAX="${EVA02_BATCH_MAX:-8}"
 
 case "$ENGINE_PATH" in
   /*) ;;
@@ -208,25 +215,119 @@ elif [[ -f "$ROOT_DIR/UI/requirements.txt" ]]; then
   "$PY" -m pip install -q -r "$ROOT_DIR/UI/requirements.txt"
 fi
 
-if [[ "$CODINO_TRT_BATCH_SIZE" == "auto" ]]; then
-  CODINO_TRT_BATCH_SIZE="$("$PY" - <<'PY'
+auto_batch_candidates() {
+  local detector="$1"
+  local max_batch="$2"
+  "$PY" - "$detector" "$max_batch" <<'PY'
+import sys
 import torch
 
-if not torch.cuda.is_available():
-    print(1)
-else:
+detector = sys.argv[1]
+max_batch = max(1, int(sys.argv[2]))
+total_gib = 0.0
+if torch.cuda.is_available():
     total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-    print(2 if total_gib >= 20 else 1)
+
+if detector == "codino":
+    if total_gib <= 0:
+        candidates = [1]
+    elif total_gib < 20:
+        candidates = [1]
+    elif total_gib < 40:
+        candidates = [1, 2]
+    elif total_gib < 80:
+        candidates = [2, 4, 6]
+    else:
+        candidates = [2, 4, 6, 8]
+elif detector == "eva02":
+    if total_gib <= 0:
+        candidates = [1]
+    elif total_gib < 10:
+        candidates = [1, 2]
+    elif total_gib < 16:
+        candidates = [1, 2, 3, 4]
+    elif total_gib < 24:
+        candidates = [1, 2, 3, 4, 6]
+    else:
+        candidates = [1, 2, 4, 6, 8]
+else:
+    if total_gib <= 0:
+        candidates = [1]
+    elif total_gib < 10:
+        candidates = [1, 2, 4]
+    elif total_gib < 16:
+        candidates = [2, 4, 6, 8]
+    else:
+        candidates = [4, 6, 8]
+
+print(",".join(str(batch) for batch in candidates if batch <= max_batch))
 PY
-)"
+}
+
+normalize_batch_candidates() {
+  local raw="$1"
+  "$PY" - "$raw" <<'PY'
+import re
+import sys
+
+seen = []
+for item in re.split(r"[,:\s]+", sys.argv[1].strip()):
+    if not item:
+        continue
+    batch = int(item)
+    if batch > 0 and batch not in seen:
+        seen.append(batch)
+if not seen:
+    seen = [1]
+print(",".join(str(batch) for batch in seen))
+PY
+}
+
+if [[ "$DINOV3_BATCH_CANDIDATES" == "auto" ]]; then
+  DINOV3_BATCH_CANDIDATES="$(auto_batch_candidates dinov3 "$DINOV3_BATCH_MAX")"
+fi
+DINOV3_BATCH_CANDIDATES="$(normalize_batch_candidates "$DINOV3_BATCH_CANDIDATES")"
+
+if [[ "$EVA02_BATCH_CANDIDATES" == "auto" ]]; then
+  EVA02_BATCH_CANDIDATES="$(auto_batch_candidates eva02 "$EVA02_BATCH_MAX")"
+fi
+EVA02_BATCH_CANDIDATES="$(normalize_batch_candidates "$EVA02_BATCH_CANDIDATES")"
+
+if [[ "$CODINO_TRT_BATCH_CANDIDATES" == "auto" ]]; then
+  if [[ "$CODINO_TRT_BATCH_SIZE" != "auto" ]]; then
+    CODINO_TRT_BATCH_CANDIDATES="$CODINO_TRT_BATCH_SIZE"
+  else
+    CODINO_TRT_BATCH_CANDIDATES="$(auto_batch_candidates codino "$CODINO_TRT_MAX_BATCH")"
+  fi
+fi
+CODINO_TRT_BATCH_CANDIDATES="$(normalize_batch_candidates "$CODINO_TRT_BATCH_CANDIDATES")"
+
+if [[ "$CODINO_TRT_BATCH_SIZE" == "auto" ]]; then
+  CODINO_TRT_BATCH_SIZE="${CODINO_TRT_BATCH_CANDIDATES%%,*}"
 fi
 
 CODINO_TRT_DIR="$ROOT_DIR/checkpoints/codino/trt"
-CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_DIR/codino_dinov3_vitl_backbone_736x1280_fp32_b${CODINO_TRT_BATCH_SIZE}_fixed_${CODINO_TRT_BACKBONE_PRECISION}.engine"
-CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_DIR/codino_query_encoder_b${CODINO_TRT_BATCH_SIZE}_736x1280_msda_plugin_sbc_${CODINO_TRT_QUERY_PRECISION}.engine"
-CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DIR/codino_decoder_b${CODINO_TRT_BATCH_SIZE}_736x1280_msda_plugin_${CODINO_TRT_DECODER_PRECISION}.engine"
-CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_DIR/codino_mask_head_core_n1_736x1280_${CODINO_TRT_MASK_PRECISION}.engine"
 CODINO_TRT_MANIFEST="$CODINO_TRT_DIR/codino_trt_manifest.json"
+
+set_codino_trt_paths_for_batch() {
+  local batch="$1"
+  CODINO_TRT_BATCH_SIZE="$batch"
+  CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_DIR/codino_dinov3_vitl_backbone_736x1280_fp32_b${batch}_fixed_${CODINO_TRT_BACKBONE_PRECISION}.engine"
+  CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_DIR/codino_query_encoder_b${batch}_736x1280_msda_plugin_sbc_${CODINO_TRT_QUERY_PRECISION}.engine"
+  CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DIR/codino_decoder_b${batch}_736x1280_msda_plugin_${CODINO_TRT_DECODER_PRECISION}.engine"
+  CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_DIR/codino_mask_head_core_n1_736x1280_${CODINO_TRT_MASK_PRECISION}.engine"
+}
+
+codino_trt_ready_for_batch() {
+  local batch="$1"
+  local backbone="$CODINO_TRT_DIR/codino_dinov3_vitl_backbone_736x1280_fp32_b${batch}_fixed_${CODINO_TRT_BACKBONE_PRECISION}.engine"
+  local query="$CODINO_TRT_DIR/codino_query_encoder_b${batch}_736x1280_msda_plugin_sbc_${CODINO_TRT_QUERY_PRECISION}.engine"
+  local decoder="$CODINO_TRT_DIR/codino_decoder_b${batch}_736x1280_msda_plugin_${CODINO_TRT_DECODER_PRECISION}.engine"
+  local mask="$CODINO_TRT_DIR/codino_mask_head_core_n1_736x1280_${CODINO_TRT_MASK_PRECISION}.engine"
+  [[ -f "$backbone" ]] && [[ -f "$query" ]] && [[ -f "$decoder" ]] && [[ -f "$mask" ]]
+}
+
+set_codino_trt_paths_for_batch "$CODINO_TRT_BATCH_SIZE"
 
 codino_trt_ready() {
   [[ -f "$CODINO_TRT_BACKBONE_ENGINE" ]] \
@@ -235,25 +336,37 @@ codino_trt_ready() {
     && [[ -f "$CODINO_TRT_MASK_HEAD_ENGINE" ]]
 }
 
-if [[ "$REBUILD_CODINO_TRT" == "1" ]] || { [[ "$REBUILD_CODINO_TRT" == "auto" ]] && ! codino_trt_ready; }; then
-  echo "[SETUP] rebuilding Co-DINO TensorRT engines for local GPU batch=$CODINO_TRT_BATCH_SIZE"
-  PYTHON="$PY" \
-    CODINO_TRT_BATCH_SIZE="$CODINO_TRT_BATCH_SIZE" \
-    BACKBONE_PRECISION="$CODINO_TRT_BACKBONE_PRECISION" \
-    QUERY_PRECISION="$CODINO_TRT_QUERY_PRECISION" \
-    DECODER_PRECISION="$CODINO_TRT_DECODER_PRECISION" \
-    MASK_PRECISION="$CODINO_TRT_MASK_PRECISION" \
-    "$ROOT_DIR/backend/detectors/codino/tools/rebuild_codino_trt_engines.sh"
-else
-  echo "[SETUP] Co-DINO TensorRT engines exist for batch=$CODINO_TRT_BATCH_SIZE"
-fi
+echo "[SETUP] DINOv3 batch candidates: $DINOV3_BATCH_CANDIDATES"
+echo "[SETUP] EVA02 batch candidates:   $EVA02_BATCH_CANDIDATES"
+echo "[SETUP] Co-DINO TensorRT batch candidates: $CODINO_TRT_BATCH_CANDIDATES"
+for candidate in ${CODINO_TRT_BATCH_CANDIDATES//,/ }; do
+  if [[ "$REBUILD_CODINO_TRT" == "1" ]] || { [[ "$REBUILD_CODINO_TRT" == "auto" ]] && ! codino_trt_ready_for_batch "$candidate"; }; then
+    echo "[SETUP] rebuilding Co-DINO TensorRT engines for local GPU batch=$candidate"
+    PYTHON="$PY" \
+      CODINO_TRT_BATCH_SIZE="$candidate" \
+      BACKBONE_PRECISION="$CODINO_TRT_BACKBONE_PRECISION" \
+      QUERY_PRECISION="$CODINO_TRT_QUERY_PRECISION" \
+      DECODER_PRECISION="$CODINO_TRT_DECODER_PRECISION" \
+      MASK_PRECISION="$CODINO_TRT_MASK_PRECISION" \
+      "$ROOT_DIR/backend/detectors/codino/tools/rebuild_codino_trt_engines.sh"
+  else
+    echo "[SETUP] Co-DINO TensorRT engines exist for batch=$candidate"
+  fi
+done
+set_codino_trt_paths_for_batch "$CODINO_TRT_BATCH_SIZE"
 
 if [[ "$RUN_BATCH_BENCHMARK" == "1" ]]; then
   echo "[SETUP] benchmarking runtime batch sizes with a temporary dummy video"
   if ! BATCH_BENCHMARK_DETECTORS="$BATCH_BENCHMARK_DETECTORS" \
     BATCH_BENCHMARK_FRAMES="$BATCH_BENCHMARK_FRAMES" \
     BATCH_BENCHMARK_TIMEOUT_SEC="$BATCH_BENCHMARK_TIMEOUT_SEC" \
+    BATCH_BENCHMARK_MAX_VRAM_FRACTION="$BATCH_BENCHMARK_MAX_VRAM_FRACTION" \
     DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" \
+    DINOV3_BATCH_CANDIDATES="$DINOV3_BATCH_CANDIDATES" \
+    DINOV3_BATCH_MAX="$DINOV3_BATCH_MAX" \
+    EVA02_BATCH_CANDIDATES="$EVA02_BATCH_CANDIDATES" \
+    EVA02_BATCH_MAX="$EVA02_BATCH_MAX" \
+    CODINO_BATCH_CANDIDATES="$CODINO_TRT_BATCH_CANDIDATES" \
     CODINO_TRT_BATCH_SIZE="$CODINO_TRT_BATCH_SIZE" \
     CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
     CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
@@ -268,6 +381,29 @@ if [[ "$RUN_BATCH_BENCHMARK" == "1" ]]; then
 else
   echo "[SETUP] batch benchmark disabled"
 fi
+
+SELECTED_CODINO_TRT_BATCH="$("$PY" - "$BATCH_BENCHMARK_OUTPUT" "$CODINO_TRT_BATCH_SIZE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+fallback = sys.argv[2]
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    selected = data.get("selected", {}).get("codino", {})
+    batch = int(selected.get("batch_size"))
+    if batch > 0:
+        print(batch)
+        raise SystemExit(0)
+except Exception:
+    pass
+print(fallback)
+PY
+)"
+set_codino_trt_paths_for_batch "$SELECTED_CODINO_TRT_BATCH"
+echo "[SETUP] selected Co-DINO TensorRT batch=$CODINO_TRT_BATCH_SIZE"
+
 DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" \
 CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
 CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
@@ -287,8 +423,12 @@ mkdir -p "$(dirname "$GUI_RUNTIME_ENV")"
   printf 'GUI_RUNTIME_PYTHON=%q\n' "$PY"
   printf 'DINOV3_RUNTIME_PROFILE=%q\n' "$DINOV3_RUNTIME_PROFILE"
   printf 'DINOV3_BATCH_BENCHMARK=%q\n' "$BATCH_BENCHMARK_OUTPUT"
+  printf 'BATCH_BENCHMARK_MAX_VRAM_FRACTION=%q\n' "$BATCH_BENCHMARK_MAX_VRAM_FRACTION"
   printf 'DINOV3_TRT_BACKBONE_ENGINE=%q\n' "$ENGINE_PATH"
+  printf 'DINOV3_BATCH_CANDIDATES=%q\n' "$DINOV3_BATCH_CANDIDATES"
+  printf 'EVA02_BATCH_CANDIDATES=%q\n' "$EVA02_BATCH_CANDIDATES"
   printf 'CODINO_TRT_BATCH_SIZE=%q\n' "$CODINO_TRT_BATCH_SIZE"
+  printf 'CODINO_TRT_BATCH_CANDIDATES=%q\n' "$CODINO_TRT_BATCH_CANDIDATES"
   printf 'CODINO_TRT_BACKBONE_ENGINE=%q\n' "$CODINO_TRT_BACKBONE_ENGINE"
   printf 'CODINO_TRT_QUERY_ENCODER_ENGINE=%q\n' "$CODINO_TRT_QUERY_ENCODER_ENGINE"
   printf 'CODINO_TRT_DECODER_ENGINE=%q\n' "$CODINO_TRT_DECODER_ENGINE"

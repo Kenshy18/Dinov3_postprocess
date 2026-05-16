@@ -40,6 +40,7 @@ REPO_ROOT = BASE_DIR.parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from configs import paths as unified_paths
+from backend.pipeline.progress import ProgressReporter, limited_total
 
 def _import_module_from_file(module_name: str, file_path: Path):
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
@@ -167,6 +168,7 @@ RAW_TO_ORIG_MASK_POSTPROCESS = True
 FAST_RCNN_ONECLASS_FASTPATH = False
 
 LOG_EVERY = 50  # frames
+PROGRESS_INTERVAL_SEC = float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5"))
 
 SAVE_OVERLAY_VIDEO = True
 OVERLAY_SUFFIX = "_overlay.mp4"
@@ -654,6 +656,7 @@ def _infer_video_jsonl_with_progress(
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_source_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Invalid video size: {video_path}")
 
@@ -673,6 +676,15 @@ def _infer_video_jsonl_with_progress(
     interval_time = 0.0
     interval_frames = 0
     processed_frames = 0
+    wall_start = time.perf_counter()
+    progress = ProgressReporter(
+        "detector",
+        total=limited_total(total_source_frames if total_source_frames > 0 else None, MAX_FRAMES),
+        unit="frames",
+        interval_sec=float(PROGRESS_INTERVAL_SEC),
+        static_fields={"detector": "eva02", "video": video_path.name},
+    )
+    progress.emit(0, force=True)
 
     total_instances = 0
     cls_total_time = 0.0
@@ -944,6 +956,16 @@ def _infer_video_jsonl_with_progress(
             if processed_frames % max(1, FLUSH_EVERY) == 0:
                 writer.flush()
 
+            progress.emit(
+                processed_frames,
+                fps=processed_frames / max(time.perf_counter() - wall_start, 1e-9),
+                extra={
+                    "instances": total_instances,
+                    "compute_fps": (measured_frames / total_time) if total_time > 0 else None,
+                    "cls_ips": (total_instances / cls_total_time) if cls_total_time > 0 else None,
+                },
+            )
+
             if processed_frames % max(1, LOG_EVERY) == 0 or end_of_stream:
                 fps_total = (measured_frames / total_time) if total_time > 0 else 0.0
                 fps_interval = (interval_frames / interval_time) if interval_time > 0 else 0.0
@@ -972,6 +994,16 @@ def _infer_video_jsonl_with_progress(
         if overlay_writer is not None:
             overlay_writer.release()
 
+    progress.emit(
+        processed_frames,
+        force=True,
+        fps=processed_frames / max(time.perf_counter() - wall_start, 1e-9),
+        extra={
+            "instances": total_instances,
+            "compute_fps": (measured_frames / total_time) if total_time > 0 else None,
+            "cls_ips": (total_instances / cls_total_time) if cls_total_time > 0 else None,
+        },
+    )
     print(f"[DONE] wrote {processed_frames} frames -> {output_path}")
     if overlay_output_path is not None:
         print(f"[DONE] wrote overlay video -> {overlay_output_path}")

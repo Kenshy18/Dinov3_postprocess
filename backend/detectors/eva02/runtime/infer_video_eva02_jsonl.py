@@ -150,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-to-orig-mask-postprocess", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--classifier-batch-size", type=int, default=_profile_default("eva02", "classifier_batch_size", 1024))
     parser.add_argument("--measure", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--progress-interval-sec", type=float, default=float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5")))
     return parser
 
 
@@ -188,6 +189,7 @@ def main() -> int:
     rich.RAW_TO_ORIG_MASK_POSTPROCESS = bool(args.raw_to_orig_mask_postprocess)
     rich.CLASSIFIER_BATCH_SIZE = int(args.classifier_batch_size)
     rich.MEASURE = bool(args.measure)
+    rich.PROGRESS_INTERVAL_SEC = float(args.progress_interval_sec)
 
     exit_code = rich.main()
     if exit_code == 0:

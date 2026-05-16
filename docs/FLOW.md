@@ -40,7 +40,8 @@ Example end-to-end run:
   --keyframe-interval 3 \
   --recall-target 0.96 \
   --class-policy female:polygon:5:0.97 \
-  --overlay-mode detailed \
+  --post-overlay detailed \
+  --pre-overlay \
   --force
 ```
 
@@ -55,7 +56,7 @@ Example postprocess-only run:
   --shape-mode ellipse \
   --keyframe-interval 3 \
   --recall-target 0.96 \
-  --overlay-mode none \
+  --post-overlay none \
   --force
 ```
 
@@ -66,6 +67,15 @@ Per-class overrides use:
 ```
 
 `CLASS` can be `female`, `male`, `junction`, or an exact label such as `女性器`. `junction` updates both `結合部分` and `結合`. The wrapper writes the generated JSON to `<run>/config/class_policy.generated.json`.
+
+Inference outputs are split into two explicit phases:
+
+```text
+pre-postprocess:  --pre-sqlite / --pre-overlay
+postprocess:      --post-sqlite / --post-overlay {none,detailed,simple,both}
+```
+
+`--raw-sqlite`, `--raw-overlay`, and `--overlay-mode` are compatibility aliases.
 
 The primary wrappers stream child process progress to the terminal and also write logs:
 

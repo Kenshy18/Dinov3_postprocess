@@ -45,6 +45,7 @@ def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> li
         "--overwrite",
     ]
     maybe_add(command, "--max-frames", args.max_frames)
+    maybe_add(command, "--progress-interval-sec", getattr(args, "progress_interval_sec", None))
     if args.recursive:
         command.append("--recursive")
     if args.write_detector_overlay:

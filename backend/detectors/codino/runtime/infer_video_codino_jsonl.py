@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.detectors.jsonl_writer import make_jsonl_writer  # noqa: E402
+from backend.pipeline.progress import ProgressReporter, limited_total  # noqa: E402
 
 BUNDLE_CHECKPOINTS = REPO_ROOT / "checkpoints"
 LOCAL_CODINO_DETECTOR_DIR = BUNDLE_CHECKPOINTS / "codino" / "detector"
@@ -344,6 +346,18 @@ def _infer_one_video(
     wall_start = time.perf_counter()
     frame_idx = int(args.start_frame) - 1
     use_cuda = torch.cuda.is_available() and next(model.parameters()).is_cuda
+    source_frames = int(video_meta.get("frames") or 0)
+    available_frames = max(0, source_frames - max(0, int(args.start_frame))) if source_frames > 0 else None
+    stride = max(1, int(args.frame_stride))
+    selected_total = None if available_frames is None else (available_frames + stride - 1) // stride
+    progress = ProgressReporter(
+        "detector",
+        total=limited_total(selected_total, args.max_frames),
+        unit="frames",
+        interval_sec=float(args.progress_interval_sec),
+        static_fields={"detector": "codino", "video": video_path.name},
+    )
+    progress.emit(0, force=True)
 
     def flush() -> None:
         nonlocal processed, detections, measured_frames, measured_time
@@ -439,6 +453,14 @@ def _infer_one_video(
                 overlay_writer.write(vis)
 
         processed += valid_count
+        progress.emit(
+            processed,
+            fps=processed / max(time.perf_counter() - wall_start, 1e-9),
+            extra={
+                "detections": detections,
+                "compute_fps": (measured_frames / measured_time) if measured_time > 0 else None,
+            },
+        )
         batch_frames.clear()
         batch_ids.clear()
 
@@ -473,6 +495,7 @@ def _infer_one_video(
     wall_elapsed = time.perf_counter() - wall_start
     wall_fps = processed / wall_elapsed if wall_elapsed > 0 else 0.0
     measured_fps = measured_frames / measured_time if measured_time > 0 else 0.0
+    progress.emit(processed, force=True, fps=wall_fps, extra={"detections": detections, "compute_fps": measured_fps})
     return {
         "video": str(video_path),
         "output_jsonl": str(jsonl_path),
@@ -544,6 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trt-decoder-engine", type=Path, default=None)
     parser.add_argument("--trt-mask-head-engine", type=Path, default=None)
     parser.add_argument("--trt-extra-site-packages", type=Path, default=None)
+    parser.add_argument("--progress-interval-sec", type=float, default=float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5")))
     return parser
 
 

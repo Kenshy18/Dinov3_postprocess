@@ -2820,6 +2820,7 @@ def infer_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--raw-cut-method', choices=infer_RAW_CUT_METHODS, default=infer_RAW_CUT_METHOD_DEFAULT, help='Cut detector used during raw AI preprocessing.')
     parser.add_argument('--raw-remove-short-tracks-max-frames', type=int, default=10, help='Remove raw AI tracks with duration <= this many frames before ellipse approximation.')
     parser.add_argument('--raw-det-score-min', type=float, default=infer_RAW_DET_SCORE_MIN, help='Minimum raw AI detector score retained during JSONL preprocessing.')
+    parser.add_argument('--class-policy-json', type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--k1-recall-target', type=float, default=0.99)
     parser.add_argument('--k1-exact-refine-rounds', type=int, default=1)
@@ -3638,7 +3639,56 @@ def infer_detect_cut_frames_for_jsonl(jsonl_path: Path, video_path: Path, *, met
         used_method = 'opencv_exact'
     return cut_frames, float(time.perf_counter() - start_time), used_method
 
-def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Path, video_path: Path | None, *, remove_short_tracks_max_frames: int, enable_cut_detect: bool, raw_det_score_min: float=infer_RAW_DET_SCORE_MIN, raw_cut_method: str=infer_RAW_CUT_METHOD_DEFAULT) -> dict[str, object]:
+def infer_raw_normalize_label(label: object) -> str:
+    text = str(label).strip()
+    return text if text else 'unknown'
+
+
+def infer_raw_policy_float(policy: dict[str, object], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        if key not in policy:
+            continue
+        value = infer_raw_to_float(policy.get(key))
+        if value is not None and math.isfinite(float(value)):
+            return float(value)
+    return None
+
+
+def infer_raw_load_score_policy(class_policy_json: Path | None, fallback_score_min: float) -> tuple[float, dict[str, float]]:
+    if class_policy_json is None:
+        return float(fallback_score_min), {}
+    raw = json.loads(class_policy_json.read_text(encoding='utf-8'))
+    if not isinstance(raw, dict):
+        return float(fallback_score_min), {}
+    score_keys = ('raw_det_score_min', 'confidence_min', 'score_min', 'min_score', 'confidence')
+    default_score_min = float(fallback_score_min)
+    default_policy = raw.get('default')
+    if isinstance(default_policy, dict):
+        value = infer_raw_policy_float({str(k): v for k, v in default_policy.items()}, score_keys)
+        if value is not None:
+            default_score_min = value
+    classes_obj = raw.get('classes')
+    source = classes_obj if isinstance(classes_obj, dict) else raw
+    score_by_label: dict[str, float] = {}
+    if isinstance(source, dict):
+        for label, cfg in source.items():
+            if label == 'default' or not isinstance(cfg, dict):
+                continue
+            value = infer_raw_policy_float({str(k): v for k, v in cfg.items()}, score_keys)
+            if value is not None:
+                score_by_label[infer_raw_normalize_label(label)] = value
+    return default_score_min, score_by_label
+
+
+def infer_raw_det_score_min_for_detection(det: dict[str, object], default_score_min: float, score_min_by_label: dict[str, float]) -> float:
+    for key in ('class_name', 'label'):
+        label = infer_raw_normalize_label(det.get(key, 'unknown'))
+        if label in score_min_by_label:
+            return float(score_min_by_label[label])
+    return float(default_score_min)
+
+
+def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Path, video_path: Path | None, *, remove_short_tracks_max_frames: int, enable_cut_detect: bool, raw_det_score_min: float=infer_RAW_DET_SCORE_MIN, raw_det_score_min_by_label: dict[str, float] | None=None, raw_cut_method: str=infer_RAW_CUT_METHOD_DEFAULT) -> dict[str, object]:
     tracks: dict[int, infer_RawTrack] = {}
     next_tid = 1
     total_rows = 0
@@ -3790,7 +3840,12 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
                         cuts_detected += 1
                         cut_frames.append(frame_idx)
                         active_track_ids.clear()
-            detections = [det for det in detections if float(det.get('score') or 0.0) >= float(raw_det_score_min)]
+            score_min_by_label = raw_det_score_min_by_label or {}
+            detections = [
+                det
+                for det in detections
+                if float(det.get('score') or 0.0) >= infer_raw_det_score_min_for_detection(det, float(raw_det_score_min), score_min_by_label)
+            ]
             detections = infer_raw_apply_nms(detections)
             det_features = [infer_raw_compute_features(det) for det in detections]
             if active_track_ids:
@@ -3986,7 +4041,7 @@ def infer_build_tracked_sqlite_from_raw_jsonl(jsonl_path: Path, sqlite_path: Pat
     final_tracks = len(id_map)
     final_rows = len(final_mask_rows_to_insert)
     conn.close()
-    return {'input_jsonl': str(jsonl_path), 'tracked_sqlite': str(sqlite_path), 'rows_before_prune': int(total_rows), 'rows_after_prune': final_rows, 'removed_short_tracks': int(len(remove_tids)), 'removed_rows': int(removed_rows), 'tracks_after_prune': final_tracks, 'raw_tracked_rows': int(len(raw_mask_rows_to_insert)), 'raw_tracks': int(len(raw_track_rows_to_insert)), 'raw_removed_rows': int(removed_rows), 'mixed_label_tracks': int(mixed_label_tracks), 'relabeled_mask_rows': int(relabeled_mask_rows), 'track_label_policy': 'majority_vote_per_track', 'cuts_detected': int(cuts_detected), 'scenes': int(current_scene_id + 1), 'cut_detect_enabled': bool(enable_cut_detect), 'raw_cut_method': str(raw_cut_method), 'cut_detection_method': str(cut_detection_method), 'cut_detection_elapsed_sec': float(cut_detection_elapsed_sec), 'remove_short_tracks_max_frames': int(remove_short_tracks_max_frames), 'raw_det_score_min': float(raw_det_score_min), 'elapsed_sec': float(time.time() - start_time)}
+    return {'input_jsonl': str(jsonl_path), 'tracked_sqlite': str(sqlite_path), 'rows_before_prune': int(total_rows), 'rows_after_prune': final_rows, 'removed_short_tracks': int(len(remove_tids)), 'removed_rows': int(removed_rows), 'tracks_after_prune': final_tracks, 'raw_tracked_rows': int(len(raw_mask_rows_to_insert)), 'raw_tracks': int(len(raw_track_rows_to_insert)), 'raw_removed_rows': int(removed_rows), 'mixed_label_tracks': int(mixed_label_tracks), 'relabeled_mask_rows': int(relabeled_mask_rows), 'track_label_policy': 'majority_vote_per_track', 'cuts_detected': int(cuts_detected), 'scenes': int(current_scene_id + 1), 'cut_detect_enabled': bool(enable_cut_detect), 'raw_cut_method': str(raw_cut_method), 'cut_detection_method': str(cut_detection_method), 'cut_detection_elapsed_sec': float(cut_detection_elapsed_sec), 'remove_short_tracks_max_frames': int(remove_short_tracks_max_frames), 'raw_det_score_min': float(raw_det_score_min), 'raw_det_score_min_by_label': dict(sorted((raw_det_score_min_by_label or {}).items())), 'elapsed_sec': float(time.time() - start_time)}
 
 def infer_prepare_input_sqlite(args: argparse.Namespace) -> tuple[Path, dict[str, object] | None]:
     if args.input_sqlite is not None:
@@ -4003,7 +4058,8 @@ def infer_prepare_input_sqlite(args: argparse.Namespace) -> tuple[Path, dict[str
     preprocess_dir = args.output_dir / 'preprocess'
     preprocess_dir.mkdir(parents=True, exist_ok=True)
     tracked_sqlite = preprocess_dir / f'{args.input_jsonl.stem}.tracked.sqlite'
-    preprocess_summary = infer_build_tracked_sqlite_from_raw_jsonl(args.input_jsonl, tracked_sqlite, input_video, remove_short_tracks_max_frames=int(args.raw_remove_short_tracks_max_frames), enable_cut_detect=bool(args.raw_cut_detect), raw_det_score_min=float(args.raw_det_score_min), raw_cut_method=str(getattr(args, 'raw_cut_method', infer_RAW_CUT_METHOD_DEFAULT)))
+    raw_det_score_min, raw_det_score_min_by_label = infer_raw_load_score_policy(getattr(args, 'class_policy_json', None), float(args.raw_det_score_min))
+    preprocess_summary = infer_build_tracked_sqlite_from_raw_jsonl(args.input_jsonl, tracked_sqlite, input_video, remove_short_tracks_max_frames=int(args.raw_remove_short_tracks_max_frames), enable_cut_detect=bool(args.raw_cut_detect), raw_det_score_min=float(raw_det_score_min), raw_det_score_min_by_label=raw_det_score_min_by_label, raw_cut_method=str(getattr(args, 'raw_cut_method', infer_RAW_CUT_METHOD_DEFAULT)))
     print(json.dumps(preprocess_summary, indent=2, ensure_ascii=False), flush=True)
     return (tracked_sqlite, preprocess_summary)
 
@@ -4020,6 +4076,7 @@ def preprocess_build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--raw-cut-method', choices=infer_RAW_CUT_METHODS, default=infer_RAW_CUT_METHOD_DEFAULT)
     parser.add_argument('--raw-remove-short-tracks-max-frames', type=int, default=10)
     parser.add_argument('--raw-det-score-min', type=float, default=infer_RAW_DET_SCORE_MIN)
+    parser.add_argument('--class-policy-json', type=Path, default=None)
     return parser
 
 def preprocess_main() -> None:
@@ -8132,7 +8189,7 @@ def pipeline_parse_args() -> argparse.Namespace:
         help=(
             'Optional JSON for class-specific approximation policy. Supported per-class keys include '
             'shape_mode/mode, target_interval or target_ratio, dense_recall_target, and '
-            'polygon_recall_min/recall_min/target_recall. A top-level "default" object is '
+            'polygon_recall_min/recall_min/target_recall, raw_det_score_min/confidence_min. A top-level "default" object is '
             'treated as fallback policy only.'
         ),
     )
@@ -10500,6 +10557,8 @@ def pipeline_ensure_preprocess(args: argparse.Namespace, pipeline_dir: Path) -> 
     cmd.append('--raw-cut-detect' if args.raw_cut_detect else '--no-raw-cut-detect')
     if args.input_video is not None:
         cmd.extend(['--input-video', str(args.input_video)])
+    if args.class_policy_json is not None:
+        cmd.extend(['--class-policy-json', str(args.class_policy_json)])
     preprocess_timing = pipeline_run_cmd(
         cmd,
         cwd=ROOT,
@@ -10568,6 +10627,8 @@ def pipeline_ensure_inference(args: argparse.Namespace, pipeline_dir: Path, *, s
             '--raw-cut-method', str(args.raw_cut_method),
         ],
     )
+    if args.class_policy_json is not None:
+        cmd.extend(['--class-policy-json', str(args.class_policy_json)])
     if bool(args.k2_profile_stages):
         cmd.append('--k2-profile-stages')
     if source_sqlite is not None:

@@ -79,6 +79,7 @@ tools/setup_runtime.sh
 
 The setup script performs:
 
+- local `input/` and `output/` directory creation
 - artifact verification under `checkpoints/`
 - optional artifact download when `DOWNLOAD_ARTIFACTS=1`
 - venv creation
@@ -97,7 +98,7 @@ tools/setup_gui_runtime.sh
 tools/setup_integrated_runtime_env.sh
 ```
 
-The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `.runtime/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and TensorRT engine paths are written to `.runtime/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `.runtime/runtime_profile.json`, `.runtime/runtime_benchmark.json`, and `.runtime/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. Legacy `configs/runtime_profile.json` is still read as a fallback during migration. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
+The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures DINOv3, EVA02, and Co-DINO candidate batch sizes sequentially, writes the result to `.runtime/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and TensorRT engine paths are written to `.runtime/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `.runtime/runtime_profile.json`, `.runtime/runtime_benchmark.json`, and `.runtime/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. Legacy `configs/runtime_profile.json` is still read as a fallback during migration. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
 
 Useful options:
 
@@ -119,9 +120,10 @@ For Blackwell GPUs, use a PyTorch/CUDA build that supports the GPU architecture.
 
 TensorRT engines are not portable across GPU/driver/TensorRT combinations. The
 DINOv3 backbone engine is dynamic up to batch 8. Co-DINO creates fixed-batch
-engines for the DINOv3 backbone, query encoder, decoder, and mask head core;
-the setup default chooses batch 2 on GPUs with at least 20 GiB VRAM and batch 1
-below that. Co-DINO query encoder/decoder ONNX export maps mmcv deformable
+engines for the DINOv3 backbone, query encoder, decoder, and mask head core.
+Setup benchmarks DINOv3, EVA02, and Co-DINO after dependencies and engines are
+ready; EVA02 is benchmarked even though it does not create a TensorRT engine.
+Co-DINO query encoder/decoder ONNX export maps mmcv deformable
 attention to NVIDIA `MultiscaleDeformableAttnPlugin_TRT`, so TensorRT Python
 bindings and plugin libraries must import correctly in the setup venv.
 On the current Blackwell workstation with driver 573/CUDA 12.8, the default

@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-det-score-min", type=float, default=0.35)
     parser.add_argument("--k2-device", default="auto")
     parser.add_argument("--polygon-predictor-device", default="auto")
+    parser.add_argument("--progress-interval-sec", type=float, default=float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5")))
     parser.add_argument(
         "--extra-args",
         nargs=argparse.REMAINDER,
@@ -79,6 +80,8 @@ def build_command(args: argparse.Namespace, output_dir: Path, policy_path: Path)
         str(args.recall_target),
         "--polygon-recall-min",
         str(args.recall_target),
+        "--progress-interval-sec",
+        str(getattr(args, "progress_interval_sec", 5.0)),
     ]
     engine_args.extend(strip_remainder(list(args.extra_args or [])))
     return build_atosyori_run_command(

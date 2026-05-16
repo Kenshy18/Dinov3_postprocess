@@ -56,6 +56,7 @@ def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> li
     maybe_add(command, "--trt-decoder-engine", args.codino_trt_decoder_engine)
     maybe_add(command, "--trt-mask-head-engine", args.codino_trt_mask_head_engine)
     maybe_add(command, "--trt-extra-site-packages", args.codino_trt_extra_site_packages)
+    maybe_add(command, "--progress-interval-sec", getattr(args, "progress_interval_sec", None))
     if args.recursive:
         command.append("--recursive")
     if args.write_detector_overlay:

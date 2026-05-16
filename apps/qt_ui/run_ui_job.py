@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -32,6 +33,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.pipeline.run_audit import build_output_audit  # noqa: E402
+from backend.pipeline.progress import ProgressReporter, limited_total, parse_progress_line  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
@@ -63,6 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overlay-mode", choices=("none", "detailed", "simple", "both"), default="none")
     parser.add_argument("--raw-overlay", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--encoder", choices=("nvenc", "cpu"), default="nvenc")
+    parser.add_argument("--raw-sqlite-output", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--post-sqlite-output", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--keep-normalized-input", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("pipeline_command", nargs=argparse.REMAINDER)
@@ -194,6 +198,9 @@ def run_streamed(command: list[str], *, cwd: Path, log_path: Path, audit_path: P
                 print(line, end="", flush=True)
                 log.write(line)
                 log.flush()
+                progress_fields = parse_progress_line(line)
+                if progress_fields:
+                    write_audit(audit_path, "phase_progress", label=label, **progress_fields)
             return_code = process.wait()
         except BaseException as exc:
             elapsed = time.perf_counter() - start
@@ -556,13 +563,26 @@ def fill_polygons(frame: np.ndarray, polygons: list[np.ndarray], color: tuple[in
     if not polygons:
         return
     height, width = frame.shape[:2]
-    mask = np.zeros((height, width), dtype=np.uint8)
-    pts = [np.round(poly).astype(np.int32).reshape(-1, 1, 2) for poly in polygons]
+    pts_full = [np.round(poly).astype(np.int32).reshape(-1, 2) for poly in polygons if len(poly) >= 3]
+    if not pts_full:
+        return
+    all_points = np.concatenate(pts_full, axis=0)
+    x0 = max(0, int(all_points[:, 0].min()))
+    y0 = max(0, int(all_points[:, 1].min()))
+    x1 = min(width, int(all_points[:, 0].max()) + 1)
+    y1 = min(height, int(all_points[:, 1].max()) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
+
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    offset = np.asarray([x0, y0], dtype=np.int32)
+    pts = [(poly - offset).reshape(-1, 1, 2) for poly in pts_full]
     cv2_mod.fillPoly(mask, pts, 1)
     idx = mask > 0
     if np.any(idx):
         color_arr = np.asarray(color, dtype=np.float32)
-        frame[idx] = np.rint(frame[idx].astype(np.float32) * (1.0 - alpha) + color_arr * alpha).clip(0, 255).astype(np.uint8)
+        roi = frame[y0:y1, x0:x1]
+        roi[idx] = np.rint(roi[idx].astype(np.float32) * (1.0 - alpha) + color_arr * alpha).clip(0, 255).astype(np.uint8)
 
 
 def draw_polygons(frame: np.ndarray, polygons: list[np.ndarray], color: tuple[int, int, int], thickness: int) -> None:
@@ -603,22 +623,38 @@ def draw_label(frame: np.ndarray, text: str, anchor: tuple[int, int], color: tup
     bottom = y + pad_y
     right = x + tw + pad_x * 2
 
-    rgb = cv2_mod.cvtColor(frame, cv2_mod.COLOR_BGR2RGB)
+    roi_left = max(0, x)
+    roi_top = max(0, top)
+    roi_right = min(frame.shape[1], right + 1)
+    roi_bottom = min(frame.shape[0], bottom + 1)
+    if roi_right <= roi_left or roi_bottom <= roi_top:
+        return
+
+    roi_bgr = np.ascontiguousarray(frame[roi_top:roi_bottom, roi_left:roi_right])
+    rgb = cv2_mod.cvtColor(roi_bgr, cv2_mod.COLOR_BGR2RGB)
     image = Image.fromarray(rgb)
     draw = ImageDraw.Draw(image)
     bg_rgb = tuple(reversed(TEXT_BG_BGR))
     fg_rgb = tuple(reversed(TEXT_FG_BGR))
     border_rgb = tuple(reversed(color))
-    draw.rectangle((x, top, right, bottom), fill=bg_rgb, outline=border_rgb, width=1)
-    draw.text((x + pad_x, top + pad_y - bbox[1]), text, font=_LABEL_FONT, fill=fg_rgb)
-    frame[:] = cv2_mod.cvtColor(np.asarray(image), cv2_mod.COLOR_RGB2BGR)
+    draw.rectangle((x - roi_left, top - roi_top, right - roi_left, bottom - roi_top), fill=bg_rgb, outline=border_rgb, width=1)
+    draw.text((x + pad_x - roi_left, top + pad_y - bbox[1] - roi_top), text, font=_LABEL_FONT, fill=fg_rgb)
+    frame[roi_top:roi_bottom, roi_left:roi_right] = cv2_mod.cvtColor(np.asarray(image), cv2_mod.COLOR_RGB2BGR)
 
 
 def open_writer(output_video: Path, width: int, height: int, fps: float, encoder: str) -> subprocess.Popen:
     output_video.parent.mkdir(parents=True, exist_ok=True)
     if output_video.exists():
         output_video.unlink()
-    codec = ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "20"] if encoder == "nvenc" else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+    if encoder == "nvenc":
+        preset = os.environ.get("OVERLAY_NVENC_PRESET", "p5")
+        cq = os.environ.get("OVERLAY_NVENC_CQ", "23")
+        extra = shlex.split(os.environ.get("OVERLAY_FFMPEG_EXTRA_ARGS", ""))
+        codec = ["-c:v", "h264_nvenc", "-preset", preset, "-cq", cq, *extra]
+    else:
+        preset = os.environ.get("OVERLAY_X264_PRESET", "veryfast")
+        crf = os.environ.get("OVERLAY_X264_CRF", "18")
+        codec = ["-c:v", "libx264", "-preset", preset, "-crf", crf]
     command = [
         "ffmpeg",
         "-y",
@@ -654,6 +690,11 @@ def close_writer(proc: subprocess.Popen) -> None:
         raise RuntimeError(f"ffmpeg encode failed with code {code}: {stderr}")
 
 
+def limited_frame_count(cap: Any, frame_limit: int | None) -> int | None:
+    total = int(cap.get(require_cv2().CAP_PROP_FRAME_COUNT) or 0)
+    return limited_total(total if total > 0 else None, frame_limit)
+
+
 def render_with_fallback(render_func, *, encoder: str) -> None:
     try:
         render_func(encoder)
@@ -671,9 +712,18 @@ def render_raw_overlay(video_path: Path, jsonl_path: Path, output_video: Path, *
         cap = cv2_mod.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
+        total_frames = limited_frame_count(cap, frame_limit)
         proc = open_writer(output_video, width, height, fps, active_encoder)
         assert proc.stdin is not None
         written = 0
+        progress = ProgressReporter(
+            "raw_overlay",
+            total=total_frames,
+            unit="frames",
+            interval_sec=float(os.environ.get("OVERLAY_PROGRESS_INTERVAL_SEC", "5")),
+            static_fields={"kind": "raw", "video": video_path.name},
+        )
+        progress.emit(0, force=True)
         try:
             with jsonl_path.open("r", encoding="utf-8") as jf:
                 for line in jf:
@@ -688,7 +738,9 @@ def render_raw_overlay(video_path: Path, jsonl_path: Path, output_video: Path, *
                     proc.stdin.write(frame.tobytes())
                     written += 1
                     if written % 300 == 0:
-                        print(f"  rendered raw {written}", flush=True)
+                        progress.emit(written)
+            if progress.last_current != written:
+                progress.emit(written, force=True)
         finally:
             cap.release()
             close_writer(proc)
@@ -777,11 +829,20 @@ def render_sqlite_overlay(
         cap = cv2_mod.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
+        total_frames = limited_frame_count(cap, frame_limit)
         proc = open_writer(output_video, width, height, fps, active_encoder)
         assert proc.stdin is not None
         raw_reader = FrameSqliteReader(tracked_sqlite)
         pred_reader = FrameSqliteReader(pred_sqlite)
         frame_idx = 0
+        progress = ProgressReporter(
+            f"{mode}_overlay",
+            total=total_frames,
+            unit="frames",
+            interval_sec=float(os.environ.get("OVERLAY_PROGRESS_INTERVAL_SEC", "5")),
+            static_fields={"kind": mode, "video": video_path.name},
+        )
+        progress.emit(0, force=True)
         try:
             while True:
                 if frame_limit is not None and frame_idx >= frame_limit:
@@ -807,7 +868,9 @@ def render_sqlite_overlay(
                 proc.stdin.write(frame.tobytes())
                 frame_idx += 1
                 if frame_idx % 300 == 0:
-                    print(f"  rendered {mode} {frame_idx}", flush=True)
+                    progress.emit(frame_idx)
+            if progress.last_current != frame_idx:
+                progress.emit(frame_idx, force=True)
         finally:
             raw_reader.close()
             pred_reader.close()
@@ -835,6 +898,8 @@ def organize_outputs(
     raw_overlay: bool,
     encoder: str,
     frame_limit: int | None,
+    raw_sqlite_output: bool = True,
+    post_sqlite_output: bool = True,
 ) -> None:
     summary_path = run_dir / "summary.json"
     if not summary_path.exists():
@@ -871,9 +936,9 @@ def organize_outputs(
     tracked_sqlite = Path(str(tracked_sqlite_raw)) if tracked_sqlite_raw else None
     detector_raw_sqlite_raw = artifacts.get("raw_sqlite") or summary.get("raw_sqlite", {}).get("path")
     detector_raw_sqlite = Path(str(detector_raw_sqlite_raw)) if detector_raw_sqlite_raw else None
-    if detector_raw_sqlite is not None and detector_raw_sqlite.exists():
+    if raw_sqlite_output and detector_raw_sqlite is not None and detector_raw_sqlite.exists():
         link_or_copy(detector_raw_sqlite, layout["raw_sqlite"] / detector_raw_sqlite.name)
-    if tracked_sqlite is not None and tracked_sqlite.exists():
+    if raw_sqlite_output and tracked_sqlite is not None and tracked_sqlite.exists():
         link_or_copy(tracked_sqlite, layout["raw_sqlite"] / tracked_sqlite.name)
 
     prediction_links = postprocess.get("prediction_sqlite_links") or {}
@@ -884,8 +949,9 @@ def organize_outputs(
             pred_sqlite = Path(str(value))
             if not pred_sqlite.exists():
                 continue
-            final_sqlite = link_or_copy(pred_sqlite, layout["final_sqlite"] / f"{label}_predictions.sqlite")
-            sqlite_outputs[str(label)] = str(final_sqlite)
+            if post_sqlite_output:
+                final_sqlite = link_or_copy(pred_sqlite, layout["final_sqlite"] / f"{label}_predictions.sqlite")
+                sqlite_outputs[str(label)] = str(final_sqlite)
             overlay_modes = ["detailed", "simple"] if overlay_mode == "both" else [overlay_mode]
             for mode in overlay_modes:
                 if mode not in {"detailed", "simple"}:
@@ -988,6 +1054,8 @@ def main() -> int:
             raw_overlay=bool(args.raw_overlay),
             encoder=str(args.encoder),
             frame_limit=frame_limit,
+            raw_sqlite_output=bool(args.raw_sqlite_output),
+            post_sqlite_output=bool(args.post_sqlite_output),
         )
         write_audit(audit_path, "job_done", final_summary=run_dir / "最終成果物.json")
         print(f"[ui-job] arranged outputs: {run_dir / '最終成果物.json'}", flush=True)

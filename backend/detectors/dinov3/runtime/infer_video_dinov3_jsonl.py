@@ -51,6 +51,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.detectors.jsonl_writer import make_jsonl_writer  # noqa: E402
+from backend.pipeline.progress import ProgressReporter, limited_total  # noqa: E402
 from infer_images_singleclass import (  # noqa: E402
     DEFAULT_CONFIG,
     _AsyncBatchProducer,
@@ -504,6 +505,7 @@ def _infer_one_video(
     classifier_pad_to: int,
     classifier_pad_multiple: int,
     overlay_fourcc: str,
+    progress_interval_sec: float,
 ) -> dict[str, object]:
     if not io_prefetch:
         raise NotImplementedError("this script currently expects --io-prefetch")
@@ -529,6 +531,15 @@ def _infer_one_video(
     measured_frames = 0
     measured_time = 0.0
     pin_memory = device.startswith("cuda") and torch.cuda.is_available()
+    total_frames = limited_total(int(video_meta.get("frames") or 0), max_frames)
+    progress = ProgressReporter(
+        "detector",
+        total=total_frames,
+        unit="frames",
+        interval_sec=progress_interval_sec,
+        static_fields={"detector": "dinov3", "video": video_path.name},
+    )
+    progress.emit(0, force=True)
 
     producer = _AsyncBatchProducer(
         video_path=video_path,
@@ -614,6 +625,14 @@ def _infer_one_video(
                     measured_time += batch_elapsed * (batch_measured / len(frame_ids))
                     measured_frames += batch_measured
                 processed += len(batch.items)
+                progress.emit(
+                    processed,
+                    fps=(processed / max(time.perf_counter() - wall_start, 1e-9)),
+                    extra={
+                        "detections": detections,
+                        "compute_fps": (measured_frames / measured_time) if measured_time > 0 else None,
+                    },
+                )
     finally:
         prefetcher.close()
         writer.close()
@@ -625,6 +644,7 @@ def _infer_one_video(
     wall_elapsed = time.perf_counter() - wall_start
     wall_fps = processed / wall_elapsed if wall_elapsed > 0 else 0.0
     measured_fps = measured_frames / measured_time if measured_time > 0 else 0.0
+    progress.emit(processed, force=True, fps=wall_fps, extra={"detections": detections, "compute_fps": measured_fps})
     return {
         "video": str(video_path),
         "output_jsonl": str(jsonl_path),
@@ -695,6 +715,7 @@ def main() -> int:
     parser.add_argument("--overlay-dir", default=None)
     parser.add_argument("--overlay-ext", default=".mp4")
     parser.add_argument("--overlay-fourcc", default="mp4v")
+    parser.add_argument("--progress-interval-sec", type=float, default=float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5")))
     parser.add_argument("--compile-classifier", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--classifier-compile-mode", default="reduce-overhead")
     parser.add_argument("--classifier-compile-dynamic", action=argparse.BooleanOptionalAction, default=True)
@@ -831,6 +852,7 @@ def main() -> int:
             classifier_pad_to=max(0, int(args.classifier_pad_to)),
             classifier_pad_multiple=max(0, int(args.classifier_pad_multiple)),
             overlay_fourcc=str(args.overlay_fourcc),
+            progress_interval_sec=float(args.progress_interval_sec),
         )
         runs.append(result)
         print(

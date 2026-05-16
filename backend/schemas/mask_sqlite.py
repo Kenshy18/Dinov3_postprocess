@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .detection_jsonl import normalize_frame_record
 
@@ -73,6 +73,8 @@ def jsonl_to_raw_sqlite(
     *,
     detector: str | None = None,
     video: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    progress_every: int = 500,
 ) -> dict[str, Any]:
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     if sqlite_path.exists():
@@ -129,6 +131,10 @@ def jsonl_to_raw_sqlite(
                         ),
                     )
                     mask_count += 1
+                if progress_callback is not None and frame_count % max(1, int(progress_every)) == 0:
+                    progress_callback(frame_count, mask_count)
+        if progress_callback is not None:
+            progress_callback(frame_count, mask_count)
         conn.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("frames", str(frame_count)))
         conn.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("masks", str(mask_count)))
         conn.commit()
@@ -152,4 +158,3 @@ def sqlite_table_names(path: Path) -> set[str]:
         return {str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'")}
     finally:
         conn.close()
-
