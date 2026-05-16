@@ -23,14 +23,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
-
-
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / ".runtime" / "runtime_benchmark.json"
 DEFAULT_WORK_DIR = ROOT / "output" / "runtime_batch_benchmark"
 DEFAULT_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+DEFAULT_CODINO_TRT_DIR = ROOT / "checkpoints" / "codino" / "trt"
+DEFAULT_CODINO_TRT_BACKBONE = DEFAULT_CODINO_TRT_DIR / "codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine"
+DEFAULT_CODINO_TRT_QUERY_ENCODER = DEFAULT_CODINO_TRT_DIR / "codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
+DEFAULT_CODINO_TRT_DECODER = DEFAULT_CODINO_TRT_DIR / "codino_decoder_b2_736x1280_msda_plugin_fp16.engine"
+DEFAULT_CODINO_TRT_MASK_HEAD = DEFAULT_CODINO_TRT_DIR / "codino_mask_head_core_n1_736x1280_fp16.engine"
 
 
 def run_text(command: list[str]) -> str | None:
@@ -121,6 +122,11 @@ def parse_candidates(raw: str | None) -> list[int]:
 
 
 def auto_candidates(detector: str, total_mib: int | None) -> list[int]:
+    if detector == "codino":
+        try:
+            return [max(1, int(os.environ.get("CODINO_TRT_BATCH_SIZE", "2")))]
+        except ValueError:
+            return [2]
     total_gib = (total_mib or 0) / 1024.0
     if detector == "eva02":
         if total_gib <= 0:
@@ -142,6 +148,9 @@ def auto_candidates(detector: str, total_mib: int | None) -> list[int]:
 
 
 def create_dummy_video(path: Path, *, width: int, height: int, frames: int, fps: float) -> None:
+    import cv2
+    import numpy as np
+
     path.parent.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(path), fourcc, fps, (width, height))
@@ -264,6 +273,45 @@ def command_for_candidate(
             "simple",
             "--compile-backbone",
             str(eva02_compile_backbone),
+            "--overwrite",
+        ]
+    if detector == "codino":
+        return [
+            str(python),
+            str(ROOT / "backend" / "detectors" / "codino" / "runtime" / "infer_video_codino_jsonl.py"),
+            "--input",
+            str(input_video),
+            "--output",
+            str(output_dir),
+            "--classifier",
+            "--target-size",
+            "1280x720",
+            "--batch-size",
+            str(batch),
+            "--warmup-frames",
+            "0",
+            "--max-frames",
+            str(frames),
+            "--score-thresh",
+            "0.30",
+            "--model-score-thr",
+            "0.05",
+            "--amp",
+            "fp16",
+            "--json-backend",
+            "orjson",
+            "--mask-approx",
+            "none",
+            "--async-writer",
+            "--disable-mask-iou-head",
+            "--trt-backbone-engine",
+            str(Path(os.environ.get("CODINO_TRT_BACKBONE_ENGINE", DEFAULT_CODINO_TRT_BACKBONE))),
+            "--trt-query-encoder-engine",
+            str(Path(os.environ.get("CODINO_TRT_QUERY_ENCODER_ENGINE", DEFAULT_CODINO_TRT_QUERY_ENCODER))),
+            "--trt-decoder-engine",
+            str(Path(os.environ.get("CODINO_TRT_DECODER_ENGINE", DEFAULT_CODINO_TRT_DECODER))),
+            "--trt-mask-head-engine",
+            str(Path(os.environ.get("CODINO_TRT_MASK_HEAD_ENGINE", DEFAULT_CODINO_TRT_MASK_HEAD))),
             "--overwrite",
         ]
     return [
@@ -447,6 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-sec", type=float, default=0.25)
     parser.add_argument("--eva02-candidates", default=os.environ.get("EVA02_BATCH_CANDIDATES", ""))
     parser.add_argument("--dinov3-candidates", default=os.environ.get("DINOV3_BATCH_CANDIDATES", ""))
+    parser.add_argument("--codino-candidates", default=os.environ.get("CODINO_BATCH_CANDIDATES", ""))
     parser.add_argument("--classifier-batch-size", type=int, default=int(os.environ.get("EVA02_CLASSIFIER_BATCH_SIZE", "1024")))
     parser.add_argument("--engine", type=Path, default=Path(os.environ.get("DINOV3_TRT_BACKBONE_ENGINE", DEFAULT_TRT_ENGINE)))
     parser.add_argument("--eva02-compile-backbone", default=os.environ.get("EVA02_BENCHMARK_COMPILE_BACKBONE", "none"))
@@ -463,7 +512,7 @@ def main() -> int:
     work_dir = args.work_dir.expanduser().resolve()
     engine = args.engine.expanduser().resolve()
     detectors = [item.strip().lower() for item in args.detectors.split(",") if item.strip()]
-    detectors = [item for item in detectors if item in {"eva02", "dinov3"}]
+    detectors = [item for item in detectors if item in {"eva02", "dinov3", "codino"}]
     if not detectors:
         detectors = ["eva02"]
 
@@ -504,7 +553,12 @@ def main() -> int:
         create_dummy_video(dummy_video, width=int(args.width), height=int(args.height), frames=int(args.frames), fps=float(args.fps))
         result["dummy_video"]["created"] = True
         for detector in detectors:
-            explicit = parse_candidates(args.eva02_candidates if detector == "eva02" else args.dinov3_candidates)
+            explicit_raw = {
+                "eva02": args.eva02_candidates,
+                "dinov3": args.dinov3_candidates,
+                "codino": args.codino_candidates,
+            }[detector]
+            explicit = parse_candidates(explicit_raw)
             candidates = explicit or auto_candidates(detector, total_mib)
             detector_result = benchmark_detector(
                 detector=detector,

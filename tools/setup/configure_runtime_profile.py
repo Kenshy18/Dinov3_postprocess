@@ -30,10 +30,26 @@ DEFAULT_TRT_ENGINE = env_path(
     "DINOV3_TRT_BACKBONE_ENGINE",
     ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
 )
-DEFAULT_CODINO_TRT_BACKBONE = ROOT / "checkpoints/codino/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine"
-DEFAULT_CODINO_TRT_QUERY_ENCODER = ROOT / "checkpoints/codino/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
-DEFAULT_CODINO_TRT_DECODER = ROOT / "checkpoints/codino/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine"
-DEFAULT_CODINO_TRT_MASK_HEAD = ROOT / "checkpoints/codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine"
+DEFAULT_CODINO_TRT_BACKBONE = env_path(
+    "CODINO_TRT_BACKBONE_ENGINE",
+    ROOT / "checkpoints/codino/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine",
+)
+DEFAULT_CODINO_TRT_QUERY_ENCODER = env_path(
+    "CODINO_TRT_QUERY_ENCODER_ENGINE",
+    ROOT / "checkpoints/codino/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine",
+)
+DEFAULT_CODINO_TRT_DECODER = env_path(
+    "CODINO_TRT_DECODER_ENGINE",
+    ROOT / "checkpoints/codino/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine",
+)
+DEFAULT_CODINO_TRT_MASK_HEAD = env_path(
+    "CODINO_TRT_MASK_HEAD_ENGINE",
+    ROOT / "checkpoints/codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine",
+)
+DEFAULT_CODINO_TRT_MANIFEST = env_path(
+    "CODINO_TRT_MANIFEST",
+    ROOT / "checkpoints/codino/trt/codino_trt_manifest.json",
+)
 DEFAULT_BENCHMARK = env_path("DINOV3_BATCH_BENCHMARK", ROOT / ".runtime" / "runtime_benchmark.json")
 
 
@@ -137,6 +153,50 @@ def choose_vram_mib(torch_data: dict[str, Any], smi_data: dict[str, Any] | None)
     return None
 
 
+def load_codino_trt_manifest(path: Path = DEFAULT_CODINO_TRT_MANIFEST) -> dict[str, Any] | None:
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def codino_trt_paths() -> dict[str, str]:
+    paths = {
+        "trt_backbone_engine": str(DEFAULT_CODINO_TRT_BACKBONE),
+        "trt_query_encoder_engine": str(DEFAULT_CODINO_TRT_QUERY_ENCODER),
+        "trt_decoder_engine": str(DEFAULT_CODINO_TRT_DECODER),
+        "trt_mask_head_engine": str(DEFAULT_CODINO_TRT_MASK_HEAD),
+    }
+    manifest = load_codino_trt_manifest()
+    engines = manifest.get("engines", {}) if isinstance(manifest, dict) else {}
+    if isinstance(engines, dict):
+        mapping = {
+            "backbone": "trt_backbone_engine",
+            "query_encoder": "trt_query_encoder_engine",
+            "decoder": "trt_decoder_engine",
+            "mask_head": "trt_mask_head_engine",
+        }
+        for src_key, dst_key in mapping.items():
+            value = engines.get(src_key)
+            if value:
+                paths[dst_key] = str(Path(str(value)).expanduser())
+    return paths
+
+
+def codino_manifest_batch() -> int | None:
+    manifest = load_codino_trt_manifest()
+    if not isinstance(manifest, dict):
+        return None
+    try:
+        batch = int(manifest.get("batch_size"))
+    except Exception:
+        return None
+    return batch if batch > 0 else None
+
+
 def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_exists: bool) -> dict[str, Any]:
     if total_mib is None:
         total_gib = 0.0
@@ -181,12 +241,8 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
         dinov3_batch = min(dinov3_batch, 2)
     if not engine_exists:
         notes.append("DINOv3 TensorRT engine is missing; run setup with REBUILD_TRT=1 or allow auto rebuild.")
-    codino_trt_engines = (
-        DEFAULT_CODINO_TRT_BACKBONE,
-        DEFAULT_CODINO_TRT_QUERY_ENCODER,
-        DEFAULT_CODINO_TRT_DECODER,
-        DEFAULT_CODINO_TRT_MASK_HEAD,
-    )
+    trt_paths = codino_trt_paths()
+    codino_trt_engines = tuple(Path(value) for value in trt_paths.values())
     if not all(path.is_file() for path in codino_trt_engines):
         notes.append("One or more Co-DINO TensorRT engines are missing under checkpoints/codino/trt.")
     if trt_site is None:
@@ -207,7 +263,7 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
             "classifier_batch_size": classifier_batch,
         },
         "codino": {
-            "batch_size": codino_batch,
+            "batch_size": codino_manifest_batch() or codino_batch,
             "warmup_frames": 0,
             "target_size": "1280x720",
             "score_thresh": 0.3,
@@ -222,10 +278,7 @@ def recommendations(total_mib: int | None, *, tensorrt_available: bool, engine_e
             "config": str(ROOT / "checkpoints/codino/detector/resolved_config.py"),
             "checkpoint": str(ROOT / "checkpoints/codino/detector/epoch_2.pth"),
             "classifier_checkpoint": str(ROOT / "checkpoints/codino/classifier/best.pt"),
-            "trt_backbone_engine": str(DEFAULT_CODINO_TRT_BACKBONE),
-            "trt_query_encoder_engine": str(DEFAULT_CODINO_TRT_QUERY_ENCODER),
-            "trt_decoder_engine": str(DEFAULT_CODINO_TRT_DECODER),
-            "trt_mask_head_engine": str(DEFAULT_CODINO_TRT_MASK_HEAD),
+            **trt_paths,
             "trt_extra_site_packages": None if trt_site is None else str(trt_site),
             "trt_query_encoder_shapes": "184x320,92x160,46x80,23x40,12x20",
         },
@@ -254,7 +307,7 @@ def apply_benchmark_recommendations(recs: dict[str, Any], benchmark: dict[str, A
     selected = benchmark.get("selected")
     if not isinstance(selected, dict):
         return
-    for detector, section in (("dinov3", "dinov3"), ("eva02", "eva02")):
+    for detector, section in (("dinov3", "dinov3"), ("eva02", "eva02"), ("codino", "codino")):
         item = selected.get(detector)
         if not isinstance(item, dict):
             continue
@@ -340,6 +393,7 @@ def main() -> int:
         "[PROFILE] recommended batches: "
         f"dinov3={rec['dinov3']['batch_size']} "
         f"eva02={rec['eva02']['batch_size']} "
+        f"codino={rec['codino']['batch_size']} "
         f"eva02_classifier={rec['eva02']['classifier_batch_size']}"
     )
     for note in rec.get("notes", []):

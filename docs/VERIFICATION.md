@@ -22,6 +22,12 @@ It runs:
 - Atosyori unit tests
 - deterministic Atosyori smoke under `/tmp/dinov3_postprocess_verify`
 
+To require local TensorRT engines in the artifact check:
+
+```bash
+.venv_integrated/bin/python tools/verify_runtime.py --require-trt
+```
+
 ## Detector Smoke
 
 Run this when changing command construction, runtime defaults, detector
@@ -35,6 +41,12 @@ For EVA02 wiring:
 
 ```bash
 .venv_integrated/bin/python tools/verify_runtime.py --detector-smoke --detector eva02 --frames 1
+```
+
+For Co-DINO wiring:
+
+```bash
+.venv_integrated/bin/python tools/verify_runtime.py --detector-smoke --detector codino --frames 8
 ```
 
 ## Golden Output Compare

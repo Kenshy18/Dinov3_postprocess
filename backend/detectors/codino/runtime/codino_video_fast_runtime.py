@@ -344,10 +344,7 @@ class CoDINOTRTBackboneAdapter(torch.nn.Module):
 
     def __init__(self, engine_path: Path, *, extra_site_packages: Path | None) -> None:
         super().__init__()
-        if extra_site_packages is not None and extra_site_packages.exists():
-            extra_site = str(extra_site_packages)
-            if extra_site not in sys.path:
-                sys.path.append(extra_site)
+        _prepare_tensorrt_runtime(extra_site_packages)
         cascade_path = str(CASCADE_INFER_ROOT)
         if cascade_path not in sys.path:
             sys.path.insert(0, cascade_path)
@@ -364,10 +361,7 @@ class CoDINOTRTFeatureListAdapter(torch.nn.Module):
 
     def __init__(self, engine_path: Path, *, feature_names: tuple[str, ...], extra_site_packages: Path | None) -> None:
         super().__init__()
-        if extra_site_packages is not None and extra_site_packages.exists():
-            extra_site = str(extra_site_packages)
-            if extra_site not in sys.path:
-                sys.path.append(extra_site)
+        _prepare_tensorrt_runtime(extra_site_packages)
         cascade_path = str(CASCADE_INFER_ROOT)
         if cascade_path not in sys.path:
             sys.path.insert(0, cascade_path)
@@ -422,10 +416,7 @@ class CoDINOTRTQueryEncoderAdapter(torch.nn.Module):
         extra_site_packages: Path | None,
     ) -> None:
         super().__init__()
-        if extra_site_packages is not None and extra_site_packages.exists():
-            extra_site = str(extra_site_packages)
-            if extra_site not in sys.path:
-                sys.path.append(extra_site)
+        _prepare_tensorrt_runtime(extra_site_packages)
         import tensorrt as trt
 
         trt.init_libnvinfer_plugins(None, "")
@@ -543,10 +534,7 @@ class CoDINOTRTDecoderAdapter(torch.nn.Module):
 
     def __init__(self, engine_path: Path, *, extra_site_packages: Path | None) -> None:
         super().__init__()
-        if extra_site_packages is not None and extra_site_packages.exists():
-            extra_site = str(extra_site_packages)
-            if extra_site not in sys.path:
-                sys.path.append(extra_site)
+        _prepare_tensorrt_runtime(extra_site_packages)
         import tensorrt as trt
 
         trt.init_libnvinfer_plugins(None, "")

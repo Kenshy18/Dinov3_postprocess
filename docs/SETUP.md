@@ -20,9 +20,9 @@ external/atosyori-pipeline-dev/
 
 ## 2. Configure Drive artifacts
 
-Runtime checkpoints, classifiers, postprocess models, and TensorRT engines are
-stored outside Git. Upload the runtime artifact folder to Google Drive, then set
-the shared folder URL.
+Runtime checkpoints, classifiers, and postprocess models are stored outside Git.
+TensorRT engines are device-specific and are created during setup. Upload the
+portable runtime artifact folder to Google Drive, then set the shared folder URL.
 
 ```bash
 cp configs/artifact_sources.env.example configs/artifact_sources.env
@@ -56,11 +56,9 @@ checkpoints/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 checkpoints/dinov3/classifier/best.pt
 checkpoints/Eva02/detector/model_final.pth
 checkpoints/Eva02/classifier/best.pt
-checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
 checkpoints/codino/detector/resolved_config.py
 checkpoints/codino/detector/epoch_2.pth
 checkpoints/codino/classifier/best.pt
-checkpoints/codino/trt/*.engine
 checkpoints/postprocess/k2_v5/best_exact.pt
 checkpoints/postprocess/k2_v5/run_config.json
 checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -72,7 +70,7 @@ checkpoints/postprocess/polygon_point_predictor/train_mask_point_predictor.py
 
 The downloader places those grouped Drive paths into the local runtime layout
 under `checkpoints/detector`, `checkpoints/classifier`, `checkpoints/eva02`,
-`checkpoints/trt`, and `checkpoints/codino`.
+and `checkpoints/codino`.
 
 ## 3. Create runtime environment
 
@@ -88,7 +86,8 @@ The setup script performs:
 - dependency installation
 - UI dependency installation
 - bundled Detectron2/EVA02 extension build when needed
-- TensorRT engine build when missing or when `REBUILD_TRT=1`
+- DINOv3 TensorRT engine build when missing or when `REBUILD_TRT=1`
+- Co-DINO TensorRT engine build when missing or when `REBUILD_CODINO_TRT=1`
 - local GPU/VRAM profiling into `.runtime/runtime_profile.json`
 - optional smoke/import checks
 
@@ -98,7 +97,7 @@ For GUI machines, this wrapper is the recommended entrypoint:
 tools/setup_gui_runtime.sh
 ```
 
-The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `.runtime/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and DINOv3 TensorRT engine path are written to `.runtime/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `.runtime/runtime_profile.json`, `.runtime/runtime_benchmark.json`, and `.runtime/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. Legacy `configs/runtime_profile.json` is still read as a fallback during migration. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
+The generated runtime profile is used by the integrated pipeline defaults. Setup also creates a temporary dummy video, measures candidate batch sizes sequentially, writes the result to `.runtime/runtime_benchmark.json`, and deletes the temporary video/output tree afterward. The selected GUI Python/venv, runtime profile path, benchmark result path, and TensorRT engine paths are written to `.runtime/gui_runtime.env`, which `apps/qt_ui/run_app.sh` sources before launching the application. `UI/run_app.sh` remains a compatibility wrapper. `.runtime/runtime_profile.json`, `.runtime/runtime_benchmark.json`, and `.runtime/gui_runtime.env` are local-machine state and are gitignored; keep the tracked guideline in `configs/runtime_profile.example.json` up to date instead. Legacy `configs/runtime_profile.json` is still read as a fallback during migration. If benchmarking cannot select a value, setup falls back to conservative defaults that keep EVA02 batch-size low on GPUs below 16 GiB VRAM to avoid CUDA unified/shared-memory fallback.
 
 Useful options:
 
@@ -109,17 +108,21 @@ REFERENCE_VENV=/path/to/known-good-venv tools/setup_integrated_runtime_env.sh
 RUN_DINO_SMOKE=0 tools/setup_integrated_runtime_env.sh
 BUILD_DETECTRON2=1 tools/setup_integrated_runtime_env.sh
 TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh
+REBUILD_CODINO_TRT=1 tools/setup_integrated_runtime_env.sh
+CODINO_TRT_BATCH_SIZE=1 tools/setup_integrated_runtime_env.sh
 ```
 
 `BUILD_DETECTRON2=auto` is the default. It builds the bundled Detectron2/EVA02 extension only when `eva02/eva02_det/detectron2/_C*.so` is missing.
 
 For Blackwell GPUs, use a PyTorch/CUDA build that supports the GPU architecture. On this machine the known-good runtime is the existing EVA02 inference venv, which can be passed through `REFERENCE_VENV`.
 
-TensorRT engines are stored as runtime artifacts for the validated deployment
-machine, but they are not universally portable. Rebuild them on each different
-GPU/driver/TensorRT combination when loading fails. The default build uses BF16;
-if BF16 engine creation fails, setup retries with FP16 at the same default
-engine path. Set `TRT_FALLBACK_FP16=0` to make BF16 failure hard-fail.
+TensorRT engines are not portable across GPU/driver/TensorRT combinations. The
+DINOv3 backbone engine is dynamic up to batch 8. Co-DINO creates fixed-batch
+engines for the DINOv3 backbone, query encoder, decoder, and mask head core;
+the setup default chooses batch 2 on GPUs with at least 20 GiB VRAM and batch 1
+below that. Co-DINO query encoder/decoder ONNX export maps mmcv deformable
+attention to NVIDIA `MultiscaleDeformableAttnPlugin_TRT`, so TensorRT Python
+bindings and plugin libraries must import correctly in the setup venv.
 
 GPU notes:
 

@@ -102,6 +102,7 @@ for existing commands and runtime imports.
 Default acceleration:
 
 - TensorRT BF16 DINOv3 backbone
+- Co-DINO local TensorRT backbone/query encoder/decoder/mask head when `--detector codino`
 - Cascade box head reduced to 1 stage
 - RPN test top-k `100/40`
 - BF16 autocast

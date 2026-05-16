@@ -2,8 +2,8 @@
 
 Large runtime artifacts are intentionally kept outside Git. Upload them to
 Google Drive or another artifact store, then let the setup script restore the
-same layout under `checkpoints/`. The setup script can also rebuild TensorRT
-engines when they are missing or incompatible.
+same layout under `checkpoints/`. TensorRT engines are local-device artifacts
+and are rebuilt by setup instead of being required from Drive.
 
 Expected local runtime layout after download/placement:
 
@@ -26,13 +26,6 @@ checkpoints/
       epoch_2.pth
     classifier/
       best.pt
-    trt/
-      codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine
-      codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine
-      codino_decoder_b2_736x1280_msda_plugin_fp16.engine
-      codino_mask_head_core_n1_736x1280_fp16.engine
-  trt/
-    dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   postprocess/
     k2_v5/
       best_exact.pt
@@ -49,6 +42,12 @@ Check placement:
 
 ```bash
 python tools/check_artifacts.py
+```
+
+Require locally built TensorRT engines too:
+
+```bash
+python tools/check_artifacts.py --require-trt
 ```
 
 ## Download Sources
@@ -74,11 +73,9 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/dinov3/classifier/best.pt
   checkpoints/Eva02/detector/model_final.pth
   checkpoints/Eva02/classifier/best.pt
-  checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   checkpoints/codino/detector/resolved_config.py
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt
-  checkpoints/codino/trt/*.engine
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -103,8 +100,8 @@ Manual artifact download/placement:
 
 Notes:
 
-- TensorRT engines are device/CUDA/TensorRT dependent. Rebuild them on a new machine if loading fails.
-- The setup script rebuilds the TensorRT engine automatically when it is missing.
+- TensorRT engines are device/CUDA/TensorRT dependent and are not required in the Drive artifact folder.
+- The setup script rebuilds DINOv3 and Co-DINO TensorRT engines automatically when they are missing.
 - `run_config.json` and model definition files are small and tracked.
 - Runtime checkpoint bodies, `.engine`, `.pt`, `.pth`, and `.npz` files under
   the documented `checkpoints/` paths are ignored by Git and should come from

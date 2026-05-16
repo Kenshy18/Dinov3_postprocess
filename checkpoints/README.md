@@ -1,9 +1,9 @@
 # checkpoints
 
-Runtime checkpoint and engine files are placed here.
+Runtime checkpoint and local TensorRT engine files are placed here.
 
-Runtime artifact bodies are not tracked in Git. Restore them from the shared
-Drive folder or another artifact store before inference.
+Runtime checkpoint bodies are not tracked in Git. Restore portable checkpoints
+from the shared Drive folder or another artifact store before inference.
 
 ```text
 checkpoints/
@@ -29,8 +29,9 @@ checkpoints/
     polygon_point_predictor/feature_stats.npz
 ```
 
-TensorRT engines are GPU/CUDA/TensorRT dependent. If an engine is missing or
-incompatible on a different machine, rebuild it with the setup tools.
+TensorRT engines are GPU/CUDA/TensorRT dependent and should be created locally.
+If an engine is missing or incompatible on a different machine, rebuild it with
+the setup tools.
 
 The shared Drive upload groups detector artifacts by backbone:
 
@@ -39,9 +40,7 @@ checkpoints/dinov3/detector/model_final.pth
 checkpoints/dinov3/classifier/best.pt
 checkpoints/Eva02/detector/model_final.pth
 checkpoints/Eva02/classifier/best.pt
-checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
 checkpoints/codino/detector/resolved_config.py
 checkpoints/codino/detector/epoch_2.pth
 checkpoints/codino/classifier/best.pt
-checkpoints/codino/trt/*.engine
 ```

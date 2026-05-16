@@ -3,11 +3,13 @@
 
 This script intentionally supports a small set of layouts used by this bundle:
 
-- unified runtime artifact folder prepared from artifacts_to_upload/runtime_artifacts/
+- unified portable runtime artifact folder prepared from artifacts_to_upload/runtime_artifacts/
 - current shared Google Drive runtime folder, which groups detector artifacts by
   backbone under checkpoints/dinov3/ and checkpoints/Eva02/
 - postprocess Google Drive folder from Atosyori
 - DINOv3 runtime Google Drive folder prepared from artifacts_to_upload/
+
+TensorRT engines are not required from Drive; setup rebuilds them locally.
 
 It can also place artifacts from an already downloaded local directory.
 """

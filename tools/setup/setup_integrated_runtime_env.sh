@@ -22,6 +22,7 @@ RUN_DINO_SMOKE="${RUN_DINO_SMOKE:-1}"
 RUN_IMPORT_CHECK="${RUN_IMPORT_CHECK:-1}"
 POSTPROCESS_MODEL_ROOT="${POSTPROCESS_MODEL_ROOT:-$ROOT_DIR/checkpoints/postprocess}"
 BUILD_DETECTRON2="${BUILD_DETECTRON2:-auto}"
+SETUP_CODINO_DEPS="${SETUP_CODINO_DEPS:-1}"
 BASE_PYTHON="${BASE_PYTHON:-}"
 DOWNLOAD_ARTIFACTS="${DOWNLOAD_ARTIFACTS:-1}"
 ARTIFACT_OVERWRITE="${ARTIFACT_OVERWRITE:-0}"
@@ -33,11 +34,17 @@ DINOV3_ARTIFACTS_URL="${DINOV3_ARTIFACTS_URL:-}"
 DINOV3_ARTIFACTS_DIR="${DINOV3_ARTIFACTS_DIR:-}"
 REBUILD_TRT="${REBUILD_TRT:-auto}"
 ENGINE_PATH="${ENGINE_PATH:-$ROOT_DIR/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
+REBUILD_CODINO_TRT="${REBUILD_CODINO_TRT:-auto}"
+CODINO_TRT_BATCH_SIZE="${CODINO_TRT_BATCH_SIZE:-auto}"
+CODINO_TRT_BACKBONE_PRECISION="${CODINO_TRT_BACKBONE_PRECISION:-bf16}"
+CODINO_TRT_QUERY_PRECISION="${CODINO_TRT_QUERY_PRECISION:-fp16}"
+CODINO_TRT_DECODER_PRECISION="${CODINO_TRT_DECODER_PRECISION:-fp16}"
+CODINO_TRT_MASK_PRECISION="${CODINO_TRT_MASK_PRECISION:-fp16}"
 DINOV3_RUNTIME_PROFILE="${DINOV3_RUNTIME_PROFILE:-$ROOT_DIR/.runtime/runtime_profile.json}"
 GUI_RUNTIME_ENV="${GUI_RUNTIME_ENV:-$ROOT_DIR/.runtime/gui_runtime.env}"
 RUN_BATCH_BENCHMARK="${RUN_BATCH_BENCHMARK:-1}"
 BATCH_BENCHMARK_OUTPUT="${BATCH_BENCHMARK_OUTPUT:-$ROOT_DIR/.runtime/runtime_benchmark.json}"
-BATCH_BENCHMARK_DETECTORS="${BATCH_BENCHMARK_DETECTORS:-eva02,dinov3}"
+BATCH_BENCHMARK_DETECTORS="${BATCH_BENCHMARK_DETECTORS:-eva02,dinov3,codino}"
 BATCH_BENCHMARK_FRAMES="${BATCH_BENCHMARK_FRAMES:-24}"
 BATCH_BENCHMARK_TIMEOUT_SEC="${BATCH_BENCHMARK_TIMEOUT_SEC:-360}"
 
@@ -155,6 +162,38 @@ RUN_SMOKE="$RUN_DINO_SMOKE" \
   REBUILD_TRT="$REBUILD_TRT" \
   "$DINO_RUNTIME_DIR/tools/setup_fast_runtime_env.sh"
 
+if [[ "$SETUP_CODINO_DEPS" == "1" ]]; then
+  echo "[SETUP] installing Co-DINO/MMCV runtime dependencies"
+  "$PY" -m pip install -q \
+    cython \
+    numpy \
+    openmim \
+    onnx \
+    terminaltables \
+    yapf \
+    scipy \
+    fairscale \
+    timm \
+    fvcore \
+    tensorboard \
+    einops
+  if ! "$PY" - <<'PY'
+import importlib
+import sys
+
+try:
+    import mmcv  # noqa: F401
+    from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttnFunction  # noqa: F401
+except Exception as exc:
+    print(repr(exc), file=sys.stderr)
+    raise SystemExit(1)
+PY
+  then
+    "$PY" -m mim install "mmcv-full>=1.7.0,<1.8.0"
+  fi
+  "$PY" -m pip install -q -e "$ROOT_DIR/external/codino" --no-deps
+fi
+
 if [[ "$BUILD_DETECTRON2" == "1" ]] || { [[ "$BUILD_DETECTRON2" == "auto" ]] && ! ls "$ROOT_DIR/eva02/eva02_det/detectron2"/_C*.so >/dev/null 2>&1; }; then
   echo "[SETUP] building/installing bundled Detectron2/EVA02 extension"
   "$PY" -m pip install -q -e "$ROOT_DIR/eva02/eva02_det"
@@ -168,12 +207,58 @@ if [[ -f "$ROOT_DIR/apps/qt_ui/requirements.txt" ]]; then
 elif [[ -f "$ROOT_DIR/UI/requirements.txt" ]]; then
   "$PY" -m pip install -q -r "$ROOT_DIR/UI/requirements.txt"
 fi
+
+if [[ "$CODINO_TRT_BATCH_SIZE" == "auto" ]]; then
+  CODINO_TRT_BATCH_SIZE="$("$PY" - <<'PY'
+import torch
+
+if not torch.cuda.is_available():
+    print(1)
+else:
+    total_gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    print(2 if total_gib >= 20 else 1)
+PY
+)"
+fi
+
+CODINO_TRT_DIR="$ROOT_DIR/checkpoints/codino/trt"
+CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_DIR/codino_dinov3_vitl_backbone_736x1280_fp32_b${CODINO_TRT_BATCH_SIZE}_fixed_${CODINO_TRT_BACKBONE_PRECISION}.engine"
+CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_DIR/codino_query_encoder_b${CODINO_TRT_BATCH_SIZE}_736x1280_msda_plugin_sbc_${CODINO_TRT_QUERY_PRECISION}.engine"
+CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DIR/codino_decoder_b${CODINO_TRT_BATCH_SIZE}_736x1280_msda_plugin_${CODINO_TRT_DECODER_PRECISION}.engine"
+CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_DIR/codino_mask_head_core_n1_736x1280_${CODINO_TRT_MASK_PRECISION}.engine"
+CODINO_TRT_MANIFEST="$CODINO_TRT_DIR/codino_trt_manifest.json"
+
+codino_trt_ready() {
+  [[ -f "$CODINO_TRT_BACKBONE_ENGINE" ]] \
+    && [[ -f "$CODINO_TRT_QUERY_ENCODER_ENGINE" ]] \
+    && [[ -f "$CODINO_TRT_DECODER_ENGINE" ]] \
+    && [[ -f "$CODINO_TRT_MASK_HEAD_ENGINE" ]]
+}
+
+if [[ "$REBUILD_CODINO_TRT" == "1" ]] || { [[ "$REBUILD_CODINO_TRT" == "auto" ]] && ! codino_trt_ready; }; then
+  echo "[SETUP] rebuilding Co-DINO TensorRT engines for local GPU batch=$CODINO_TRT_BATCH_SIZE"
+  PYTHON="$PY" \
+    CODINO_TRT_BATCH_SIZE="$CODINO_TRT_BATCH_SIZE" \
+    BACKBONE_PRECISION="$CODINO_TRT_BACKBONE_PRECISION" \
+    QUERY_PRECISION="$CODINO_TRT_QUERY_PRECISION" \
+    DECODER_PRECISION="$CODINO_TRT_DECODER_PRECISION" \
+    MASK_PRECISION="$CODINO_TRT_MASK_PRECISION" \
+    "$ROOT_DIR/backend/detectors/codino/tools/rebuild_codino_trt_engines.sh"
+else
+  echo "[SETUP] Co-DINO TensorRT engines exist for batch=$CODINO_TRT_BATCH_SIZE"
+fi
+
 if [[ "$RUN_BATCH_BENCHMARK" == "1" ]]; then
   echo "[SETUP] benchmarking runtime batch sizes with a temporary dummy video"
   if ! BATCH_BENCHMARK_DETECTORS="$BATCH_BENCHMARK_DETECTORS" \
     BATCH_BENCHMARK_FRAMES="$BATCH_BENCHMARK_FRAMES" \
     BATCH_BENCHMARK_TIMEOUT_SEC="$BATCH_BENCHMARK_TIMEOUT_SEC" \
     DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" \
+    CODINO_TRT_BATCH_SIZE="$CODINO_TRT_BATCH_SIZE" \
+    CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
+    CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
+    CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DECODER_ENGINE" \
+    CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
     "$PY" "$ROOT_DIR/tools/setup/benchmark_runtime_batches.py" \
       --python "$PY" \
       --output "$BATCH_BENCHMARK_OUTPUT" \
@@ -183,7 +268,13 @@ if [[ "$RUN_BATCH_BENCHMARK" == "1" ]]; then
 else
   echo "[SETUP] batch benchmark disabled"
 fi
-DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" DINOV3_BATCH_BENCHMARK="$BATCH_BENCHMARK_OUTPUT" \
+DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" \
+CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
+CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
+CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DECODER_ENGINE" \
+CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
+CODINO_TRT_MANIFEST="$CODINO_TRT_MANIFEST" \
+DINOV3_BATCH_BENCHMARK="$BATCH_BENCHMARK_OUTPUT" \
   "$PY" "$ROOT_DIR/tools/setup/configure_runtime_profile.py" \
     --output "$DINOV3_RUNTIME_PROFILE" \
     --benchmark "$BATCH_BENCHMARK_OUTPUT"
@@ -197,19 +288,29 @@ mkdir -p "$(dirname "$GUI_RUNTIME_ENV")"
   printf 'DINOV3_RUNTIME_PROFILE=%q\n' "$DINOV3_RUNTIME_PROFILE"
   printf 'DINOV3_BATCH_BENCHMARK=%q\n' "$BATCH_BENCHMARK_OUTPUT"
   printf 'DINOV3_TRT_BACKBONE_ENGINE=%q\n' "$ENGINE_PATH"
+  printf 'CODINO_TRT_BATCH_SIZE=%q\n' "$CODINO_TRT_BATCH_SIZE"
+  printf 'CODINO_TRT_BACKBONE_ENGINE=%q\n' "$CODINO_TRT_BACKBONE_ENGINE"
+  printf 'CODINO_TRT_QUERY_ENCODER_ENGINE=%q\n' "$CODINO_TRT_QUERY_ENCODER_ENGINE"
+  printf 'CODINO_TRT_DECODER_ENGINE=%q\n' "$CODINO_TRT_DECODER_ENGINE"
+  printf 'CODINO_TRT_MASK_HEAD_ENGINE=%q\n' "$CODINO_TRT_MASK_HEAD_ENGINE"
   printf 'ATOSYORI_REPO=%q\n' "$ATOSYORI_REPO"
   printf 'DINO_RUNTIME_DIR=%q\n' "$DINO_RUNTIME_DIR"
   printf 'QT_UI_DIR=%q\n' "$ROOT_DIR/apps/qt_ui"
 } > "$GUI_RUNTIME_ENV"
 echo "[SETUP] wrote GUI runtime env: $GUI_RUNTIME_ENV"
-"$PY" "$ROOT_DIR/tools/artifacts/check_artifacts.py" --allow-missing
+DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" \
+CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
+CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
+CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DECODER_ENGINE" \
+CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
+  "$PY" "$ROOT_DIR/tools/artifacts/check_artifacts.py" --require-trt
 
 if [[ "$RUN_IMPORT_CHECK" == "1" ]]; then
   "$PY" - <<'PY'
 import importlib
 import sys
 
-for name in ("torch", "cv2", "orjson", "atosyori_postprocess"):
+for name in ("torch", "cv2", "orjson", "atosyori_postprocess", "mmcv", "mmdet", "tensorrt"):
     importlib.import_module(name)
 print(f"[CHECK] imports ok: {sys.executable}")
 PY

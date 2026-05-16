@@ -46,7 +46,10 @@ def atosyori_env() -> dict[str, str]:
 
 def run_quick_checks(args: argparse.Namespace) -> None:
     py = str(runtime_python())
-    run([py, "tools/artifacts/check_artifacts.py"])
+    artifact_cmd = [py, "tools/artifacts/check_artifacts.py"]
+    if args.require_trt:
+        artifact_cmd.append("--require-trt")
+    run(artifact_cmd)
     run(
         [
             py,
@@ -109,8 +112,10 @@ def run_detector_smoke(args: argparse.Namespace) -> None:
     ]
     if args.detector == "dinov3":
         command.extend(["--warmup-frames", "0", "--no-async-writer"])
-    else:
+    elif args.detector == "eva02":
         command.extend(["--eva02-warmup-frames", "0"])
+    else:
+        command.extend(["--codino-warmup-frames", "0"])
     run(command)
 
 
@@ -118,8 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run integrated runtime verification checks")
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/dinov3_postprocess_verify"))
     parser.add_argument("--no-atosyori-smoke", dest="atosyori_smoke", action="store_false", default=True)
+    parser.add_argument("--require-trt", action="store_true", help="Fail quick checks if local TensorRT engines are missing")
     parser.add_argument("--detector-smoke", action="store_true", help="Run GPU detector smoke after cheap checks")
-    parser.add_argument("--detector", choices=("dinov3", "eva02"), default="dinov3")
+    parser.add_argument("--detector", choices=("dinov3", "eva02", "codino"), default="dinov3")
     parser.add_argument("--frames", type=int, default=64, help="Frames for detector smoke")
     return parser
 

@@ -33,7 +33,7 @@
 Runtime artifact Drive:
 
 ```text
-TODO: upload checkpoints/runtime_artifacts to Google Drive and paste the shared folder URL here.
+https://drive.google.com/drive/folders/1cj9gPOt4MIRu6cFW80vfTZHK9oLQB6qn
 ```
 
 Drive URLを設定する場合は `configs/artifact_sources.env.example` をコピーして編集してください。
@@ -47,13 +47,13 @@ cp configs/artifact_sources.env.example configs/artifact_sources.env
 tools/setup_integrated_runtime_env.sh
 ```
 
-GUIを使うPCでは、同じ処理を分かりやすい名前で呼ぶ以下の入口も使えます。UI依存関係のインストール、DINOv3 TensorRT engineの作成/再利用、GPU/VRAMに応じた安全寄りのbatch設定生成まで行います。
+GUIを使うPCでは、同じ処理を分かりやすい名前で呼ぶ以下の入口も使えます。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、GPU/VRAMに応じたbatch設定生成まで行います。
 
 ```bash
 tools/setup_gui_runtime.sh
 ```
 
-生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でbatch-size候補を順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はVRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。
+生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でbatch-size候補を順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はVRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headをローカルTensorRT engineとして作成し、そのbatch-sizeをprofileへ反映します。
 
 別のAtosyori repoを使う場合:
 
@@ -83,15 +83,12 @@ checkpoints/
   codino/detector/resolved_config.py
   codino/detector/epoch_2.pth
   codino/classifier/best.pt
-  codino/trt/codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine
-  codino/trt/codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine
-  codino/trt/codino_decoder_b2_736x1280_msda_plugin_fp16.engine
-  codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine
-  trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   postprocess/k2_v5/best_exact.pt
   postprocess/polygon_point_predictor/best.pt
   postprocess/polygon_point_predictor/feature_stats.npz
 ```
+
+TensorRT engineはセットアップ時にローカルGPU向けに作成されます。
 
 配置確認:
 
@@ -233,11 +230,9 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/classifier/best.pt
   checkpoints/eva02/detector/model_final.pth
   checkpoints/eva02/classifier/best.pt
-  checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine
   checkpoints/codino/detector/resolved_config.py
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt
-  checkpoints/codino/trt/*.engine
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -247,12 +242,13 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/postprocess/polygon_point_predictor/train_mask_point_predictor.py
 ```
 
-このフォルダをGoogle Driveへアップロードし、共有URLを `configs/artifact_sources.env` の `RUNTIME_ARTIFACTS_URL` に設定してください。TensorRT engineはGPU/driver/TensorRT依存なので、別PCで読み込みに失敗する場合は初回セットアップで再作成します。
+このフォルダをGoogle Driveへアップロードし、共有URLを `configs/artifact_sources.env` の `RUNTIME_ARTIFACTS_URL` に設定してください。TensorRT engineはGPU/driver/TensorRT依存なのでDrive配布の必須artifactには含めず、初回セットアップで再作成します。
 
 ## GPU portability
 
-TensorRT engineはGPU、driver、CUDA、TensorRT versionに依存するため、別PCでは `tools/setup_integrated_runtime_env.sh` で再作成してください。checkpointとONNX exportは持ち回れます。
+TensorRT engineはGPU、driver、CUDA、TensorRT versionに依存するため、別PCでは `tools/setup_integrated_runtime_env.sh` で再作成してください。checkpointは持ち回れます。
 
 - RTX 5090などのBlackwell系: CUDA/PyTorch/TensorRTが `sm_120` に対応している必要があります。この検証機では RTX PRO 6000 Blackwell + PyTorch CUDA 12.9 + TensorRT 10.13 で確認済みです。
 - RTX 4090などのAda系: TensorRT engineをそのPCで再作成する前提で対応想定です。
-- 既定はTensorRT BF16です。BF16 buildが失敗した場合、セットアップは同じengine pathにFP16で自動fallbackします。明示する場合は `TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh` を使えます。
+- DINOv3 backboneの既定はTensorRT BF16です。BF16 buildが失敗した場合、セットアップは同じengine pathにFP16で自動fallbackします。明示する場合は `TRT_PRECISION=fp16 tools/setup_integrated_runtime_env.sh` を使えます。
+- Co-DINOは `backend/detectors/codino/tools/rebuild_codino_trt_engines.sh` でbackbone、query encoder、decoder、mask head coreを作成します。query encoder/decoderは `MultiscaleDeformableAttnPlugin_TRT` を使います。

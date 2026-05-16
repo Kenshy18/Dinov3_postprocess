@@ -31,9 +31,9 @@ backend/detectors/eva02
 
 backend/detectors/codino
   DINOv3 + Co-DINO detector boundary. Owns backend-facing command construction
-  plus the Co-DINO JSONL runtime wrapper under runtime/. It uses the repo-local
-  Co-DINO source under `external/codino` and repo-local artifacts under
-  `checkpoints/codino`.
+  plus the Co-DINO JSONL runtime wrapper under runtime/. Co-DINO TensorRT
+  export/build tools live under tools/. It uses the repo-local Co-DINO source
+  under `external/codino` and repo-local artifacts under `checkpoints/codino`.
 
 backend/detectors/jsonl_writer.py
   Shared streaming JSONL writer used by detector runtimes.
