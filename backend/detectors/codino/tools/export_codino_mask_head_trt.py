@@ -201,7 +201,6 @@ def export_onnx(wrapper: torch.nn.Module, args: argparse.Namespace) -> None:
             output_names=["stage0", "stage1", "stage2", "stage3"],
             opset_version=args.opset,
             do_constant_folding=False,
-            dynamo=False,
         )
     torch.cuda.synchronize()
     print(f"[export] wrote {args.onnx} size={args.onnx.stat().st_size} elapsed={time.perf_counter() - t0:.2f}s")

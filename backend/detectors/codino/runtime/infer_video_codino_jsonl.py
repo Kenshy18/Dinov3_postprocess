@@ -586,10 +586,19 @@ def _assert_cuda_runtime_compatible(device: str) -> None:
     required = f"sm_{capability[0]}{capability[1]}"
     supported = set(torch.cuda.get_arch_list())
     if supported and required not in supported:
-        raise RuntimeError(
-            f"current PyTorch build does not support this GPU capability ({required}). "
-            f"supported={sorted(supported)}. Use a Co-DINO runtime Python with a PyTorch/CUDA build "
-            "that supports the installed GPU, then rerun the same repo-local command."
+        try:
+            probe = torch.ones(1, device=torch_device)
+            _ = (probe + 1).item()
+            torch.cuda.synchronize(torch_device)
+        except Exception as exc:
+            raise RuntimeError(
+                f"current PyTorch build does not support this GPU capability ({required}). "
+                f"supported={sorted(supported)}. Use a Co-DINO runtime Python with a PyTorch/CUDA build "
+                "that supports the installed GPU, then rerun the same repo-local command."
+            ) from exc
+        print(
+            f"[WARN] PyTorch arch list does not include {required} (supported={sorted(supported)}), "
+            "but a CUDA smoke test passed; continuing."
         )
 
 

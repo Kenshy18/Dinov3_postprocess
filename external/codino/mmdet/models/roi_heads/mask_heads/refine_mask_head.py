@@ -39,7 +39,7 @@ class MultiBranchFusionAvg(MultiBranchFusion):
         feat_1 = self.dilation_conv_1(x)
         feat_2 = self.dilation_conv_2(x)
         feat_3 = self.dilation_conv_3(x)
-        feat_4 = F.avg_pool2d(x, x.shape[-1])
+        feat_4 = F.avg_pool2d(x, int(x.size(-1)))
         out_feat = self.merge_conv(feat_1 + feat_2 + feat_3 + feat_4)
         return out_feat
 
@@ -112,16 +112,18 @@ class SFMStage(nn.Module):
         # instance masks
         instance_preds = self.instance_logits(instance_feats)[torch.arange(len(rois)), roi_labels][:, None]
         _instance_preds = instance_preds.sigmoid() if self.mask_use_sigmoid else instance_preds
-        instance_masks = F.interpolate(_instance_preds, instance_feats.shape[-2], mode='bilinear', align_corners=True)
+        instance_size = int(instance_feats.size(-2))
+        instance_hw = (int(instance_feats.size(-2)), int(instance_feats.size(-1)))
+        instance_masks = F.interpolate(_instance_preds, instance_size, mode='bilinear', align_corners=True)
         concat_tensors.append(instance_masks)
 
         # instance-wise semantic masks
         _semantic_pred = semantic_pred.sigmoid() if self.mask_use_sigmoid else semantic_pred
         semantic_pred_fp32 = _semantic_pred.float() if _semantic_pred.dtype != rois_fp32.dtype else _semantic_pred
         ins_semantic_masks = roi_align(
-            semantic_pred_fp32, rois_fp32, instance_feats.shape[-2:], 1.0 / self.semantic_out_stride, 0, 'avg', True)
+            semantic_pred_fp32, rois_fp32, instance_hw, 1.0 / self.semantic_out_stride, 0, 'avg', True)
         ins_semantic_masks = F.interpolate(
-            ins_semantic_masks, instance_feats.shape[-2:], mode='bilinear', align_corners=True)
+            ins_semantic_masks, instance_hw, mode='bilinear', align_corners=True)
         concat_tensors.append(ins_semantic_masks)
 
         # fuse instance feats & instance masks & semantic feats & semantic masks
@@ -133,8 +135,9 @@ class SFMStage(nn.Module):
         fused_feats = self.relu(self.upsample(fused_feats))
 
         # concat instance and semantic masks with fused feats again
-        instance_masks = F.interpolate(_instance_preds, fused_feats.shape[-2], mode='bilinear', align_corners=True)
-        ins_semantic_masks = F.interpolate(ins_semantic_masks, fused_feats.shape[-2], mode='bilinear', align_corners=True)
+        fused_size = int(fused_feats.size(-2))
+        instance_masks = F.interpolate(_instance_preds, fused_size, mode='bilinear', align_corners=True)
+        ins_semantic_masks = F.interpolate(ins_semantic_masks, fused_size, mode='bilinear', align_corners=True)
         fused_feats = torch.cat([fused_feats, instance_masks, ins_semantic_masks], dim=1)
 
         return instance_preds, fused_feats

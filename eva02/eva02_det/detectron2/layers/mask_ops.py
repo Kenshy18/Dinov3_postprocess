@@ -61,7 +61,11 @@ def _do_paste_mask(masks, boxes, img_h: int, img_w: int, skip_empty: bool = True
     if not torch.jit.is_scripting():
         if not masks.dtype.is_floating_point:
             masks = masks.float()
-    img_masks = F.grid_sample(masks, grid.to(masks.dtype), align_corners=False)
+    sample_dtype = masks.dtype
+    if masks.is_cuda and masks.dtype == torch.bfloat16:
+        masks = masks.float()
+        sample_dtype = torch.float32
+    img_masks = F.grid_sample(masks, grid.to(sample_dtype), align_corners=False)
 
     if skip_empty and not torch.jit.is_scripting():
         return img_masks[:, 0], (slice(y0_int, y1_int), slice(x0_int, x1_int))

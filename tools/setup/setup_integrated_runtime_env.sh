@@ -351,13 +351,66 @@ set_codino_trt_paths_for_batch() {
   CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_DIR/codino_mask_head_core_n1_736x1280_${CODINO_TRT_MASK_PRECISION}.engine"
 }
 
+trt_engines_deserialize() {
+  "$PY" - "$@" <<'PY'
+import ctypes
+import os
+import sys
+from pathlib import Path
+
+import tensorrt as trt
+
+for raw_path in sys.path:
+    site = Path(raw_path)
+    libs = site / "tensorrt_libs"
+    if not libs.exists():
+        continue
+    os.environ["LD_LIBRARY_PATH"] = f"{libs}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    for name in ("libnvinfer.so.10", "libnvonnxparser.so.10", "libnvinfer_plugin.so.10"):
+        lib = libs / name
+        if lib.exists():
+            ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+    plugin = libs / "libnvinfer_plugin.so.10"
+    vc_plugin = libs / "libnvinfer_vc_plugin.so.10"
+    if plugin.exists() and not vc_plugin.exists():
+        shim_dir = Path("/tmp/trt_vc_plugin_shim")
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        shim = shim_dir / "libnvinfer_vc_plugin.so.10"
+        if not shim.exists():
+            shim.symlink_to(plugin)
+        os.environ["LD_LIBRARY_PATH"] = f"{shim_dir}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+        ctypes.CDLL(str(shim), mode=ctypes.RTLD_GLOBAL)
+
+trt.init_libnvinfer_plugins(None, "")
+logger = trt.Logger(trt.Logger.ERROR)
+runtime = trt.Runtime(logger)
+bad = []
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    if not path.is_file():
+        bad.append(f"missing:{path}")
+        continue
+    engine = runtime.deserialize_cuda_engine(path.read_bytes())
+    if engine is None:
+        bad.append(f"incompatible:{path}")
+if bad:
+    for item in bad:
+        print(f"[WARN] TensorRT engine validation failed: {item}", file=sys.stderr)
+    raise SystemExit(1)
+print("[SETUP] TensorRT engines deserialize ok:")
+for raw in sys.argv[1:]:
+    print(f"[SETUP]   {raw}")
+PY
+}
+
 codino_trt_ready_for_batch() {
   local batch="$1"
   local backbone="$CODINO_TRT_DIR/codino_dinov3_vitl_backbone_736x1280_fp32_b${batch}_fixed_${CODINO_TRT_BACKBONE_PRECISION}.engine"
   local query="$CODINO_TRT_DIR/codino_query_encoder_b${batch}_736x1280_msda_plugin_sbc_${CODINO_TRT_QUERY_PRECISION}.engine"
   local decoder="$CODINO_TRT_DIR/codino_decoder_b${batch}_736x1280_msda_plugin_${CODINO_TRT_DECODER_PRECISION}.engine"
   local mask="$CODINO_TRT_DIR/codino_mask_head_core_n1_736x1280_${CODINO_TRT_MASK_PRECISION}.engine"
-  [[ -f "$backbone" ]] && [[ -f "$query" ]] && [[ -f "$decoder" ]] && [[ -f "$mask" ]]
+  [[ -f "$backbone" ]] && [[ -f "$query" ]] && [[ -f "$decoder" ]] && [[ -f "$mask" ]] \
+    && trt_engines_deserialize "$backbone" "$query" "$decoder" "$mask"
 }
 
 set_codino_trt_paths_for_batch "$CODINO_TRT_BATCH_SIZE"

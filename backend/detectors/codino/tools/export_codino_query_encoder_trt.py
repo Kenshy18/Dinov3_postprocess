@@ -247,17 +247,21 @@ def export_onnx(wrapper: torch.nn.Module, args: argparse.Namespace, feature_shap
     print(f"[sample] output={tuple(sample.shape)} dtype={sample.dtype}")
     t0 = time.perf_counter()
     with torch.inference_mode():
-        torch.onnx.export(
-            wrapper,
-            dummies,
-            str(args.onnx),
-            input_names=input_names,
-            output_names=["memory"],
-            opset_version=args.opset,
-            do_constant_folding=False,
-            dynamo=False,
-            custom_opsets={"trt": 1},
-        )
+        try:
+            torch.onnx.export(
+                wrapper,
+                dummies,
+                str(args.onnx),
+                input_names=input_names,
+                output_names=["memory"],
+                opset_version=args.opset,
+                do_constant_folding=False,
+                custom_opsets={"trt": 1},
+            )
+        except Exception as exc:
+            if exc.__class__.__name__ != "CheckerError" or not args.onnx.is_file() or args.onnx.stat().st_size <= 0:
+                raise
+            print(f"[warn] torch ONNX checker failed after writing {args.onnx}; continuing for TensorRT: {exc}")
     torch.cuda.synchronize()
     print(f"[export] wrote {args.onnx} size={args.onnx.stat().st_size} elapsed={time.perf_counter() - t0:.2f}s")
 

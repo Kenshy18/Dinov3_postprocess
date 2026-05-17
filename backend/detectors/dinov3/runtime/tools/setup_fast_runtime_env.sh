@@ -202,8 +202,31 @@ rebuild_trt_engine() {
   fi
 }
 
-if [[ "$REBUILD_TRT" == "1" || ( "$REBUILD_TRT" == "auto" && ! -f "$ENGINE_PATH" ) ]]; then
+validate_trt_engine() {
+  [[ -f "$ENGINE_PATH" ]] || return 1
+  "$PY" - "$ENGINE_PATH" <<'PY'
+import sys
+from pathlib import Path
+
+import tensorrt as trt
+
+engine_path = Path(sys.argv[1])
+logger = trt.Logger(trt.Logger.ERROR)
+runtime = trt.Runtime(logger)
+engine = runtime.deserialize_cuda_engine(engine_path.read_bytes())
+if engine is None:
+    raise SystemExit(1)
+print(f"[SETUP] TensorRT engine deserialize ok: {engine_path}")
+PY
+}
+
+if [[ "$REBUILD_TRT" == "1" ]]; then
   rebuild_trt_engine "missing or requested: $ENGINE_PATH"
+elif [[ "$REBUILD_TRT" == "auto" ]]; then
+  if ! validate_trt_engine; then
+    rm -f "$ENGINE_PATH" "${ENGINE_PATH%.engine}.json"
+    rebuild_trt_engine "missing or incompatible: $ENGINE_PATH"
+  fi
 else
   echo "[SETUP] TensorRT engine exists: $ENGINE_PATH"
 fi

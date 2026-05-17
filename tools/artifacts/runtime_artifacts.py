@@ -8,6 +8,7 @@ place so setup, download, and verification tools cannot drift apart.
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,10 +16,34 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SourceSpec = str | tuple[str, ...]
 Mapping = tuple[SourceSpec, str]
+_RUNTIME_ENV_CACHE: dict[str, str] | None = None
+
+
+def runtime_env_values() -> dict[str, str]:
+    global _RUNTIME_ENV_CACHE
+    if _RUNTIME_ENV_CACHE is not None:
+        return _RUNTIME_ENV_CACHE
+    values: dict[str, str] = {}
+    env_file = ROOT / ".runtime" / "gui_runtime.env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            try:
+                parts = shlex.split(stripped, comments=True, posix=True)
+            except ValueError:
+                continue
+            if len(parts) != 1 or "=" not in parts[0]:
+                continue
+            key, value = parts[0].split("=", 1)
+            values[key] = value
+    _RUNTIME_ENV_CACHE = values
+    return values
 
 
 def env_dest(name: str, default: str) -> str:
-    return os.environ.get(name, default)
+    return os.environ.get(name) or runtime_env_values().get(name) or default
 
 
 @dataclass(frozen=True)
