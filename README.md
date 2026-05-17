@@ -54,7 +54,7 @@ tools/setup_runtime.sh
 tools/setup_gui_runtime.sh
 ```
 
-生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時には一時的なダミー動画でDINOv3、EVA02、Co-DINOのbatch-size候補を順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はTensorRT engineを作らない構成でも実測batch探索を行いますが、VRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headを候補batchごとにローカルTensorRT engineとして作成し、その後の実測で選ばれたbatch-sizeをprofileへ反映します。
+生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時にはDINOv3、EVA02、Co-DINOのbatch-size候補を本番推論に近い設定で順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。既定では `input/` 配下の最初の動画を240フレームだけ使い、動画が無い場合は一時動画へフォールバックします。`BATCH_BENCHMARK_INPUT=/path/to/sample.mp4` を指定すると任意の実動画サンプルで探索できます。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はTensorRT engineを作らない構成でも実測batch探索を行いますが、VRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headを候補batchごとにローカルTensorRT engineとして作成し、その後の実測で選ばれたbatch-sizeをprofileへ反映します。
 
 別のAtosyori repoを使う場合:
 

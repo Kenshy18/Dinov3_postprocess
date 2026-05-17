@@ -32,6 +32,7 @@ DEFAULT_CODINO_TRT_BACKBONE = DEFAULT_CODINO_TRT_DIR / "codino_dinov3_vitl_backb
 DEFAULT_CODINO_TRT_QUERY_ENCODER = DEFAULT_CODINO_TRT_DIR / "codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
 DEFAULT_CODINO_TRT_DECODER = DEFAULT_CODINO_TRT_DIR / "codino_decoder_b2_736x1280_msda_plugin_fp16.engine"
 DEFAULT_CODINO_TRT_MASK_HEAD = DEFAULT_CODINO_TRT_DIR / "codino_mask_head_core_n1_736x1280_fp16.engine"
+VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 
 
 def run_text(command: list[str]) -> str | None:
@@ -217,6 +218,22 @@ def create_dummy_video(path: Path, *, width: int, height: int, frames: int, fps:
         writer.release()
 
 
+def find_auto_input_video() -> Path | None:
+    seen: set[Path] = set()
+    for root in (ROOT / "input" / "local", ROOT / "input"):
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in VIDEO_EXTS:
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            return resolved
+        seen.add(root.resolve())
+    return None
+
+
 def count_jsonl_lines(output_dir: Path) -> int:
     total = 0
     seen: set[Path] = set()
@@ -335,8 +352,8 @@ def command_for_candidate(
             "--max-frames",
             str(frames),
             "--json-backend",
-            "orjson",
-            "--async-writer",
+            "json",
+            "--no-async-writer",
             "--mask-approx",
             "simple",
             "--compile-backbone",
@@ -410,7 +427,7 @@ def command_for_candidate(
         "--json-backend",
         "orjson",
         "--mask-approx",
-        "simple",
+        "none",
         "--async-writer",
         "--overwrite",
     ]
@@ -517,6 +534,30 @@ def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, pol
     }
 
 
+def should_select_candidate(
+    result: dict[str, Any],
+    selected: dict[str, Any] | None,
+    *,
+    tie_fps_ratio: float,
+) -> tuple[bool, str]:
+    if selected is None:
+        return True, "first_success"
+
+    metric = float(result.get("metric_fps") or 0.0)
+    selected_metric = float(selected.get("metric_fps") or 0.0)
+    batch = int(result.get("batch_size") or 0)
+    selected_batch = int(selected.get("batch_size") or 0)
+    if metric > selected_metric:
+        return True, "higher_metric_fps"
+
+    ratio = max(0.0, float(tie_fps_ratio))
+    if ratio > 0.0 and batch > selected_batch and selected_metric > 0.0:
+        if metric >= selected_metric * (1.0 - ratio):
+            return True, f"larger_batch_within_{ratio:.1%}_metric_fps"
+
+    return False, "lower_metric_fps"
+
+
 def benchmark_detector(
     *,
     detector: str,
@@ -531,10 +572,11 @@ def benchmark_detector(
     poll_sec: float,
     eva02_compile_backbone: str,
     max_vram_fraction: float,
+    tie_fps_ratio: float,
 ) -> dict[str, Any]:
     results = []
     selected: dict[str, Any] | None = None
-    for batch in candidates:
+    for batch in sorted(candidates):
         output_dir = temp_dir / detector / f"batch_{batch}"
         if output_dir.exists():
             shutil.rmtree(output_dir)
@@ -564,9 +606,12 @@ def benchmark_detector(
         result["gpu_memory_within_limit"] = memory_within_limit
         results.append(result)
         if result["success"]:
-            if memory_within_limit and (
-                selected is None or float(result["metric_fps"]) > float(selected["metric_fps"])
-            ):
+            should_select, selection_reason = should_select_candidate(
+                result,
+                selected,
+                tie_fps_ratio=tie_fps_ratio,
+            )
+            if memory_within_limit and should_select:
                 selected = {
                     "batch_size": batch,
                     "metric_fps": float(result["metric_fps"]),
@@ -574,6 +619,7 @@ def benchmark_detector(
                     "wall_fps": float(result["wall_fps"]),
                     "gpu_memory_used_peak_mib": result.get("gpu_memory_used_peak_mib"),
                     "source": "benchmark",
+                    "selection_reason": selection_reason,
                 }
             print(
                 f"[BENCH] ok {detector} batch={batch} metric_fps={float(result['metric_fps']):.4f} "
@@ -607,10 +653,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
     parser.add_argument("--detectors", default=os.environ.get("BATCH_BENCHMARK_DETECTORS", "eva02,dinov3,codino"))
-    parser.add_argument("--frames", type=int, default=int(os.environ.get("BATCH_BENCHMARK_FRAMES", "24")))
+    parser.add_argument("--frames", type=int, default=int(os.environ.get("BATCH_BENCHMARK_FRAMES", "240")))
     parser.add_argument("--width", type=int, default=int(os.environ.get("BATCH_BENCHMARK_WIDTH", "1280")))
     parser.add_argument("--height", type=int, default=int(os.environ.get("BATCH_BENCHMARK_HEIGHT", "720")))
     parser.add_argument("--fps", type=float, default=float(os.environ.get("BATCH_BENCHMARK_FPS", "30")))
+    parser.add_argument(
+        "--input-video",
+        default=os.environ.get("BATCH_BENCHMARK_INPUT", "auto"),
+        help="Representative video path, 'auto' to use the first video under input/, or 'none' to force a synthetic video.",
+    )
     parser.add_argument("--timeout-sec", type=int, default=int(os.environ.get("BATCH_BENCHMARK_TIMEOUT_SEC", "360")))
     parser.add_argument("--poll-sec", type=float, default=0.25)
     parser.add_argument(
@@ -624,7 +675,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codino-candidates", default=os.environ.get("CODINO_BATCH_CANDIDATES", ""))
     parser.add_argument("--classifier-batch-size", type=int, default=int(os.environ.get("EVA02_CLASSIFIER_BATCH_SIZE", "1024")))
     parser.add_argument("--engine", type=Path, default=Path(os.environ.get("DINOV3_TRT_BACKBONE_ENGINE", DEFAULT_TRT_ENGINE)))
-    parser.add_argument("--eva02-compile-backbone", default=os.environ.get("EVA02_BENCHMARK_COMPILE_BACKBONE", "none"))
+    parser.add_argument(
+        "--eva02-compile-backbone",
+        default=os.environ.get("EVA02_BENCHMARK_COMPILE_BACKBONE", "max-autotune"),
+    )
+    parser.add_argument(
+        "--tie-fps-ratio",
+        type=float,
+        default=float(os.environ.get("BATCH_BENCHMARK_TIE_FPS_RATIO", "0.03")),
+        help="Prefer a larger batch when its metric FPS is within this fraction of the current best.",
+    )
     parser.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=True)
     return parser
 
@@ -637,6 +697,27 @@ def main() -> int:
     output = args.output.expanduser().resolve()
     work_dir = args.work_dir.expanduser().resolve()
     engine = args.engine.expanduser().resolve()
+    raw_input_video = "" if args.input_video is None else str(args.input_video).strip()
+    input_video: Path | None
+    input_mode = raw_input_video or "none"
+    if raw_input_video.lower() == "auto":
+        input_video = find_auto_input_video()
+        input_mode = "auto"
+        if input_video is not None:
+            print(f"[BENCH] auto input video: {input_video}", flush=True)
+    elif raw_input_video.lower() in {"", "none", "dummy", "synthetic"}:
+        input_video = None
+        input_mode = "synthetic"
+    else:
+        input_video = Path(raw_input_video).expanduser()
+        if not input_video.is_absolute():
+            input_video = ROOT / input_video
+        input_video = input_video.resolve()
+        input_mode = "explicit"
+        if not input_video.is_file():
+            print(f"[BENCH] input video not found, using synthetic dummy video: {input_video}", file=sys.stderr)
+            input_video = None
+            input_mode = "synthetic_missing_input"
     detectors = [item.strip().lower() for item in args.detectors.split(",") if item.strip()]
     detectors = [item for item in detectors if item in {"eva02", "dinov3", "codino"}]
     if not detectors:
@@ -657,10 +738,13 @@ def main() -> int:
             "width": int(args.width),
             "height": int(args.height),
             "fps": float(args.fps),
+            "input_mode": input_mode,
+            "input_video": None if input_video is None else str(input_video),
             "timeout_sec": int(args.timeout_sec),
             "cleanup": bool(args.cleanup),
             "eva02_compile_backbone": str(args.eva02_compile_backbone),
             "max_vram_fraction": float(args.max_vram_fraction),
+            "tie_fps_ratio": float(args.tie_fps_ratio),
         },
         "gpu": {
             "torch": torch_info,
@@ -677,8 +761,12 @@ def main() -> int:
     }
 
     try:
-        create_dummy_video(dummy_video, width=int(args.width), height=int(args.height), frames=int(args.frames), fps=float(args.fps))
-        result["dummy_video"]["created"] = True
+        if input_video is None:
+            create_dummy_video(dummy_video, width=int(args.width), height=int(args.height), frames=int(args.frames), fps=float(args.fps))
+            result["dummy_video"]["created"] = True
+            benchmark_video = dummy_video
+        else:
+            benchmark_video = input_video
         for detector in detectors:
             explicit_raw = {
                 "eva02": args.eva02_candidates,
@@ -691,7 +779,7 @@ def main() -> int:
                 detector=detector,
                 candidates=candidates,
                 python=python,
-                input_video=dummy_video,
+                input_video=benchmark_video,
                 temp_dir=temp_dir,
                 frames=int(args.frames),
                 engine=engine,
@@ -700,6 +788,7 @@ def main() -> int:
                 poll_sec=float(args.poll_sec),
                 eva02_compile_backbone=str(args.eva02_compile_backbone),
                 max_vram_fraction=float(args.max_vram_fraction),
+                tie_fps_ratio=float(args.tie_fps_ratio),
             )
             result["detectors"][detector] = detector_result
             if detector_result.get("selected"):
