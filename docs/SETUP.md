@@ -82,8 +82,11 @@ The setup script performs:
 - local `input/` and `output/` directory creation
 - artifact verification under `checkpoints/`
 - optional artifact download when `DOWNLOAD_ARTIFACTS=1`
-- venv creation
+- Python 3.10/3.11 venv creation
+- local GPU/Python/PyTorch/CUDA/nvcc/gcc diagnostics
+- CUDA-capable PyTorch installation when the selected runtime cannot import one
 - dependency installation
+- Co-DINO/MMCV setup with working `mmcv.ops` verification
 - UI dependency installation
 - bundled Detectron2/EVA02 extension build when needed
 - DINOv3 TensorRT engine build when missing or when `REBUILD_TRT=1`
@@ -106,6 +109,11 @@ Useful options:
 ENV_DIR=/path/to/venv tools/setup_runtime.sh
 BASE_PYTHON=/path/to/python3.10 tools/setup_runtime.sh
 REFERENCE_VENV=/path/to/known-good-venv tools/setup_runtime.sh
+INSTALL_TORCH=0 tools/setup_runtime.sh
+TORCH_PIP_SPEC="torch==2.1.2" TORCHVISION_PIP_SPEC="torchvision==0.16.2" TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121 tools/setup_runtime.sh
+MMCV_FULL_WHEEL=/path/to/mmcv_full-1.7.2-cp310-cp310-manylinux1_x86_64.whl tools/setup_runtime.sh
+REPIN_TORCH_FOR_MMCV=0 tools/setup_runtime.sh
+ALLOW_MMCV_SOURCE_BUILD=1 tools/setup_runtime.sh
 RUN_DINO_SMOKE=0 tools/setup_runtime.sh
 BUILD_DETECTRON2=1 tools/setup_runtime.sh
 TRT_PRECISION=fp16 tools/setup_runtime.sh
@@ -116,7 +124,20 @@ CODINO_TRT_BATCH_SIZE=1 tools/setup_runtime.sh
 
 `BUILD_DETECTRON2=auto` is the default. It builds the bundled Detectron2/EVA02 extension only when `eva02/eva02_det/detectron2/_C*.so` is missing.
 
-For Blackwell GPUs, use a PyTorch/CUDA build that supports the GPU architecture. On this machine the known-good runtime is the existing EVA02 inference venv, which can be passed through `REFERENCE_VENV`.
+The setup script intentionally refuses Python 3.12+ for the default Co-DINO path because `mmcv-full 1.x` wheels are not a reliable target there. Use Python 3.10 first, or Python 3.11 if matching wheels are available on the target PC.
+
+For Ada and older GPUs, the auto PyTorch fallback uses `torch==2.1.2`, `torchvision==0.16.2`, and the CUDA 12.1 PyTorch wheel index. This combination has OpenMMLab `mmcv-full==1.7.2` wheels and is the most portable path for Co-DINO. For Blackwell GPUs, use a PyTorch/CUDA build that supports the GPU architecture. The setup fallback uses PyTorch nightly CUDA 12.9 when no CUDA-capable torch can be imported, but a known-good runtime can still be passed through `REFERENCE_VENV`.
+
+If an Ada or older PC already has a CUDA-capable but too-new PyTorch inside the project venv, `REPIN_TORCH_FOR_MMCV=auto` allows setup to move that venv back to the portable PyTorch 2.1/CUDA 12.1 stack after the first mmcv wheel attempt fails. Set `REPIN_TORCH_FOR_MMCV=0` to keep the existing torch and require a matching `MMCV_FULL_WHEEL` or source build.
+
+Co-DINO requires `mmcv-full==1.7.2` with CUDA ops. Setup now tries, in order:
+
+1. existing `mmcv.ops.multi_scale_deform_attn` import
+2. `MMCV_FULL_WHEEL` if provided
+3. wheel-only install from `MMCV_FIND_LINKS` and auto OpenMMLab links such as `https://download.openmmlab.com/mmcv/dist/cu121/torch2.1/index.html`
+4. source build only when `ALLOW_MMCV_SOURCE_BUILD=1` or `auto` with `nvcc` available
+
+If source build is not possible, setup exits with the detected Python/PyTorch/CUDA combination and the wheel links it tried instead of failing deep inside `pip`.
 
 TensorRT engines are not portable across GPU/driver/TensorRT combinations. The
 DINOv3 backbone engine is dynamic up to batch 8. Co-DINO creates fixed-batch

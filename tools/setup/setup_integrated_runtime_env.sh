@@ -54,6 +54,9 @@ DINOV3_BATCH_CANDIDATES="${DINOV3_BATCH_CANDIDATES:-auto}"
 DINOV3_BATCH_MAX="${DINOV3_BATCH_MAX:-8}"
 EVA02_BATCH_CANDIDATES="${EVA02_BATCH_CANDIDATES:-auto}"
 EVA02_BATCH_MAX="${EVA02_BATCH_MAX:-8}"
+INSTALL_TORCH="${INSTALL_TORCH:-auto}"
+MMCV_FULL_VERSION="${MMCV_FULL_VERSION:-1.7.2}"
+ALLOW_MMCV_SOURCE_BUILD="${ALLOW_MMCV_SOURCE_BUILD:-auto}"
 
 case "$ENGINE_PATH" in
   /*) ;;
@@ -71,7 +74,7 @@ esac
 python_works() {
   local candidate="$1"
   [[ -n "$candidate" && -x "$candidate" ]] || return 1
-  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
+  "$candidate" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info < (3, 12) else 1)' >/dev/null 2>&1
 }
 
 if [[ -z "${REFERENCE_VENV:-}" ]]; then
@@ -92,6 +95,7 @@ if [[ -z "$BASE_PYTHON" ]]; then
     for candidate in \
       "$ROOT_DIR/.venv_integrated/bin/python" \
       "$(command -v python3.10 2>/dev/null || true)" \
+      "$(command -v python3.11 2>/dev/null || true)" \
       "$(command -v python3 2>/dev/null || true)" \
       /usr/bin/python3; do
       if python_works "$candidate"; then
@@ -103,7 +107,7 @@ if [[ -z "$BASE_PYTHON" ]]; then
 fi
 
 if ! python_works "$BASE_PYTHON"; then
-  echo "[ERROR] no working Python >= 3.10 found. Set BASE_PYTHON=/path/to/python." >&2
+  echo "[ERROR] no working Python 3.10/3.11 found. Set BASE_PYTHON=/path/to/python3.10." >&2
   exit 2
 fi
 
@@ -121,6 +125,44 @@ if [[ ! -d "$ENV_DIR" ]]; then
 fi
 
 PY="$ENV_DIR/bin/python"
+SITE_DIR="$("$PY" - <<'PY'
+import site
+print(site.getsitepackages()[0])
+PY
+)"
+
+if [[ -n "${REFERENCE_VENV:-}" && -x "$REFERENCE_VENV/bin/python" ]]; then
+  REF_SITES="$("$REFERENCE_VENV/bin/python" - <<'PY'
+import sys
+from pathlib import Path
+
+seen = []
+for raw in sys.path:
+    path = Path(raw)
+    if "site-packages" not in raw or not path.is_dir():
+        continue
+    text = str(path)
+    if text not in seen:
+        seen.append(text)
+print("\n".join(seen))
+PY
+)"
+  if [[ -n "$REF_SITES" ]]; then
+    : > "$SITE_DIR/_dinov3_reference_runtime.pth"
+    while IFS= read -r ref_site; do
+      if [[ -n "$ref_site" && -d "$ref_site" && "$ref_site" != "$SITE_DIR" ]]; then
+        echo "$ref_site" >> "$SITE_DIR/_dinov3_reference_runtime.pth"
+      fi
+    done <<< "$REF_SITES"
+    echo "[SETUP] reference site-packages:"
+    sed 's/^/[SETUP]   /' "$SITE_DIR/_dinov3_reference_runtime.pth"
+  fi
+else
+  echo "[SETUP] reference venv not found; using BASE_PYTHON/system packages only"
+fi
+
+"$PY" "$ROOT_DIR/tools/setup/ensure_runtime_dependencies.py" diagnose
+"$PY" "$ROOT_DIR/tools/setup/ensure_runtime_dependencies.py" torch
 
 if [[ "$DOWNLOAD_ARTIFACTS" == "1" ]]; then
   "$PY" -m pip install -q gdown
@@ -184,21 +226,12 @@ if [[ "$SETUP_CODINO_DEPS" == "1" ]]; then
     fvcore \
     tensorboard \
     einops
-  if ! "$PY" - <<'PY'
-import importlib
-import sys
-
-try:
-    import mmcv  # noqa: F401
-    from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttnFunction  # noqa: F401
-except Exception as exc:
-    print(repr(exc), file=sys.stderr)
-    raise SystemExit(1)
+  "$PY" "$ROOT_DIR/tools/setup/ensure_runtime_dependencies.py" mmcv
+  echo "$ROOT_DIR/external/codino" > "$SITE_DIR/_codino_source.pth"
+  "$PY" - <<'PY'
+import mmdet
+print(f"[CHECK] mmdet={mmdet.__version__}")
 PY
-  then
-    "$PY" -m mim install "mmcv-full>=1.7.0,<1.8.0"
-  fi
-  "$PY" -m pip install -q -e "$ROOT_DIR/external/codino" --no-deps
 fi
 
 if [[ "$BUILD_DETECTRON2" == "1" ]] || { [[ "$BUILD_DETECTRON2" == "auto" ]] && ! ls "$ROOT_DIR/eva02/eva02_det/detectron2"/_C*.so >/dev/null 2>&1; }; then
@@ -409,6 +442,7 @@ CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
 CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
 CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DECODER_ENGINE" \
 CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
+CODINO_TRT_BATCH_SIZE="$CODINO_TRT_BATCH_SIZE" \
 CODINO_TRT_MANIFEST="$CODINO_TRT_MANIFEST" \
 DINOV3_BATCH_BENCHMARK="$BATCH_BENCHMARK_OUTPUT" \
   "$PY" "$ROOT_DIR/tools/setup/configure_runtime_profile.py" \

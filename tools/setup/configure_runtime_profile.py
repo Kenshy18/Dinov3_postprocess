@@ -26,6 +26,29 @@ def env_path(name: str, default: Path) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def env_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def codino_engine_env_is_set() -> bool:
+    return any(
+        os.environ.get(name)
+        for name in (
+            "CODINO_TRT_BACKBONE_ENGINE",
+            "CODINO_TRT_QUERY_ENCODER_ENGINE",
+            "CODINO_TRT_DECODER_ENGINE",
+            "CODINO_TRT_MASK_HEAD_ENGINE",
+        )
+    )
+
+
 DEFAULT_TRT_ENGINE = env_path(
     "DINOV3_TRT_BACKBONE_ENGINE",
     ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
@@ -178,10 +201,14 @@ def codino_trt_paths(batch: int | None = None) -> dict[str, str]:
         "trt_decoder_engine": str(DEFAULT_CODINO_TRT_DECODER),
         "trt_mask_head_engine": str(DEFAULT_CODINO_TRT_MASK_HEAD),
     }
-    if batch is not None and batch > 0:
+    if batch is not None and batch > 0 and not codino_engine_env_is_set():
         paths.update(_codino_default_paths_for_batch(batch))
     manifest = load_codino_trt_manifest()
-    engines = manifest.get("engines", {}) if batch is None and isinstance(manifest, dict) else {}
+    engines = (
+        manifest.get("engines", {})
+        if batch is None and not codino_engine_env_is_set() and isinstance(manifest, dict)
+        else {}
+    )
     if isinstance(engines, dict):
         mapping = {
             "backbone": "trt_backbone_engine",
@@ -265,7 +292,9 @@ def recommendations(
             benchmark_codino_batch = int(selected_codino.get("batch_size"))
         except Exception:
             benchmark_codino_batch = None
-    trt_paths = codino_trt_paths(benchmark_codino_batch)
+    env_codino_batch = env_int("CODINO_TRT_BATCH_SIZE")
+    selected_codino_batch = benchmark_codino_batch or env_codino_batch or codino_manifest_batch() or codino_batch
+    trt_paths = codino_trt_paths(selected_codino_batch)
     codino_trt_engines = tuple(Path(value) for value in trt_paths.values())
     if not all(path.is_file() for path in codino_trt_engines):
         notes.append("One or more Co-DINO TensorRT engines are missing under checkpoints/codino/trt.")
@@ -285,7 +314,7 @@ def recommendations(
             "classifier_batch_size": classifier_batch,
         },
         "codino": {
-            "batch_size": benchmark_codino_batch or codino_manifest_batch() or codino_batch,
+            "batch_size": selected_codino_batch,
             "warmup_frames": 0,
             "target_size": "1280x720",
             "score_thresh": 0.3,

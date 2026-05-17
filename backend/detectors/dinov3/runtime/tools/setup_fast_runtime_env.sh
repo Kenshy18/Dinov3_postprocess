@@ -31,7 +31,7 @@ TENSORRT_PIP_SPEC="${TENSORRT_PIP_SPEC:-tensorrt==10.13.0.35}"
 python_works() {
   local candidate="$1"
   [[ -n "$candidate" && -x "$candidate" ]] || return 1
-  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
+  "$candidate" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info < (3, 12) else 1)' >/dev/null 2>&1
 }
 
 if [[ -z "$BASE_PYTHON" ]]; then
@@ -41,6 +41,7 @@ if [[ -z "$BASE_PYTHON" ]]; then
     for candidate in \
       "$REPO_ROOT/.venv_integrated/bin/python" \
       "$(command -v python3.10 2>/dev/null || true)" \
+      "$(command -v python3.11 2>/dev/null || true)" \
       "$(command -v python3 2>/dev/null || true)" \
       /usr/bin/python3; do
       if python_works "$candidate"; then
@@ -52,7 +53,7 @@ if [[ -z "$BASE_PYTHON" ]]; then
 fi
 
 if ! python_works "$BASE_PYTHON"; then
-  echo "[ERROR] no working Python >= 3.10 found. Set BASE_PYTHON=/path/to/python." >&2
+  echo "[ERROR] no working Python 3.10/3.11 found. Set BASE_PYTHON=/path/to/python3.10." >&2
   exit 2
 fi
 
@@ -71,10 +72,32 @@ print(site.getsitepackages()[0])
 PY
 )"
 
-if [[ -n "${REFERENCE_VENV:-}" && -d "$REFERENCE_VENV/lib/python3.10/site-packages" ]]; then
-  REF_SITE="$(cd "$REFERENCE_VENV/lib/python3.10/site-packages" && pwd)"
-  echo "$REF_SITE" > "$SITE_DIR/_dinov3_reference_runtime.pth"
-  echo "[SETUP] reference site-packages: $REF_SITE"
+if [[ -n "${REFERENCE_VENV:-}" && -x "$REFERENCE_VENV/bin/python" ]]; then
+  REF_SITES="$("$REFERENCE_VENV/bin/python" - <<'PY'
+import sys
+from pathlib import Path
+
+seen = []
+for raw in sys.path:
+    path = Path(raw)
+    if "site-packages" not in raw or not path.is_dir():
+        continue
+    text = str(path)
+    if text not in seen:
+        seen.append(text)
+print("\n".join(seen))
+PY
+)"
+  if [[ -n "$REF_SITES" ]]; then
+    : > "$SITE_DIR/_dinov3_reference_runtime.pth"
+    while IFS= read -r ref_site; do
+      if [[ -n "$ref_site" && -d "$ref_site" && "$ref_site" != "$SITE_DIR" ]]; then
+        echo "$ref_site" >> "$SITE_DIR/_dinov3_reference_runtime.pth"
+      fi
+    done <<< "$REF_SITES"
+    echo "[SETUP] reference site-packages:"
+    sed 's/^/[SETUP]   /' "$SITE_DIR/_dinov3_reference_runtime.pth"
+  fi
 else
   echo "[SETUP] reference venv not found; using BASE_PYTHON/system packages only"
 fi
