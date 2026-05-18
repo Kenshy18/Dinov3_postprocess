@@ -178,9 +178,14 @@ def _path_or_none(value: object) -> Path | None:
 
 def audit_run_dir(run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.expanduser().resolve()
-    summary_path = run_dir / "summary.json"
-    if not summary_path.is_file():
-        raise FileNotFoundError(summary_path)
+    final_summary_path = run_dir / "最終成果物.json"
+    final_summary = load_json(final_summary_path) if final_summary_path.is_file() else {}
+    summary_candidates = [run_dir / "summary.json", run_dir / "logs" / "pipeline_summary.json"]
+    if isinstance(final_summary, dict) and final_summary.get("pipeline_summary"):
+        summary_candidates.insert(1, Path(str(final_summary["pipeline_summary"])))
+    summary_path = next((path for path in summary_candidates if path.is_file()), None)
+    if summary_path is None:
+        raise FileNotFoundError(run_dir / "summary.json")
     summary = load_json(summary_path)
     artifacts = summary.get("artifacts", {})
     if not isinstance(artifacts, dict):
@@ -188,9 +193,6 @@ def audit_run_dir(run_dir: Path) -> dict[str, Any]:
     postprocess = summary.get("postprocess") or {}
     if not isinstance(postprocess, dict):
         postprocess = {}
-
-    final_summary_path = run_dir / "最終成果物.json"
-    final_summary = load_json(final_summary_path) if final_summary_path.is_file() else {}
 
     detector_jsonl = _path_or_none(artifacts.get("detector_jsonl") or artifacts.get("dinov3_jsonl")) or Path("")
     raw_summary_obj = summary.get("raw_sqlite") or {}
@@ -215,16 +217,20 @@ def audit_run_dir(run_dir: Path) -> dict[str, Any]:
     if not isinstance(overlay_outputs, dict):
         overlay_outputs = {}
 
-    output_audit = build_output_audit(
-        detector_jsonl=detector_jsonl,
-        raw_detector_sqlite=raw_detector_sqlite,
-        tracked_sqlite=tracked_sqlite,
-        head_face_sqlite=head_face_sqlite,
-        combined_final_sqlite=combined_final_sqlite,
-        sqlite_outputs={str(key): str(value) for key, value in sqlite_outputs.items()},
-        overlay_outputs={str(key): str(value) for key, value in overlay_outputs.items()},
-        pipeline_summary=summary,
-    )
+    cached_output_audit = final_summary.get("output_audit") if isinstance(final_summary, dict) else None
+    if isinstance(cached_output_audit, dict) and not detector_jsonl.is_file():
+        output_audit = cached_output_audit
+    else:
+        output_audit = build_output_audit(
+            detector_jsonl=detector_jsonl,
+            raw_detector_sqlite=raw_detector_sqlite,
+            tracked_sqlite=tracked_sqlite,
+            head_face_sqlite=head_face_sqlite,
+            combined_final_sqlite=combined_final_sqlite,
+            sqlite_outputs={str(key): str(value) for key, value in sqlite_outputs.items()},
+            overlay_outputs={str(key): str(value) for key, value in overlay_outputs.items()},
+            pipeline_summary=summary,
+        )
     return {
         "run_dir": str(run_dir),
         "summary": str(summary_path),

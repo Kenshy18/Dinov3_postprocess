@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--encoder", choices=("nvenc", "cpu"), default="nvenc")
     parser.add_argument("--raw-sqlite-output", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--post-sqlite-output", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--keep-debug-outputs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Keep detector JSONL, postprocess working files, and other internal debug artifacts after a successful job.",
+    )
     parser.add_argument("--keep-normalized-input", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("pipeline_command", nargs=argparse.REMAINDER)
@@ -528,6 +534,127 @@ def link_or_copy(src: Path, dst: Path) -> Path:
         else:
             shutil.copy2(src, dst)
     return dst
+
+
+def copy_output_file(src: Path, dst: Path) -> Path:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        try:
+            if src.resolve(strict=True) == dst.resolve(strict=True):
+                return dst
+        except OSError:
+            pass
+        remove_existing(dst)
+    shutil.copy2(src, dst)
+    return dst
+
+
+def quote_sql_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def sqlite_table_names(conn: sqlite3.Connection, *, schema: str = "main") -> set[str]:
+    schema_sql = quote_sql_identifier(schema)
+    return {
+        str(row[0])
+        for row in conn.execute(f"select name from {schema_sql}.sqlite_master where type='table'")
+    }
+
+
+def sqlite_column_names(conn: sqlite3.Connection, table: str, *, schema: str = "main") -> list[str]:
+    schema_sql = quote_sql_identifier(schema)
+    table_sql = quote_sql_identifier(table)
+    return [str(row[1]) for row in conn.execute(f"pragma {schema_sql}.table_info({table_sql})")]
+
+
+def copy_or_merge_prediction_sqlites(prediction_items: list[tuple[str, Path]], dst: Path) -> Path | None:
+    """Write one user-facing final postprocess SQLite regardless of keyframe interval.
+
+    The postprocess engine can emit one predictions.sqlite per keyframe interval
+    group.  Those intervals are implementation details; the final artifact must
+    remain the dense per-frame mask SQLite consumed by overlays and Studio.
+    """
+
+    if not prediction_items:
+        return None
+    if len(prediction_items) == 1:
+        return copy_output_file(prediction_items[0][1], dst)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    copy_output_file(prediction_items[0][1], dst)
+    conn = sqlite3.connect(str(dst))
+    try:
+        destination_tables = sqlite_table_names(conn)
+        for index, (_label, src_path) in enumerate(prediction_items[1:], start=1):
+            alias = f"src_{index}"
+            alias_sql = quote_sql_identifier(alias)
+            conn.execute(f"ATTACH DATABASE ? AS {alias_sql}", (str(src_path),))
+            try:
+                source_tables = sqlite_table_names(conn, schema=alias)
+                for table in ("tracks", "masks", "cuts"):
+                    if table not in destination_tables or table not in source_tables:
+                        continue
+                    destination_columns = sqlite_column_names(conn, table)
+                    source_columns = set(sqlite_column_names(conn, table, schema=alias))
+                    common_columns = [name for name in destination_columns if name in source_columns]
+                    if not common_columns:
+                        continue
+                    columns_sql = ", ".join(quote_sql_identifier(name) for name in common_columns)
+                    table_sql = quote_sql_identifier(table)
+                    conn.execute(
+                        f"""
+                        INSERT OR REPLACE INTO main.{table_sql}({columns_sql})
+                        SELECT {columns_sql}
+                        FROM {alias_sql}.{table_sql}
+                        """
+                    )
+                conn.commit()
+            finally:
+                conn.execute(f"DETACH DATABASE {alias_sql}")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return dst
+
+
+def cleanup_success_debug_outputs(
+    run_dir: Path,
+    *,
+    keep_normalized_input: bool,
+    normalized_input_retained: bool,
+    audit_path: Path,
+) -> list[str]:
+    removed: list[str] = []
+    debug_dirs = [
+        "dinov3",
+        "eva02",
+        "codino",
+        "head_face",
+        "postprocess",
+        "postprocessed",
+        "jsonl",
+        "sqlite",
+        "config",
+        "sod_job_dir",
+    ]
+    for name in debug_dirs:
+        if name == "sod_job_dir" and keep_normalized_input and normalized_input_retained:
+            continue
+        path = run_dir / name
+        if path.exists() or path.is_symlink():
+            remove_existing(path)
+            removed.append(name)
+
+    for name in ("summary.json", "infer_summary.json", "postprocess_summary.json", "index.json", "batch_summary.json"):
+        path = run_dir / name
+        if path.exists() or path.is_symlink():
+            remove_existing(path)
+            removed.append(name)
+
+    write_audit(audit_path, "debug_outputs_removed", removed=removed)
+    return removed
 
 
 def parse_polygons(value: object) -> list[np.ndarray]:
@@ -1118,6 +1245,7 @@ def organize_outputs(
     frame_limit: int | None,
     raw_sqlite_output: bool = True,
     post_sqlite_output: bool = True,
+    keep_debug_outputs: bool = False,
 ) -> None:
     summary_path = run_dir / "summary.json"
     if not summary_path.exists():
@@ -1126,7 +1254,6 @@ def organize_outputs(
     artifacts = summary.get("artifacts", {})
     postprocess = summary.get("postprocess") or {}
 
-    job_dir = run_dir / "sod_job_dir"
     layout = {
         "integrated_overlay": run_dir / "統合マスクオーバーレイ",
         "detailed_overlay": run_dir / "詳細オーバーレイ",
@@ -1134,77 +1261,104 @@ def organize_outputs(
         "head_face_overlay": run_dir / "顔頭生出力オーバーレイ",
         "final_sqlite": run_dir / "最終SQLite",
         "raw_sqlite": run_dir / "推論生SQLite",
-        "jsonl": run_dir / "jsonl",
         "logs": run_dir / "logs",
     }
-    for path in layout.values():
-        path.mkdir(parents=True, exist_ok=True)
-    job_dir.mkdir(parents=True, exist_ok=True)
+    layout["logs"].mkdir(parents=True, exist_ok=True)
+    pipeline_summary_log = layout["logs"] / "pipeline_summary.json"
+    pipeline_summary_log.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     detector_jsonl = Path(str(artifacts.get("detector_jsonl") or artifacts.get("dinov3_jsonl") or ""))
-    if detector_jsonl.exists():
-        link_or_copy(detector_jsonl, layout["jsonl"] / detector_jsonl.name)
-    detector_summary = Path(str(artifacts.get("detector_summary") or artifacts.get("dinov3_summary") or ""))
-    if detector_summary.exists():
-        link_or_copy(detector_summary, layout["jsonl"] / f"{detector_summary.parent.name}_summary.json")
-
-    if (run_dir / "postprocess").exists():
-        link_or_copy(run_dir / "postprocess", run_dir / "postprocessed")
 
     tracked_sqlite_raw = postprocess.get("tracked_sqlite") or postprocess.get("tracked_sqlite_link")
-    tracked_sqlite = Path(str(tracked_sqlite_raw)) if tracked_sqlite_raw else None
+    tracked_sqlite_source = Path(str(tracked_sqlite_raw)) if tracked_sqlite_raw else None
     raw_sqlite_summary = summary.get("raw_sqlite") or {}
     detector_raw_sqlite_raw = artifacts.get("raw_sqlite") or raw_sqlite_summary.get("path")
-    detector_raw_sqlite = Path(str(detector_raw_sqlite_raw)) if detector_raw_sqlite_raw else None
+    detector_raw_sqlite_source = Path(str(detector_raw_sqlite_raw)) if detector_raw_sqlite_raw else None
     head_face_summary = summary.get("head_face") or {}
     head_face_sqlite_raw = artifacts.get("head_face_sqlite") or (
         head_face_summary.get("path") if isinstance(head_face_summary, dict) else None
     )
-    head_face_sqlite = Path(str(head_face_sqlite_raw)) if head_face_sqlite_raw else None
+    head_face_sqlite_source = Path(str(head_face_sqlite_raw)) if head_face_sqlite_raw else None
     combined_summary = summary.get("combined_final_sqlite") or {}
     combined_final_sqlite_raw = artifacts.get("combined_final_sqlite") or (
         combined_summary.get("path") if isinstance(combined_summary, dict) else None
     )
-    combined_final_sqlite = Path(str(combined_final_sqlite_raw)) if combined_final_sqlite_raw else None
-    if raw_sqlite_output and detector_raw_sqlite is not None and detector_raw_sqlite.exists():
-        link_or_copy(detector_raw_sqlite, layout["raw_sqlite"] / detector_raw_sqlite.name)
-    if raw_sqlite_output and tracked_sqlite is not None and tracked_sqlite.exists():
-        link_or_copy(tracked_sqlite, layout["raw_sqlite"] / tracked_sqlite.name)
-    if head_face_sqlite is not None and head_face_sqlite.exists():
-        head_face_sqlite = link_or_copy(head_face_sqlite, layout["raw_sqlite"] / head_face_sqlite.name)
+    combined_final_sqlite_source = Path(str(combined_final_sqlite_raw)) if combined_final_sqlite_raw else None
+
+    detector_raw_sqlite_output: Path | None = None
+    tracked_sqlite_output: Path | None = None
+    head_face_sqlite_output: Path | None = None
+    combined_final_sqlite_output: Path | None = None
+    preserve_head_face_sqlite = bool(summary.get("head_face_only")) or combined_final_sqlite_source is None
+    if raw_sqlite_output and detector_raw_sqlite_source is not None and detector_raw_sqlite_source.exists():
+        detector_raw_sqlite_output = copy_output_file(
+            detector_raw_sqlite_source,
+            layout["raw_sqlite"] / detector_raw_sqlite_source.name,
+        )
+    if raw_sqlite_output and tracked_sqlite_source is not None and tracked_sqlite_source.exists():
+        tracked_sqlite_output = copy_output_file(
+            tracked_sqlite_source,
+            layout["raw_sqlite"] / tracked_sqlite_source.name,
+        )
+    if preserve_head_face_sqlite and head_face_sqlite_source is not None and head_face_sqlite_source.exists():
+        head_face_sqlite_output = copy_output_file(
+            head_face_sqlite_source,
+            layout["raw_sqlite"] / head_face_sqlite_source.name,
+        )
 
     prediction_links = postprocess.get("prediction_sqlite_links") or {}
     overlay_outputs: dict[str, str] = {}
     sqlite_outputs: dict[str, str] = {}
+    prediction_items: list[tuple[str, Path]] = []
     if isinstance(prediction_links, dict):
         for label, value in sorted(prediction_links.items()):
             pred_sqlite = Path(str(value))
             if not pred_sqlite.exists():
                 continue
-            if post_sqlite_output:
-                final_sqlite = link_or_copy(pred_sqlite, layout["final_sqlite"] / f"{label}_predictions.sqlite")
-                sqlite_outputs[str(label)] = str(final_sqlite)
-            overlay_modes = ["detailed", "simple"] if overlay_mode == "both" else [overlay_mode]
-            for mode in overlay_modes:
-                if mode not in {"detailed", "simple"}:
-                    continue
-                folder = layout["detailed_overlay"] if mode == "detailed" else layout["integrated_overlay"]
-                output_video = folder / f"{label}_{mode}.mp4"
-                render_sqlite_overlay(
-                    processed_input,
-                    tracked_sqlite,
-                    pred_sqlite,
-                    output_video,
-                    mode=mode,
-                    encoder=encoder,
-                    frame_limit=frame_limit,
-                    head_face_sqlite=head_face_sqlite,
-                )
-                overlay_outputs[f"{label}_{mode}"] = str(output_video)
+            prediction_items.append((str(label), pred_sqlite))
 
-    if post_sqlite_output and combined_final_sqlite is not None and combined_final_sqlite.exists():
-        final_sqlite = link_or_copy(combined_final_sqlite, layout["final_sqlite"] / combined_final_sqlite.name)
-        combined_final_sqlite = final_sqlite
+    final_post_sqlite: Path | None = None
+    if prediction_items:
+        if post_sqlite_output:
+            final_post_sqlite = copy_or_merge_prediction_sqlites(
+                prediction_items,
+                layout["final_sqlite"] / "AI後処理最終.sqlite",
+            )
+            if final_post_sqlite is not None:
+                sqlite_outputs["postprocess_final"] = str(final_post_sqlite)
+        elif len(prediction_items) == 1:
+            final_post_sqlite = prediction_items[0][1]
+        else:
+            final_post_sqlite = copy_or_merge_prediction_sqlites(
+                prediction_items,
+                run_dir / "sqlite" / f"{processed_input.stem}_postprocess_final.sqlite",
+            )
+
+    if final_post_sqlite is not None:
+        overlay_modes = ["detailed", "simple"] if overlay_mode == "both" else [overlay_mode]
+        for mode in overlay_modes:
+            if mode not in {"detailed", "simple"}:
+                continue
+            folder = layout["detailed_overlay"] if mode == "detailed" else layout["integrated_overlay"]
+            output_video = folder / f"AI後処理最終_{mode}.mp4"
+            render_sqlite_overlay(
+                processed_input,
+                tracked_sqlite_source,
+                final_post_sqlite,
+                output_video,
+                mode=mode,
+                encoder=encoder,
+                frame_limit=frame_limit,
+                head_face_sqlite=head_face_sqlite_source,
+            )
+            overlay_outputs[f"postprocess_final_{mode}"] = str(output_video)
+
+    if post_sqlite_output and combined_final_sqlite_source is not None and combined_final_sqlite_source.exists():
+        final_sqlite = copy_output_file(
+            combined_final_sqlite_source,
+            layout["final_sqlite"] / "AI後処理_顔頭統合最終.sqlite",
+        )
+        combined_final_sqlite_output = final_sqlite
         sqlite_outputs["combined_final"] = str(final_sqlite)
 
     if raw_overlay and detector_jsonl.exists():
@@ -1212,15 +1366,54 @@ def organize_outputs(
         render_raw_overlay(processed_input, detector_jsonl, output_video, encoder=encoder, frame_limit=frame_limit)
         overlay_outputs["ai_raw_mask"] = str(output_video)
 
-    if head_face_overlay and head_face_sqlite is not None and head_face_sqlite.exists():
+    if head_face_overlay and head_face_sqlite_source is not None and head_face_sqlite_source.exists():
         output_video = layout["head_face_overlay"] / f"{processed_input.stem}_head_face_raw.mp4"
-        render_head_face_overlay(processed_input, head_face_sqlite, output_video, encoder=encoder, frame_limit=frame_limit)
+        render_head_face_overlay(processed_input, head_face_sqlite_source, output_video, encoder=encoder, frame_limit=frame_limit)
         overlay_outputs["head_face_raw"] = str(output_video)
 
     normalized_input_removed = False
     if normalized and not keep_normalized_input and processed_input.exists():
         processed_input.unlink()
         normalized_input_removed = True
+
+    output_audit = build_output_audit(
+        detector_jsonl=detector_jsonl,
+        raw_detector_sqlite=detector_raw_sqlite_output,
+        tracked_sqlite=tracked_sqlite_output,
+        head_face_sqlite=(
+            head_face_sqlite_output
+            if head_face_sqlite_output is not None
+            else (head_face_sqlite_source if head_face_sqlite_source and head_face_sqlite_source.exists() else None)
+        ),
+        combined_final_sqlite=combined_final_sqlite_output,
+        sqlite_outputs=sqlite_outputs,
+        overlay_outputs=overlay_outputs,
+        pipeline_summary=summary,
+    )
+    removed_debug_outputs: list[str] = []
+    if not keep_debug_outputs:
+        removed_debug_outputs = cleanup_success_debug_outputs(
+            run_dir,
+            keep_normalized_input=keep_normalized_input,
+            normalized_input_retained=bool(normalized and not normalized_input_removed),
+            audit_path=layout["logs"] / "audit.jsonl",
+        )
+        if detector_jsonl.exists():
+            output_audit.setdefault("warnings", []).append("detector_jsonl_retained_after_cleanup")
+        else:
+            detector_info = output_audit.get("detector_jsonl")
+            if isinstance(detector_info, dict):
+                detector_info["exists_at_audit_time"] = detector_info.get("exists")
+                detector_info["exists"] = False
+                detector_info["retained"] = False
+                detector_info["deleted_after_contract_audit"] = True
+        if head_face_sqlite_output is None and head_face_sqlite_source is not None:
+            head_face_info = output_audit.get("head_face_sqlite")
+            if isinstance(head_face_info, dict):
+                head_face_info["exists_at_audit_time"] = head_face_info.get("exists")
+                head_face_info["exists"] = False
+                head_face_info["retained"] = False
+                head_face_info["deleted_after_audit"] = True
 
     final_summary = {
         "original_input": str(original_input),
@@ -1231,29 +1424,20 @@ def organize_outputs(
         "normalized_input_removed": bool(normalized_input_removed),
         "run_dir": str(run_dir),
         "frame_limit": frame_limit,
-        "pipeline_summary": str(summary_path),
-        "detector_jsonl": str(detector_jsonl) if detector_jsonl.exists() else None,
-        "raw_detector_sqlite": None if detector_raw_sqlite is None or not detector_raw_sqlite.exists() else str(detector_raw_sqlite),
-        "tracked_sqlite": None if tracked_sqlite is None else str(tracked_sqlite),
-        "head_face_sqlite": None if head_face_sqlite is None or not head_face_sqlite.exists() else str(head_face_sqlite),
-        "combined_final_sqlite": None if combined_final_sqlite is None or not combined_final_sqlite.exists() else str(combined_final_sqlite),
+        "pipeline_summary": str(pipeline_summary_log),
+        "detector_jsonl": str(detector_jsonl) if keep_debug_outputs and detector_jsonl.exists() else None,
+        "raw_detector_sqlite": None if detector_raw_sqlite_output is None else str(detector_raw_sqlite_output),
+        "tracked_sqlite": None if tracked_sqlite_output is None else str(tracked_sqlite_output),
+        "head_face_sqlite": None if head_face_sqlite_output is None else str(head_face_sqlite_output),
+        "combined_final_sqlite": None if combined_final_sqlite_output is None else str(combined_final_sqlite_output),
         "final_sqlite": sqlite_outputs,
         "overlays": overlay_outputs,
-        "folders": {name: str(path) for name, path in layout.items()},
+        "folders": {name: str(path) for name, path in layout.items() if path.exists()},
+        "debug_outputs_retained": bool(keep_debug_outputs),
+        "removed_debug_outputs": removed_debug_outputs,
     }
-    output_audit = build_output_audit(
-        detector_jsonl=detector_jsonl,
-        raw_detector_sqlite=detector_raw_sqlite if detector_raw_sqlite and detector_raw_sqlite.exists() else None,
-        tracked_sqlite=tracked_sqlite,
-        head_face_sqlite=head_face_sqlite if head_face_sqlite and head_face_sqlite.exists() else None,
-        combined_final_sqlite=combined_final_sqlite if combined_final_sqlite and combined_final_sqlite.exists() else None,
-        sqlite_outputs=sqlite_outputs,
-        overlay_outputs=overlay_outputs,
-        pipeline_summary=summary,
-    )
     final_summary["output_audit"] = output_audit
     (run_dir / "最終成果物.json").write_text(json.dumps(final_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    (job_dir / "job_manifest.json").write_text(json.dumps(final_summary, ensure_ascii=False, indent=2), encoding="utf-8")
     (layout["logs"] / "job_audit_summary.json").write_text(
         json.dumps(output_audit, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -1306,6 +1490,7 @@ def main() -> int:
             frame_limit=frame_limit,
             raw_sqlite_output=bool(args.raw_sqlite_output),
             post_sqlite_output=bool(args.post_sqlite_output),
+            keep_debug_outputs=bool(args.keep_debug_outputs),
         )
         write_audit(audit_path, "job_done", final_summary=run_dir / "最終成果物.json")
         print(f"[ui-job] arranged outputs: {run_dir / '最終成果物.json'}", flush=True)

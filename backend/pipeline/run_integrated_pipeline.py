@@ -415,7 +415,8 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             print(
                 f"[combined-final-sqlite] {combined_final_sqlite_path} "
                 f"ai_masks={combined_final_summary['ai_mask_rows']} "
-                f"head_face={combined_final_summary['head_face_detections']}",
+                f"head_face={combined_final_summary['head_face_detections']} "
+                f"studio_face_masks={combined_final_summary.get('studio_face_masks', 0)}",
                 flush=True,
             )
 

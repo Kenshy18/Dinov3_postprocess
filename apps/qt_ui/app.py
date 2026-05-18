@@ -40,6 +40,9 @@ from apps.qt_ui.widgets import ClosingComboBox
 ensure_repo_on_path()
 from backend.pipeline.progress import format_duration, parse_progress_line  # noqa: E402
 
+GUI_SETTINGS_PATH = Path(os.environ.get("QT_UI_SETTINGS_FILE", ROOT / ".runtime" / "qt_ui_settings.json"))
+GUI_SETTINGS_VERSION = 1
+
 
 def configure_qt_environment() -> None:
     plugin_root = Path(QtCore.QLibraryInfo.location(QtCore.QLibraryInfo.PluginsPath))
@@ -59,8 +62,8 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("SOD推論システム - フロントエンド")
-        self.resize(798, 747)
-        self.setMinimumSize(760, 640)
+        self.resize(798, 860)
+        self.setMinimumSize(760, 720)
 
         self.queue_paths: list[Path] = []
         self.run_queue: list[Path] = []
@@ -80,14 +83,21 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.progress_phase_offsets: dict[str, float] = {}
         self.active_progress_phase_key = ""
         self.last_overall_percent = 0.0
+        self.loading_settings = False
 
         self.elapsed_timer = QtCore.QTimer(self)
         self.elapsed_timer.setInterval(1000)
         self.elapsed_timer.timeout.connect(self.update_elapsed)
+        self.settings_save_timer = QtCore.QTimer(self)
+        self.settings_save_timer.setInterval(500)
+        self.settings_save_timer.setSingleShot(True)
+        self.settings_save_timer.timeout.connect(self.save_user_settings)
 
         self.build_ui()
         self.apply_style()
         self.refresh_wsl_distros()
+        self.load_user_settings()
+        self.connect_settings_signals()
         self.update_queue_state()
         self.update_running_state(False)
 
@@ -123,7 +133,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         lower_layout.addWidget(self.build_log_panel(), 7)
         lower_layout.addWidget(self.build_postprocess_panel(), 11)
         body.addWidget(lower)
-        body.setSizes([270, 230])
+        body.setSizes([360, 260])
 
     def build_run_settings(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("実行設定")
@@ -589,6 +599,193 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
     def sync_overlay_checks(self, source: str, checked: bool) -> None:
         return
 
+    def connect_settings_signals(self) -> None:
+        for edit in (self.output_edit, self.python_edit, self.run_prefix_edit):
+            edit.textChanged.connect(self.schedule_settings_save)
+        for combo in (self.wsl_combo, self.detector_combo, *self.class_shape_combos.values()):
+            combo.currentIndexChanged.connect(self.schedule_settings_save)
+        for check in (
+            self.detailed_overlay_check,
+            self.detector_overlay_check,
+            self.simple_overlay_check,
+            self.head_face_detect_check,
+            self.head_face_overlay_check,
+            self.advanced_button,
+            self.force_check,
+            self.recursive_check,
+            self.raw_cut_detect_check,
+            self.score_enable,
+            self.postprocess_check,
+        ):
+            check.toggled.connect(self.schedule_settings_save)
+        for spin in (
+            self.max_frames_spin,
+            self.batch_size_spin,
+            self.warmup_spin,
+            self.score_spin,
+            *self.class_keyframe_spins.values(),
+            *self.class_recall_spins.values(),
+            *self.class_confidence_spins.values(),
+        ):
+            spin.valueChanged.connect(self.schedule_settings_save)
+
+    def schedule_settings_save(self, *_args: object) -> None:
+        if self.loading_settings:
+            return
+        self.settings_save_timer.start()
+
+    def set_combo_data(self, combo: QtWidgets.QComboBox, value: object) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def restore_queue_paths(self, values: object) -> None:
+        if not isinstance(values, list):
+            return
+        restored: list[Path] = []
+        seen: set[Path] = set()
+        for raw_value in values:
+            if not isinstance(raw_value, str):
+                continue
+            try:
+                path = Path(raw_value).expanduser().resolve()
+            except Exception as exc:
+                self.append_log(f"[settings] skipped invalid input path {raw_value}: {exc}")
+                continue
+            if path in seen:
+                continue
+            if not path.exists():
+                self.append_log(f"[settings] skipped missing input: {path}")
+                continue
+            if path.is_file() and path.suffix.lower() not in VIDEO_EXTS:
+                self.append_log(f"[settings] skipped unsupported input: {path}")
+                continue
+            if not path.is_file() and not path.is_dir():
+                self.append_log(f"[settings] skipped unsupported input: {path}")
+                continue
+            restored.append(path)
+            seen.add(path)
+        self.queue_paths = restored
+
+    def load_user_settings(self) -> None:
+        if not GUI_SETTINGS_PATH.is_file():
+            return
+        try:
+            settings = json.loads(GUI_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.append_log(f"[settings] failed to load {GUI_SETTINGS_PATH}: {exc}")
+            return
+        if not isinstance(settings, dict):
+            return
+        self.loading_settings = True
+        try:
+            if value := settings.get("output_root"):
+                self.output_edit.setText(str(value))
+            if value := settings.get("python"):
+                self.python_edit.setText(str(value))
+            if value := settings.get("run_prefix"):
+                self.run_prefix_edit.setText(str(value))
+            if value := settings.get("wsl_distro"):
+                index = self.wsl_combo.findText(str(value))
+                if index >= 0:
+                    self.wsl_combo.setCurrentIndex(index)
+            self.set_combo_data(self.detector_combo, settings.get("detector"))
+
+            overlays = settings.get("overlays") if isinstance(settings.get("overlays"), dict) else {}
+            self.detailed_overlay_check.setChecked(bool(overlays.get("detailed", self.detailed_overlay_check.isChecked())))
+            self.detector_overlay_check.setChecked(bool(overlays.get("raw", self.detector_overlay_check.isChecked())))
+            self.simple_overlay_check.setChecked(bool(overlays.get("simple", self.simple_overlay_check.isChecked())))
+            self.head_face_overlay_check.setChecked(
+                bool(overlays.get("head_face", self.head_face_overlay_check.isChecked()))
+            )
+            self.head_face_detect_check.setChecked(bool(settings.get("head_face_detect", self.head_face_detect_check.isChecked())))
+            self.postprocess_check.setChecked(bool(settings.get("postprocess", self.postprocess_check.isChecked())))
+
+            advanced = settings.get("advanced") if isinstance(settings.get("advanced"), dict) else {}
+            self.advanced_button.setChecked(bool(advanced.get("expanded", self.advanced_button.isChecked())))
+            self.force_check.setChecked(bool(advanced.get("force", self.force_check.isChecked())))
+            self.recursive_check.setChecked(bool(advanced.get("recursive", self.recursive_check.isChecked())))
+            self.raw_cut_detect_check.setChecked(bool(advanced.get("raw_cut_detect", self.raw_cut_detect_check.isChecked())))
+            self.max_frames_spin.setValue(int(advanced.get("max_frames", self.max_frames_spin.value())))
+            self.batch_size_spin.setValue(int(advanced.get("batch_size", self.batch_size_spin.value())))
+            self.warmup_spin.setValue(int(advanced.get("warmup", self.warmup_spin.value())))
+            self.score_enable.setChecked(bool(advanced.get("score_enabled", self.score_enable.isChecked())))
+            self.score_spin.setValue(float(advanced.get("score_threshold", self.score_spin.value())))
+            self.score_spin.setEnabled(self.score_enable.isChecked())
+
+            class_settings = settings.get("classes") if isinstance(settings.get("classes"), dict) else {}
+            for name, values in class_settings.items():
+                if not isinstance(values, dict):
+                    continue
+                if name in self.class_shape_combos:
+                    self.set_combo_data(self.class_shape_combos[name], values.get("shape_mode"))
+                if name in self.class_keyframe_spins and values.get("target_interval") is not None:
+                    self.class_keyframe_spins[name].setValue(int(values["target_interval"]))
+                if name in self.class_recall_spins and values.get("recall") is not None:
+                    self.class_recall_spins[name].setValue(float(values["recall"]))
+                if name in self.class_confidence_spins and values.get("confidence") is not None:
+                    self.class_confidence_spins[name].setValue(float(values["confidence"]))
+            self.restore_queue_paths(settings.get("queue_paths"))
+        except Exception as exc:
+            self.append_log(f"[settings] failed to apply {GUI_SETTINGS_PATH}: {exc}")
+        finally:
+            self.loading_settings = False
+        self.toggle_advanced(self.advanced_button.isChecked())
+        self.update_head_face_enabled(self.head_face_detect_check.isChecked())
+        self.update_detector_mode()
+        self.update_postprocess_enabled(self.postprocess_check.isChecked())
+
+    def user_settings(self) -> dict[str, object]:
+        return {
+            "version": GUI_SETTINGS_VERSION,
+            "output_root": self.output_edit.text().strip(),
+            "python": self.python_edit.text().strip(),
+            "run_prefix": self.run_prefix_edit.text().strip(),
+            "queue_paths": [str(path) for path in self.queue_paths],
+            "wsl_distro": self.wsl_combo.currentText(),
+            "detector": str(self.detector_combo.currentData()),
+            "postprocess": bool(self.postprocess_check.isChecked()),
+            "head_face_detect": bool(self.head_face_detect_check.isChecked()),
+            "overlays": {
+                "detailed": bool(self.detailed_overlay_check.isChecked()),
+                "raw": bool(self.detector_overlay_check.isChecked()),
+                "simple": bool(self.simple_overlay_check.isChecked()),
+                "head_face": bool(self.head_face_overlay_check.isChecked()),
+            },
+            "advanced": {
+                "expanded": bool(self.advanced_button.isChecked()),
+                "force": bool(self.force_check.isChecked()),
+                "recursive": bool(self.recursive_check.isChecked()),
+                "raw_cut_detect": bool(self.raw_cut_detect_check.isChecked()),
+                "max_frames": int(self.max_frames_spin.value()),
+                "batch_size": int(self.batch_size_spin.value()),
+                "warmup": int(self.warmup_spin.value()),
+                "score_enabled": bool(self.score_enable.isChecked()),
+                "score_threshold": float(self.score_spin.value()),
+            },
+            "classes": {
+                name: {
+                    "shape_mode": str(self.class_shape_combos[name].currentData()),
+                    "target_interval": int(self.class_keyframe_spins[name].value()),
+                    "recall": float(self.class_recall_spins[name].value()),
+                    "confidence": float(self.class_confidence_spins[name].value()),
+                }
+                for name in self.class_shape_combos
+            },
+        }
+
+    def save_user_settings(self) -> None:
+        if self.loading_settings:
+            return
+        try:
+            GUI_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            GUI_SETTINGS_PATH.write_text(
+                json.dumps(self.user_settings(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.append_log(f"[settings] failed to save {GUI_SETTINGS_PATH}: {exc}")
+
     def update_head_face_enabled(self, enabled: bool) -> None:
         self.head_face_overlay_check.setEnabled(enabled)
         if not enabled:
@@ -681,6 +878,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 
     def add_paths(self, paths: list[Path]) -> None:
         existing = {path.resolve() for path in self.queue_paths if path.exists()}
+        changed = False
         for path in paths:
             resolved = path.expanduser().resolve()
             if resolved in existing:
@@ -693,20 +891,30 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                 continue
             self.queue_paths.append(resolved)
             existing.add(resolved)
+            changed = True
         self.update_queue_state()
+        if changed:
+            self.schedule_settings_save()
 
     def remove_selected(self) -> None:
         selected_rows = sorted((index.row() for index in self.queue_list.selectedIndexes()), reverse=True)
+        changed = False
         for row in selected_rows:
             if 0 <= row < len(self.queue_paths):
                 del self.queue_paths[row]
+                changed = True
         self.update_queue_state()
+        if changed:
+            self.schedule_settings_save()
 
     def clear_queue(self) -> None:
         if self.process_is_running():
             return
+        changed = bool(self.queue_paths)
         self.queue_paths.clear()
         self.update_queue_state()
+        if changed:
+            self.schedule_settings_save()
 
     def update_queue_state(self) -> None:
         self.queue_list.clear()
@@ -729,6 +937,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
     def start_queue(self) -> None:
         if self.process_is_running() or not self.queue_paths:
             return
+        self.save_user_settings()
         expanded_inputs = self.expand_queue_paths()
         if not expanded_inputs:
             self.status_banner.setText("エラー")
@@ -1378,6 +1587,8 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.clear_button.setEnabled(bool(self.queue_paths) and not running)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self.settings_save_timer.stop()
+        self.save_user_settings()
         if self.process_is_running():
             self.stop_process()
         event.accept()

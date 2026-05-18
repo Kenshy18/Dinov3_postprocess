@@ -170,7 +170,7 @@ overlayのみ再生成したい場合は `scripts/overlay.py` を使います。
 .venv_integrated/bin/python \
   scripts/overlay.py \
   --video input/sample.mp4 \
-  --pred-sqlite output/runs/sample/最終SQLite/女性器_predictions.sqlite \
+  --pred-sqlite output/runs/sample/最終SQLite/AI後処理最終.sqlite \
   --tracked-sqlite output/runs/sample/推論生SQLite/sample.tracked.sqlite \
   --mode detailed \
   --force
@@ -204,38 +204,32 @@ GUIは同じ行を読んでフェーズ進捗、FPS、ETA、経過時間を更�
 ```text
 output/runs/<run_name>/
   最終成果物.json
-  sod_job_dir/job_manifest.json
   最終SQLite/
-    <label>_predictions.sqlite
+    AI後処理最終.sqlite
+    AI後処理_顔頭統合最終.sqlite
   推論生SQLite/
     <video_stem>_raw_detections.sqlite
     <video_stem>.tracked.sqlite
+    <video_stem>_head_face.sqlite
   詳細オーバーレイ/
     <label>_detailed.mp4
   統合マスクオーバーレイ/
     <label>_simple.mp4
   AI生成カバーオーバーレイ/
     <video_stem>_ai_raw_mask.mp4
-  jsonl/
-    <video_stem>.jsonl
+  顔頭生出力オーバーレイ/
+    <video_stem>_head_face_raw.mp4
   logs/
     infer_cli.log
     infer_audit.jsonl
     ui_job.log
     audit.jsonl
+    pipeline_summary.json
     job_audit_summary.json
-  <detector>/
-    jsonl/<video_stem>.jsonl
-    summary.json
-  postprocess/
-    summary.json
-    preprocess/<video_stem>.tracked.sqlite
-    keyframes/int_*/merged/predictions.sqlite
-  summary.json
 ```
 
-overlayは `--pre-overlay` と `--post-overlay` で選択できます。内部互換の `<detector>/jsonl`、`postprocess/`、`summary.json` も残します。
-`*_raw_detections.sqlite` は検出直後の共通raw schemaで、`metadata`、`frames`、`masks` tableを持ちます。後処理後の `*_predictions.sqlite` は最終mask schemaで、少なくとも `masks(frame, track_id, polygons)` を持ちます。
+overlayは `--pre-overlay` と `--post-overlay` で選択できます。GUI/`scripts/infer.py` 経由の成功ジョブでは、検出器JSONL、`postprocess/`、内部 `sqlite/`、`summary.json` などのデバッグ成果物は必要なSQLite/overlayを実体コピーした後に削除します。内部成果物を残したい場合は `apps/qt_ui/run_ui_job.py --keep-debug-outputs` を使います。
+`*_raw_detections.sqlite` は検出直後の共通raw schemaで、`metadata`、`frames`、`masks` tableを持ちます。後処理後の `AI後処理最終.sqlite` は最終mask schemaで、少なくとも `masks(frame, track_id, polygons)` を持ちます。`AI後処理_顔頭統合最終.sqlite` は、顔・頭検出ON時にAI後処理結果とFace楕円マスクをStudio標準 `masks` / `tracks` へ統合し、Head/Face解析テーブルはdebug/provenance用に残します。
 
 `input/` と `output/` はローカル作業用です。フォルダ内の動画、SQLite、overlay、推論結果は `.gitignore` 対象で、Gitにはpushしません。
 

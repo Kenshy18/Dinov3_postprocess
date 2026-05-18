@@ -11,6 +11,7 @@ from typing import Any
 
 
 HEAD_FACE_SCHEMA_VERSION = 1
+STUDIO_MASK_SCHEMA_VERSION = 1
 
 
 def _json_dumps(value: object) -> str:
@@ -267,13 +268,82 @@ def _sqlite_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [str(row[1]) for row in conn.execute(f"pragma table_info({table})")]
 
 
+def _finite_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _point_from_json(value: object) -> list[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return None
+    x = _finite_float(value[0])
+    y = _finite_float(value[1])
+    if x is None or y is None:
+        return None
+    return [x, y]
+
+
+def _polygon_from_json(value: object) -> list[list[float]] | None:
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    if all(isinstance(item, (int, float)) for item in value):
+        if len(value) < 6 or len(value) % 2 != 0:
+            return None
+        points = []
+        for index in range(0, len(value), 2):
+            point = _point_from_json([value[index], value[index + 1]])
+            if point is None:
+                return None
+            points.append(point)
+        return points if len(points) >= 3 else None
+
+    points = [_point_from_json(item) for item in value]
+    if all(point is not None for point in points):
+        normalized = [point for point in points if point is not None]
+        return normalized if len(normalized) >= 3 else None
+    return None
+
+
+def _normalize_polygons_json(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        raw = json.loads(value) if isinstance(value, str) else value
+    except json.JSONDecodeError:
+        return None
+    if raw is None:
+        return None
+    direct_polygon = _polygon_from_json(raw)
+    if direct_polygon is not None:
+        return _json_dumps([direct_polygon])
+    if not isinstance(raw, list):
+        return None
+    polygons: list[list[list[float]]] = []
+    for polygon_raw in raw:
+        polygon = _polygon_from_json(polygon_raw)
+        if polygon is not None:
+            polygons.append(polygon)
+    if not polygons:
+        return None
+    return _json_dumps(polygons)
+
+
 def merge_ai_and_head_face_sqlite(
     *,
     ai_sqlites: dict[str, str],
     head_face_sqlite: Path,
     output_sqlite: Path,
 ) -> dict[str, Any]:
-    """Create a combined final SQLite with AI masks plus Head/Face tables."""
+    """Create a Studio-readable final SQLite with AI masks plus Face masks.
+
+    Head/Face diagnostic tables are copied through for provenance, but Studio's
+    canonical data is always normalized into ``masks`` and ``tracks``.
+    """
 
     output_sqlite.parent.mkdir(parents=True, exist_ok=True)
     if output_sqlite.exists() or output_sqlite.is_symlink():
@@ -283,33 +353,35 @@ def merge_ai_and_head_face_sqlite(
     ai_mask_rows = 0
     ai_track_rows = 0
     head_face_rows = 0
-    face_mask_rows = 0
+    head_face_mask_rows = 0
+    studio_face_mask_rows = 0
     try:
         conn.executescript(
             """
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
             CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE masks(
+            CREATE TABLE IF NOT EXISTS masks(
                 frame INTEGER NOT NULL,
                 track_id TEXT NOT NULL,
                 polygons TEXT,
+                shape_type TEXT,
+                control_points TEXT,
+                dilate_px INTEGER NOT NULL DEFAULT 0,
+                feather_px INTEGER NOT NULL DEFAULT 0,
+                mosaic_block INTEGER NOT NULL DEFAULT 0,
+                mosaic_alias REAL NOT NULL DEFAULT 0,
                 label TEXT,
-                source_label TEXT,
-                source_track_id TEXT,
-                source_sqlite TEXT,
-                source_json TEXT,
                 PRIMARY KEY(frame, track_id)
             );
-            CREATE TABLE tracks(
+            CREATE TABLE IF NOT EXISTS tracks(
                 track_id TEXT PRIMARY KEY,
-                label TEXT,
-                source_label TEXT,
-                source_track_id TEXT,
-                source_sqlite TEXT
+                label TEXT
             );
-            CREATE TABLE cuts(frame INTEGER PRIMARY KEY);
-            CREATE TABLE head_face_detections(
+            CREATE TABLE IF NOT EXISTS cuts(
+                frame INTEGER PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS head_face_detections(
                 detection_id INTEGER PRIMARY KEY,
                 frame INTEGER NOT NULL,
                 time_sec REAL,
@@ -326,7 +398,7 @@ def merge_ai_and_head_face_sqlite(
                 ellipse_polygon TEXT,
                 mask_polygons TEXT
             );
-            CREATE TABLE head_face_masks(
+            CREATE TABLE IF NOT EXISTS head_face_masks(
                 frame INTEGER NOT NULL,
                 mask_id TEXT NOT NULL,
                 detection_id INTEGER NOT NULL,
@@ -337,7 +409,7 @@ def merge_ai_and_head_face_sqlite(
                 source TEXT NOT NULL,
                 PRIMARY KEY(frame, mask_id)
             );
-            CREATE TABLE head_face_tracks(
+            CREATE TABLE IF NOT EXISTS head_face_tracks(
                 track_id TEXT PRIMARY KEY,
                 class_name TEXT NOT NULL,
                 first_frame INTEGER NOT NULL,
@@ -345,16 +417,21 @@ def merge_ai_and_head_face_sqlite(
                 rows INTEGER NOT NULL,
                 avg_score REAL
             );
-            CREATE TABLE head_face_metadata(
+            CREATE TABLE IF NOT EXISTS head_face_metadata(
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            CREATE INDEX idx_combined_masks_frame ON masks(frame);
-            CREATE INDEX idx_combined_head_face_detections_frame ON head_face_detections(frame);
-            CREATE INDEX idx_combined_head_face_masks_frame ON head_face_masks(frame);
+            CREATE INDEX IF NOT EXISTS idx_masks_track ON masks(track_id);
+            CREATE INDEX IF NOT EXISTS idx_masks_frame ON masks(frame);
+            CREATE INDEX IF NOT EXISTS idx_combined_head_face_detections_frame ON head_face_detections(frame);
+            CREATE INDEX IF NOT EXISTS idx_combined_head_face_masks_frame ON head_face_masks(frame);
             """
         )
-        conn.execute("INSERT INTO metadata(key, value) VALUES (?, ?)", ("schema", "combined_ai_head_face_sqlite_v1"))
+        conn.execute("INSERT INTO metadata(key, value) VALUES (?, ?)", ("schema", "combined_ai_face_studio_sqlite_v1"))
+        conn.execute(
+            "INSERT INTO metadata(key, value) VALUES (?, ?)",
+            ("studio_mask_schema", f"studio_mask_sqlite_v{STUDIO_MASK_SCHEMA_VERSION}"),
+        )
 
         for source_label, raw_path in sorted(ai_sqlites.items()):
             source = Path(str(raw_path))
@@ -365,51 +442,52 @@ def merge_ai_and_head_face_sqlite(
                 tables = _sqlite_tables(src)
                 if "masks" not in tables:
                     continue
-                columns = _sqlite_columns(src, "masks")
-                select_cols = ", ".join(f'"{name}"' for name in columns)
-                for row in src.execute(f"SELECT {select_cols} FROM masks"):
-                    row_dict = {name: row[name] for name in columns}
-                    frame = int(row_dict.get("frame") or 0)
-                    source_track_id = str(row_dict.get("track_id") or f"row_{ai_mask_rows}")
-                    label = str(row_dict.get("label") or source_label)
-                    track_id = f"ai:{_safe_track_part(source_label)}:{_safe_track_part(source_track_id)}"
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO masks(
-                            frame, track_id, polygons, label, source_label,
-                            source_track_id, source_sqlite, source_json
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            frame,
-                            track_id,
-                            row_dict.get("polygons"),
-                            label,
-                            source_label,
-                            source_track_id,
-                            str(source),
-                            _json_dumps(row_dict),
-                        ),
-                    )
-                    ai_mask_rows += 1
+                track_label_lookup: dict[str, str] = {}
                 if "tracks" in tables:
                     track_columns = _sqlite_columns(src, "tracks")
                     if "track_id" in track_columns:
                         label_column = "label" if "label" in track_columns else "NULL as label"
                         for track_id_raw, label_raw in src.execute(f"SELECT track_id, {label_column} FROM tracks"):
-                            source_track_id = str(track_id_raw)
-                            track_id = f"ai:{_safe_track_part(source_label)}:{_safe_track_part(source_track_id)}"
-                            conn.execute(
-                                """
-                                INSERT OR REPLACE INTO tracks(
-                                    track_id, label, source_label, source_track_id, source_sqlite
-                                )
-                                VALUES (?, ?, ?, ?, ?)
-                                """,
-                                (track_id, str(label_raw or source_label), source_label, source_track_id, str(source)),
-                            )
-                            ai_track_rows += 1
+                            track_label_lookup[str(track_id_raw)] = str(label_raw or source_label)
+                columns = _sqlite_columns(src, "masks")
+                select_cols = ", ".join(f'"{name}"' for name in columns)
+                seen_ai_tracks: set[str] = set()
+                for row in src.execute(f"SELECT {select_cols} FROM masks"):
+                    row_dict = {name: row[name] for name in columns}
+                    frame = int(row_dict.get("frame") or 0)
+                    source_track_id = str(row_dict.get("track_id") or f"row_{ai_mask_rows}")
+                    label = str(row_dict.get("label") or track_label_lookup.get(source_track_id) or source_label)
+                    polygons_json = _normalize_polygons_json(row_dict.get("polygons"))
+                    if polygons_json is None:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO masks(
+                            frame, track_id, polygons, shape_type, control_points,
+                            dilate_px, feather_px, mosaic_block, mosaic_alias, label
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            frame,
+                            source_track_id,
+                            polygons_json,
+                            "polygon",
+                            None,
+                            0,
+                            0,
+                            0,
+                            0.0,
+                            label,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tracks(track_id, label) VALUES (?, ?)",
+                        (source_track_id, label),
+                    )
+                    seen_ai_tracks.add(source_track_id)
+                    ai_mask_rows += 1
+                ai_track_rows += len(seen_ai_tracks)
                 if "cuts" in tables and "frame" in _sqlite_columns(src, "cuts"):
                     for (frame,) in src.execute("SELECT frame FROM cuts"):
                         conn.execute("INSERT OR IGNORE INTO cuts(frame) VALUES (?)", (int(frame),))
@@ -433,7 +511,44 @@ def merge_ai_and_head_face_sqlite(
                     if table == "head_face_detections":
                         head_face_rows += len(rows)
                     elif table == "head_face_masks":
-                        face_mask_rows += len(rows)
+                        head_face_mask_rows += len(rows)
+                        required = {"frame", "track_id", "class_name", "polygons"}
+                        if not required.issubset(set(columns)):
+                            continue
+                        for row in src.execute(f"SELECT {select_cols} FROM {table}"):
+                            if not _is_face(row["class_name"]):
+                                continue
+                            raw_track_id = row["track_id"] if row["track_id"] is not None else row["mask_id"]
+                            face_track_id = f"f_{_safe_track_part(raw_track_id)}"
+                            polygons_json = _normalize_polygons_json(row["polygons"])
+                            if polygons_json is None:
+                                continue
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO masks(
+                                    frame, track_id, polygons, shape_type, control_points,
+                                    dilate_px, feather_px, mosaic_block, mosaic_alias, label
+                                )
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    int(row["frame"]),
+                                    face_track_id,
+                                    polygons_json,
+                                    "polygon",
+                                    None,
+                                    0,
+                                    0,
+                                    0,
+                                    0.0,
+                                    "顔",
+                                ),
+                            )
+                            conn.execute(
+                                "INSERT OR REPLACE INTO tracks(track_id, label) VALUES (?, ?)",
+                                (face_track_id, "顔"),
+                            )
+                            studio_face_mask_rows += 1
             finally:
                 src.close()
 
@@ -441,7 +556,8 @@ def merge_ai_and_head_face_sqlite(
             "ai_mask_rows": ai_mask_rows,
             "ai_track_rows": ai_track_rows,
             "head_face_detections": head_face_rows,
-            "head_face_masks": face_mask_rows,
+            "head_face_masks": head_face_mask_rows,
+            "studio_face_masks": studio_face_mask_rows,
             "head_face_sqlite": str(head_face_sqlite),
         }.items():
             conn.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", (key, str(value)))
@@ -456,9 +572,10 @@ def merge_ai_and_head_face_sqlite(
 
     return {
         "path": str(output_sqlite),
-        "schema": "combined_ai_head_face_sqlite_v1",
+        "schema": "combined_ai_face_studio_sqlite_v1",
         "ai_mask_rows": ai_mask_rows,
         "ai_track_rows": ai_track_rows,
         "head_face_detections": head_face_rows,
-        "head_face_masks": face_mask_rows,
+        "head_face_masks": head_face_mask_rows,
+        "studio_face_masks": studio_face_mask_rows,
     }

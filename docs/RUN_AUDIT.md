@@ -27,5 +27,8 @@ The GUI writes the same audit into:
 
 ```text
 output/runs/<run_name>/logs/job_audit_summary.json
+output/runs/<run_name>/logs/pipeline_summary.json
 output/runs/<run_name>/最終成果物.json
 ```
+
+Successful GUI jobs delete internal detector JSONL, `postprocess/`, and intermediate SQLite/CSV/JSON artifacts after the user-facing SQLite and overlays are copied out. `logs/pipeline_summary.json`, `logs/ui_job.log`, and `logs/audit.jsonl` are retained for debugging.

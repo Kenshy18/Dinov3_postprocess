@@ -39,22 +39,24 @@ Windows/PowerShell から起動する場合は `apps/qt_ui/run_app.ps1` を使�
 - 後処理overlay encoder: `nvenc`（GPU）
 - 後処理進捗ログ間隔: `5` 秒
 
+GUIは入力動画キュー、結果保存先、実行Python、Run名Prefix、検出エンジン、オーバーレイ選択、自動後処理、クラス別のマスクタイプ/キーフレーム間隔/recall/confidence、詳細設定を `.runtime/qt_ui_settings.json` に保存し、次回起動時に復元します。このファイルはPCごとのローカル設定なのでgitignore対象です。
+
 ## 出力フォルダ
 
-1ジョブごとに `output/runs/<run_name>/` 以下へ、内部成果物に加えて見やすい名前のフォルダを作ります。
+1ジョブごとに `output/runs/<run_name>/` 以下へ、ユーザー向け成果物だけを見やすい名前のフォルダに作ります。成功時は検出器JSONL、`postprocess/`、内部 `sqlite/`、`config/`、`summary.json` などのデバッグ成果物を削除します。
 
 - `最終成果物.json`: 主要成果物の一覧
-- `sod_job_dir/`: UIジョブ情報、インターレース正規化動画
 - `統合マスクオーバーレイ/`: 簡易オーバーレイ。後処理後マスクとFace楕円マスク
 - `詳細オーバーレイ/`: 元マスク、後処理後輪郭、Head/Face bbox、Face楕円マスク、ID/クラス表示
 - `AI生成カバーオーバーレイ/`: AI生出力マスクのみ
 - `顔頭生出力オーバーレイ/`: Head/Face bboxとFace楕円マスクのみ。Head/Face専用では必ず生成
-- `最終SQLite/`: 後処理後SQLite、Head/Face結合SQLite
-- `推論生SQLite/`: 推論JSONLから作った生トラックSQLite、Head/FaceのみSQLite
-- `jsonl/`: 推論JSONLと推論summary
+- `最終SQLite/`: `AI後処理最終.sqlite`、`AI後処理_顔頭統合最終.sqlite`
+- `推論生SQLite/`: 推論JSONLから作った生raw/tracked SQLite、Head/FaceのみSQLite
 - `logs/`: UIジョブログ
 - `logs/audit.jsonl`: 入力ffprobe、正規化理由、実行コマンド、終了コード、エラーtraceback
+- `logs/pipeline_summary.json`: 削除前のpipeline summary
 - `logs/job_audit_summary.json`: JSONL契約、SQLite件数、overlayサイズ、警告
-- `postprocessed/`: 後処理内部成果物
+
+失敗時は原因調査のため内部成果物を残します。成功時にも内部成果物が必要な場合は `apps/qt_ui/run_ui_job.py --keep-debug-outputs` を使います。
 
 GUI以外で同じ成果物診断を行う場合は `tools/diagnose_run.py <run_dir>` を使います。

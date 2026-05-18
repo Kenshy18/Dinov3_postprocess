@@ -212,7 +212,8 @@ configs/class_policy_all_ellipse_int3_recall096.json
 
 ```text
 <run>/最終成果物.json
-<run>/最終SQLite/<label>_predictions.sqlite
+<run>/最終SQLite/AI後処理最終.sqlite
+<run>/最終SQLite/AI後処理_顔頭統合最終.sqlite
 <run>/推論生SQLite/<video_stem>_raw_detections.sqlite
 <run>/推論生SQLite/<video_stem>.tracked.sqlite
 <run>/詳細オーバーレイ/<label>_detailed.mp4
