@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-jsonl", type=Path, default=None, help="Raw detector JSONL")
     parser.add_argument("--tracked-sqlite", type=Path, default=None, help="Raw/tracked SQLite used by detailed overlay")
     parser.add_argument("--pred-sqlite", type=Path, default=None, help="Final prediction SQLite")
+    parser.add_argument("--head-face-sqlite", type=Path, default=None, help="Optional Head/Face SQLite used by simple/detailed overlays")
     parser.add_argument("--run-dir", type=Path, action="append", default=[], help="Completed run directory")
     parser.add_argument("--batch-dir", type=Path, default=None, help="Directory containing run directories")
     parser.add_argument("--output", type=Path, default=None, help="Output video for direct single overlay")
@@ -53,6 +54,7 @@ def direct_specs(args: argparse.Namespace) -> list[dict[str, Any]]:
     raw_jsonl = resolve_path(args.raw_jsonl)
     pred_sqlite = resolve_path(args.pred_sqlite)
     tracked_sqlite = resolve_path(args.tracked_sqlite)
+    head_face_sqlite = resolve_path(getattr(args, "head_face_sqlite", None))
     video = resolve_path(args.video)
     if raw_jsonl is None and pred_sqlite is None:
         return []
@@ -75,11 +77,22 @@ def direct_specs(args: argparse.Namespace) -> list[dict[str, Any]]:
         raise FileNotFoundError(pred_sqlite)
     if tracked_sqlite is not None and not tracked_sqlite.is_file():
         raise FileNotFoundError(tracked_sqlite)
+    if head_face_sqlite is not None and not head_face_sqlite.is_file():
+        raise FileNotFoundError(head_face_sqlite)
     mode = "simple" if args.mode == "auto" else args.mode
     if mode == "raw":
         raise RuntimeError("--mode raw requires --raw-jsonl")
     output = resolve_path(args.output) or output_dir / f"{video.stem}_{mode}_overlay.mp4"
-    return [{"kind": mode, "video": video, "tracked_sqlite": tracked_sqlite, "pred_sqlite": pred_sqlite, "output": output}]
+    return [
+        {
+            "kind": mode,
+            "video": video,
+            "tracked_sqlite": tracked_sqlite,
+            "pred_sqlite": pred_sqlite,
+            "head_face_sqlite": head_face_sqlite,
+            "output": output,
+        }
+    ]
 
 
 def run_dirs_from_batch(batch_dir: Path) -> list[Path]:
@@ -107,6 +120,8 @@ def specs_from_run_dir(run_dir: Path, args: argparse.Namespace) -> list[dict[str
         video = processed_video if processed_video.is_file() else original_video
         tracked_raw = data.get("tracked_sqlite")
         tracked = Path(str(tracked_raw)) if tracked_raw else None
+        head_face_raw = data.get("head_face_sqlite")
+        head_face_sqlite = Path(str(head_face_raw)) if head_face_raw else None
         if mode in {"auto", "raw"}:
             jsonl_raw = data.get("detector_jsonl")
             if jsonl_raw:
@@ -128,6 +143,7 @@ def specs_from_run_dir(run_dir: Path, args: argparse.Namespace) -> list[dict[str
                                 "video": video,
                                 "tracked_sqlite": tracked if tracked and tracked.is_file() else None,
                                 "pred_sqlite": sqlite_path,
+                                "head_face_sqlite": head_face_sqlite if head_face_sqlite and head_face_sqlite.is_file() else None,
                                 "output": output_dir / f"{video.stem}_{label}_{overlay_mode}.mp4",
                             }
                         )
@@ -147,6 +163,11 @@ def specs_from_run_dir(run_dir: Path, args: argparse.Namespace) -> list[dict[str
         if mode in {"auto", "simple", "detailed"}:
             tracked_raw = postprocess.get("tracked_sqlite") or postprocess.get("tracked_sqlite_link")
             tracked = Path(str(tracked_raw)) if tracked_raw else None
+            head_face_summary = data.get("head_face") or {}
+            head_face_raw = artifacts.get("head_face_sqlite") or (
+                head_face_summary.get("path") if isinstance(head_face_summary, dict) else None
+            )
+            head_face_sqlite = Path(str(head_face_raw)) if head_face_raw else None
             links = postprocess.get("prediction_sqlite_links") or {}
             modes = ("simple", "detailed") if mode == "auto" else (mode,)
             if isinstance(links, dict):
@@ -161,6 +182,7 @@ def specs_from_run_dir(run_dir: Path, args: argparse.Namespace) -> list[dict[str
                                 "video": video,
                                 "tracked_sqlite": tracked if tracked and tracked.is_file() else None,
                                 "pred_sqlite": sqlite_path,
+                                "head_face_sqlite": head_face_sqlite if head_face_sqlite and head_face_sqlite.is_file() else None,
                                 "output": output_dir / f"{video.stem}_{label}_{overlay_mode}.mp4",
                             }
                         )
@@ -208,6 +230,7 @@ def render_spec(spec: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
             mode=kind,
             encoder=str(args.encoder),
             frame_limit=args.frame_limit,
+            head_face_sqlite=spec.get("head_face_sqlite"),
         )
     elapsed = time.perf_counter() - started
     print(f"[overlay-done] kind={kind} elapsed={elapsed:.2f}s output={output}", flush=True)

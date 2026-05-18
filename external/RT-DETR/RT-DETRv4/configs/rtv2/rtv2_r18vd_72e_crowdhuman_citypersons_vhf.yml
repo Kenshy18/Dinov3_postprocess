@@ -1,0 +1,67 @@
+__include__: [
+  '../dataset/crowdhuman_citypersons_vhf_detection.yml',
+  '../runtime.yml',
+  '../base/dataloader.yml',
+  '../base/rtv2_optimizer.yml',
+  '../base/rtv2_r50vd.yml',
+]
+
+output_dir: ./outputs/pth/rtv2_r18vd_72e_crowdhuman_citypersons_vhf
+
+PResNet:
+  depth: 18
+  freeze_at: -1
+  freeze_norm: False
+  pretrained: True
+
+HybridEncoder:
+  in_channels: [128, 256, 512]
+  hidden_dim: 256
+  expansion: 0.5
+
+RTDETRTransformerv2:
+  num_layers: 3
+
+eval_spatial_size: [512, 896]
+
+epoches: 80
+checkpoint_freq: 4
+print_freq: 50
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+
+train_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.3}
+        - {type: RandomClippedCrop, p: 0.7, min_scale: 0.5, max_scale: 1.0, aspect_ratio: 1.75, trials: 10}
+        - {type: RandomHorizontalFlip}
+        - {type: LetterboxResize, size: [512, 896], fill: 0}
+        - {type: ClampBoundingBoxes}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 77
+        ops: ['RandomPhotometricDistort', 'RandomClippedCrop']
+  collate_fn:
+    base_size_repeat: ~
+    stop_epoch: ~
+
+val_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      ops:
+        - {type: LetterboxResize, size: [512, 896], fill: 0}
+        - {type: ClampBoundingBoxes}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}

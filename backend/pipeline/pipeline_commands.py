@@ -9,6 +9,7 @@ from pathlib import Path
 from backend.detectors.codino.commands import build_command as build_codino_detector_command
 from backend.detectors.dinov3.commands import build_command as build_dinov3_detector_command
 from backend.detectors.eva02.commands import build_command as build_eva02_detector_command
+from backend.detectors.rtdetr.commands import build_command as build_rtdetr_head_face_command
 from backend.postprocess.commands import build_env as build_atosyori_env
 from backend.postprocess.commands import build_run_command as build_atosyori_run_command
 
@@ -33,6 +34,10 @@ def build_detector_command(args: argparse.Namespace, video: Path, detector_out: 
     if args.detector == "codino":
         return build_codino_command(args, video, detector_out)
     raise RuntimeError(f"unsupported detector: {args.detector}")
+
+
+def build_head_face_command(args: argparse.Namespace, video: Path, output_sqlite: Path) -> list[str]:
+    return build_rtdetr_head_face_command(args, video, output_sqlite)
 
 
 def atosyori_env(args: argparse.Namespace) -> dict[str, str]:

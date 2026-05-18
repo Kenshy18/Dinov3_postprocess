@@ -2,8 +2,8 @@
 
 ## 1. Clone this directory/repository
 
-The bundle contains the required source code for DINOv3/EVA02/Co-DINO inference
-and Atosyori postprocess.
+The bundle contains the required source code for DINOv3/EVA02/Co-DINO
+inference, RT-DETR Head/Face detection, and Atosyori postprocess.
 
 Key source directories:
 
@@ -15,6 +15,7 @@ configs/
 dinov3/
 eva02/eva02_det/
 external/codino/
+external/RT-DETR/RT-DETRv4/
 external/atosyori-pipeline-dev/
 ```
 
@@ -40,7 +41,7 @@ Check the current placement after setup/download with:
 python tools/check_artifacts.py
 ```
 
-This single folder should contain the detection, classification, K2, and polygon predictor artifacts.
+This single folder should contain the detection, classification, RT-DETR Head/Face, K2, and polygon predictor artifacts.
 
 If artifacts are already available locally, set:
 
@@ -58,6 +59,7 @@ checkpoints/Eva02/detector/model_final.pth
 checkpoints/Eva02/classifier/best.pt
 checkpoints/codino/detector/epoch_2.pth
 checkpoints/codino/classifier/best.pt
+checkpoints/rtdetr/head_face_best_stg1.pth
 checkpoints/postprocess/k2_v5/best_exact.pt
 checkpoints/postprocess/k2_v5/run_config.json
 checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -69,7 +71,7 @@ checkpoints/postprocess/polygon_point_predictor/train_mask_point_predictor.py
 
 The downloader places those grouped Drive paths into the local runtime layout
 under `checkpoints/detector`, `checkpoints/classifier`, `checkpoints/eva02`,
-and `checkpoints/codino`.
+`checkpoints/codino`, and `checkpoints/rtdetr`.
 
 ## 3. Create runtime environment
 
@@ -86,12 +88,13 @@ The setup script performs:
 - local GPU/Python/PyTorch/CUDA/nvcc/gcc diagnostics
 - CUDA-capable PyTorch installation when the selected runtime cannot import one
 - dependency installation
+- RT-DETR Head/Face dependency installation from the repo-local source tree
 - Co-DINO/MMCV setup with working `mmcv.ops` verification
 - UI dependency installation
 - bundled Detectron2/EVA02 extension build when needed
 - DINOv3 TensorRT engine build when missing or when `REBUILD_TRT=1`
 - Co-DINO TensorRT engine build when missing or when `REBUILD_CODINO_TRT=1`
-- local GPU/VRAM profiling into `.runtime/runtime_profile.json`
+- DINOv3/EVA02/Co-DINO/RT-DETR batch benchmarking and local GPU/VRAM profiling into `.runtime/runtime_profile.json`
 - optional smoke/import checks
 
 Compatibility setup wrappers remain available:

@@ -7,9 +7,23 @@ import argparse
 import json
 
 try:
-    from .runtime_artifacts import ALL_RUNTIME_ARTIFACTS, DETECTRON2_EXTENSION_ROOT, REQUIRED_ARTIFACTS, ROOT
+    from .runtime_artifacts import (
+        ALL_RUNTIME_ARTIFACTS,
+        DETECTRON2_EXTENSION_ROOT,
+        REQUIRED_ARTIFACTS,
+        ROOT,
+        RTDETR_DEFAULT_CONFIG,
+        RTDETR_RUNTIME_SCRIPT,
+    )
 except ImportError:  # pragma: no cover - direct script execution
-    from runtime_artifacts import ALL_RUNTIME_ARTIFACTS, DETECTRON2_EXTENSION_ROOT, REQUIRED_ARTIFACTS, ROOT
+    from runtime_artifacts import (
+        ALL_RUNTIME_ARTIFACTS,
+        DETECTRON2_EXTENSION_ROOT,
+        REQUIRED_ARTIFACTS,
+        ROOT,
+        RTDETR_DEFAULT_CONFIG,
+        RTDETR_RUNTIME_SCRIPT,
+    )
 
 
 def main() -> int:
@@ -31,6 +45,19 @@ def main() -> int:
             "exists": any(DETECTRON2_EXTENSION_ROOT.glob("_C*.so")),
         }
     )
+    source_rows = [
+        {
+            "name": "RT-DETR Head/Face runtime script",
+            "path": str(RTDETR_RUNTIME_SCRIPT),
+            "exists": RTDETR_RUNTIME_SCRIPT.is_file(),
+        },
+        {
+            "name": "RT-DETR Head/Face config",
+            "path": str(RTDETR_DEFAULT_CONFIG),
+            "exists": RTDETR_DEFAULT_CONFIG.is_file(),
+        },
+    ]
+    rows.extend(source_rows)
 
     if args.json:
         print(json.dumps({"root": str(ROOT), "artifacts": rows}, ensure_ascii=False, indent=2))
@@ -41,6 +68,7 @@ def main() -> int:
             print(f"[{status}] {row['name']}: {row['path']}")
 
     required_paths = {str(artifact.path) for artifact in required}
+    required_paths.update(str(row["path"]) for row in source_rows)
     missing_required = [row for row in rows if row["path"] in required_paths and not row["exists"]]
     if missing_required and not args.allow_missing:
         return 2

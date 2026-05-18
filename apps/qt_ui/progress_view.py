@@ -10,10 +10,12 @@ PHASE_LABELS = {
     "inference": "推論",
     "detector": "推論",
     "raw_sqlite": "推論結果SQLite作成",
+    "head_face": "顔・頭検出",
     "postprocess": "後処理",
     "raw_overlay": "後処理前オーバーレイ",
     "detailed_overlay": "後処理後オーバーレイ（詳細）",
     "simple_overlay": "後処理後オーバーレイ（簡易）",
+    "head_face_overlay": "顔・頭検出オーバーレイ",
     "command": "コマンド",
     "unknown": "処理中",
 }
@@ -37,6 +39,10 @@ def phase_key(value: str | None) -> str:
     normalized = text.lower().replace("-", "_").replace(" ", "_")
     if "normalize" in normalized:
         return "normalize_input"
+    if "head_face_overlay" in normalized or ("head_face" in normalized and "overlay" in normalized):
+        return "head_face_overlay"
+    if "head_face" in normalized or ("head" in normalized and "face" in normalized):
+        return "head_face"
     if "detailed_overlay" in normalized or ("overlay" in normalized and "detailed" in normalized):
         return "detailed_overlay"
     if "simple_overlay" in normalized or ("overlay" in normalized and "simple" in normalized):

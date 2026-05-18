@@ -131,6 +131,7 @@ def selected_trt_engine() -> Path:
 
 
 def runtime_summary_text() -> str:
+    runtime_env = load_gui_runtime_env()
     profile = load_runtime_profile()
     rec = profile.get("recommendations", {})
     rec = rec if isinstance(rec, dict) else {}
@@ -139,7 +140,13 @@ def runtime_summary_text() -> str:
     dinov3 = rec.get("dinov3", {}) if isinstance(rec.get("dinov3"), dict) else {}
     eva02 = rec.get("eva02", {}) if isinstance(rec.get("eva02"), dict) else {}
     codino = rec.get("codino", {}) if isinstance(rec.get("codino"), dict) else {}
+    rtdetr = rec.get("rtdetr", {}) if isinstance(rec.get("rtdetr"), dict) else {}
     engine = selected_trt_engine()
+    rtdetr_raw = os.environ.get("RTDETR_REPO") or runtime_env.get("RTDETR_REPO")
+    rtdetr_status = "none"
+    if rtdetr_raw:
+        rtdetr_script = Path(rtdetr_raw).expanduser() / "tools" / "inference" / "video_sqlite_inf.py"
+        rtdetr_status = "ok" if rtdetr_script.is_file() else "missing"
     return (
         f"python={default_python()} | "
         f"profile={runtime_profile_path()} | "
@@ -147,8 +154,10 @@ def runtime_summary_text() -> str:
         f"DINOv3 batch={dinov3.get('batch_size', '既定')} | "
         f"EVA02 batch={eva02.get('batch_size', '既定')} | "
         f"Co-DINO batch={codino.get('batch_size', '既定')} | "
+        f"RT-DETR batch={rtdetr.get('batch_size', '既定')} | "
         f"EVA02 cls={eva02.get('classifier_batch_size', '既定')} | "
-        f"engine={'ok' if engine.is_file() else 'missing'}"
+        f"engine={'ok' if engine.is_file() else 'missing'} | "
+        f"RT-DETR={rtdetr_status}"
     )
 
 

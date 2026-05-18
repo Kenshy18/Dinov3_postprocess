@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.setup import benchmark_runtime_batches as bench
+from tools.setup import configure_runtime_profile as profile
 
 
 class RuntimeBatchBenchmarkTests(unittest.TestCase):
@@ -76,6 +77,45 @@ class RuntimeBatchBenchmarkTests(unittest.TestCase):
         self.assertEqual(args.input_video, "auto")
         self.assertEqual(args.eva02_compile_backbone, "max-autotune")
         self.assertGreater(args.tie_fps_ratio, 0.0)
+
+    def test_rtdetr_benchmark_command_writes_sqlite_tracks(self) -> None:
+        command = bench.command_for_candidate(
+            detector="rtdetr",
+            python=Path("/venv/bin/python"),
+            input_video=Path("/tmp/input.mp4"),
+            output_dir=Path("/tmp/out"),
+            batch=64,
+            frames=120,
+            engine=Path("/tmp/dinov3.engine"),
+            classifier_batch_size=4096,
+            eva02_compile_backbone="max-autotune",
+            rtdetr_repo=Path("/opt/RT-DETR/RT-DETRv4"),
+            rtdetr_device="cuda:0",
+            rtdetr_progress_interval=30,
+        )
+
+        self.assertEqual(command[1], "/opt/RT-DETR/RT-DETRv4/tools/inference/video_sqlite_inf.py")
+        self.assertEqual(command[command.index("--batch-size") + 1], "64")
+        self.assertEqual(command[command.index("--output-mode") + 1], "tracks")
+        self.assertEqual(command[command.index("--classes") + 1 : command.index("--classes") + 3], ["Head", "Face"])
+        self.assertEqual(command[command.index("--progress-interval") + 1], "30")
+
+    def test_runtime_profile_accepts_rtdetr_benchmark_selection(self) -> None:
+        recs = profile.recommendations(
+            24 * 1024,
+            tensorrt_available=True,
+            engine_exists=True,
+            benchmark={"selected": {"rtdetr": {"batch_size": 96, "metric_fps": 123.4}}},
+        )
+        profile.apply_benchmark_recommendations(
+            recs,
+            {"selected": {"rtdetr": {"batch_size": 96, "metric_fps": 123.4}}},
+        )
+
+        self.assertEqual(recs["rtdetr"]["batch_size"], 96)
+        self.assertEqual(recs["rtdetr"]["progress_interval"], 30)
+        self.assertTrue(recs["rtdetr"]["config"].endswith("external/RT-DETR/RT-DETRv4/configs/rtv2/rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml"))
+        self.assertTrue(recs["rtdetr"]["checkpoint"].endswith("checkpoints/rtdetr/head_face_best_stg1.pth"))
 
 
 if __name__ == "__main__":

@@ -17,12 +17,24 @@ DINO_RUNTIME_DIR="${DINO_RUNTIME_DIR:-$(cd "$ROOT_DIR/backend/detectors/dinov3/r
 if [[ -z "${ATOSYORI_REPO:-}" ]]; then
   ATOSYORI_REPO="$ROOT_DIR/external/atosyori-pipeline-dev"
 fi
+if [[ -z "${RTDETR_REPO:-}" ]]; then
+  for candidate in \
+    "$ROOT_DIR/external/RT-DETR/RT-DETRv4" \
+    "$ROOT_DIR/../CV/RT-DETR/RT-DETRv4" \
+    "$ROOT_DIR/../RT-DETR/RT-DETRv4"; do
+    if [[ -f "$candidate/tools/inference/video_sqlite_inf.py" ]]; then
+      RTDETR_REPO="$candidate"
+      break
+    fi
+  done
+fi
 ENV_DIR="${ENV_DIR:-$ROOT_DIR/.venv_integrated}"
 RUN_DINO_SMOKE="${RUN_DINO_SMOKE:-1}"
 RUN_IMPORT_CHECK="${RUN_IMPORT_CHECK:-1}"
 POSTPROCESS_MODEL_ROOT="${POSTPROCESS_MODEL_ROOT:-$ROOT_DIR/checkpoints/postprocess}"
 BUILD_DETECTRON2="${BUILD_DETECTRON2:-auto}"
 SETUP_CODINO_DEPS="${SETUP_CODINO_DEPS:-1}"
+SETUP_RTDETR_DEPS="${SETUP_RTDETR_DEPS:-auto}"
 BASE_PYTHON="${BASE_PYTHON:-}"
 DOWNLOAD_ARTIFACTS="${DOWNLOAD_ARTIFACTS:-1}"
 ARTIFACT_OVERWRITE="${ARTIFACT_OVERWRITE:-0}"
@@ -38,6 +50,11 @@ REBUILD_CODINO_TRT="${REBUILD_CODINO_TRT:-auto}"
 CODINO_TRT_BATCH_SIZE="${CODINO_TRT_BATCH_SIZE:-auto}"
 CODINO_TRT_BATCH_CANDIDATES="${CODINO_TRT_BATCH_CANDIDATES:-auto}"
 CODINO_TRT_MAX_BATCH="${CODINO_TRT_MAX_BATCH:-8}"
+RTDETR_BATCH_SIZE="${RTDETR_BATCH_SIZE:-auto}"
+RTDETR_BATCH_CANDIDATES="${RTDETR_BATCH_CANDIDATES:-auto}"
+RTDETR_BATCH_MAX="${RTDETR_BATCH_MAX:-256}"
+RTDETR_DEVICE="${RTDETR_DEVICE:-cuda:0}"
+RTDETR_PROGRESS_INTERVAL="${RTDETR_PROGRESS_INTERVAL:-30}"
 CODINO_TRT_BACKBONE_PRECISION="${CODINO_TRT_BACKBONE_PRECISION:-bf16}"
 CODINO_TRT_QUERY_PRECISION="${CODINO_TRT_QUERY_PRECISION:-fp16}"
 CODINO_TRT_DECODER_PRECISION="${CODINO_TRT_DECODER_PRECISION:-fp16}"
@@ -46,7 +63,13 @@ DINOV3_RUNTIME_PROFILE="${DINOV3_RUNTIME_PROFILE:-$ROOT_DIR/.runtime/runtime_pro
 GUI_RUNTIME_ENV="${GUI_RUNTIME_ENV:-$ROOT_DIR/.runtime/gui_runtime.env}"
 RUN_BATCH_BENCHMARK="${RUN_BATCH_BENCHMARK:-1}"
 BATCH_BENCHMARK_OUTPUT="${BATCH_BENCHMARK_OUTPUT:-$ROOT_DIR/.runtime/runtime_benchmark.json}"
-BATCH_BENCHMARK_DETECTORS="${BATCH_BENCHMARK_DETECTORS:-eva02,dinov3,codino}"
+if [[ -z "${BATCH_BENCHMARK_DETECTORS:-}" ]]; then
+  if [[ -n "${RTDETR_REPO:-}" ]]; then
+    BATCH_BENCHMARK_DETECTORS="eva02,dinov3,codino,rtdetr"
+  else
+    BATCH_BENCHMARK_DETECTORS="eva02,dinov3,codino"
+  fi
+fi
 BATCH_BENCHMARK_FRAMES="${BATCH_BENCHMARK_FRAMES:-240}"
 BATCH_BENCHMARK_TIMEOUT_SEC="${BATCH_BENCHMARK_TIMEOUT_SEC:-360}"
 BATCH_BENCHMARK_MAX_VRAM_FRACTION="${BATCH_BENCHMARK_MAX_VRAM_FRACTION:-0.95}"
@@ -73,6 +96,28 @@ case "$BATCH_BENCHMARK_OUTPUT" in
   /*) ;;
   *) BATCH_BENCHMARK_OUTPUT="$ROOT_DIR/$BATCH_BENCHMARK_OUTPUT" ;;
 esac
+if [[ -n "${RTDETR_REPO:-}" ]]; then
+  case "$RTDETR_REPO" in
+    /*) ;;
+    *) RTDETR_REPO="$ROOT_DIR/$RTDETR_REPO" ;;
+  esac
+  RTDETR_CONFIG="${RTDETR_CONFIG:-$RTDETR_REPO/configs/rtv2/rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml}"
+else
+  RTDETR_CONFIG="${RTDETR_CONFIG:-}"
+fi
+RTDETR_CHECKPOINT="${RTDETR_CHECKPOINT:-$ROOT_DIR/checkpoints/rtdetr/head_face_best_stg1.pth}"
+if [[ -n "$RTDETR_CONFIG" ]]; then
+  case "$RTDETR_CONFIG" in
+    /*) ;;
+    *) RTDETR_CONFIG="$ROOT_DIR/$RTDETR_CONFIG" ;;
+  esac
+fi
+if [[ -n "$RTDETR_CHECKPOINT" ]]; then
+  case "$RTDETR_CHECKPOINT" in
+    /*) ;;
+    *) RTDETR_CHECKPOINT="$ROOT_DIR/$RTDETR_CHECKPOINT" ;;
+  esac
+fi
 
 python_works() {
   local candidate="$1"
@@ -117,6 +162,13 @@ fi
 echo "[SETUP] integration root: $ROOT_DIR"
 echo "[SETUP] DINO runtime:      $DINO_RUNTIME_DIR"
 echo "[SETUP] Atosyori repo:     $ATOSYORI_REPO"
+if [[ -n "${RTDETR_REPO:-}" ]]; then
+  echo "[SETUP] RT-DETR repo:      $RTDETR_REPO"
+  echo "[SETUP] RT-DETR config:    $RTDETR_CONFIG"
+  echo "[SETUP] RT-DETR checkpoint:$RTDETR_CHECKPOINT"
+else
+  echo "[SETUP] RT-DETR repo:      not found (expected external/RT-DETR/RT-DETRv4 or set RTDETR_REPO)"
+fi
 echo "[SETUP] env:              $ENV_DIR"
 echo "[SETUP] base python:      $BASE_PYTHON"
 if [[ -n "${REFERENCE_VENV:-}" ]]; then
@@ -251,6 +303,36 @@ elif [[ -f "$ROOT_DIR/UI/requirements.txt" ]]; then
   "$PY" -m pip install -q -r "$ROOT_DIR/UI/requirements.txt"
 fi
 
+if [[ -n "${RTDETR_REPO:-}" ]]; then
+  if [[ ! -f "$RTDETR_REPO/tools/inference/video_sqlite_inf.py" ]]; then
+    echo "[WARN] RTDETR_REPO is set but video_sqlite_inf.py was not found: $RTDETR_REPO" >&2
+  else
+    echo "[SETUP] configuring RT-DETR Head/Face runtime"
+    if [[ ! -f "$RTDETR_CONFIG" ]]; then
+      echo "[ERROR] RT-DETR config not found: $RTDETR_CONFIG" >&2
+      exit 2
+    fi
+    if [[ ! -f "$RTDETR_CHECKPOINT" ]]; then
+      echo "[ERROR] RT-DETR checkpoint not found: $RTDETR_CHECKPOINT" >&2
+      exit 2
+    fi
+    echo "$RTDETR_REPO" > "$SITE_DIR/_rtdetr_source.pth"
+    if [[ "$SETUP_RTDETR_DEPS" == "1" || "$SETUP_RTDETR_DEPS" == "auto" ]]; then
+      "$PY" -m pip install -q \
+        'faster-coco-eval>=1.6.5' \
+        PyYAML \
+        scipy \
+        tensorboard \
+        calflops \
+        transformers \
+        Pillow \
+        wandb
+    else
+      echo "[SETUP] RT-DETR dependency install disabled"
+    fi
+  fi
+fi
+
 auto_batch_candidates() {
   local detector="$1"
   local max_batch="$2"
@@ -275,6 +357,19 @@ if detector == "codino":
         candidates = [2, 4, 6]
     else:
         candidates = [2, 4, 6, 8]
+elif detector == "rtdetr":
+    if total_gib <= 0:
+        candidates = [16]
+    elif total_gib < 10:
+        candidates = [8, 16, 32]
+    elif total_gib < 16:
+        candidates = [16, 32, 64]
+    elif total_gib < 24:
+        candidates = [32, 64, 96, 128]
+    elif total_gib < 40:
+        candidates = [64, 96, 128, 192]
+    else:
+        candidates = [64, 128, 192, 256]
 elif detector == "eva02":
     if total_gib <= 0:
         candidates = [1]
@@ -340,6 +435,19 @@ CODINO_TRT_BATCH_CANDIDATES="$(normalize_batch_candidates "$CODINO_TRT_BATCH_CAN
 
 if [[ "$CODINO_TRT_BATCH_SIZE" == "auto" ]]; then
   CODINO_TRT_BATCH_SIZE="${CODINO_TRT_BATCH_CANDIDATES%%,*}"
+fi
+
+if [[ "$RTDETR_BATCH_CANDIDATES" == "auto" ]]; then
+  if [[ "$RTDETR_BATCH_SIZE" != "auto" ]]; then
+    RTDETR_BATCH_CANDIDATES="$RTDETR_BATCH_SIZE"
+  else
+    RTDETR_BATCH_CANDIDATES="$(auto_batch_candidates rtdetr "$RTDETR_BATCH_MAX")"
+  fi
+fi
+RTDETR_BATCH_CANDIDATES="$(normalize_batch_candidates "$RTDETR_BATCH_CANDIDATES")"
+
+if [[ "$RTDETR_BATCH_SIZE" == "auto" ]]; then
+  RTDETR_BATCH_SIZE="${RTDETR_BATCH_CANDIDATES%%,*}"
 fi
 
 CODINO_TRT_DIR="$ROOT_DIR/checkpoints/codino/trt"
@@ -428,6 +536,9 @@ codino_trt_ready() {
 echo "[SETUP] DINOv3 batch candidates: $DINOV3_BATCH_CANDIDATES"
 echo "[SETUP] EVA02 batch candidates:   $EVA02_BATCH_CANDIDATES"
 echo "[SETUP] Co-DINO TensorRT batch candidates: $CODINO_TRT_BATCH_CANDIDATES"
+if [[ -n "${RTDETR_REPO:-}" ]]; then
+  echo "[SETUP] RT-DETR batch candidates: $RTDETR_BATCH_CANDIDATES"
+fi
 for candidate in ${CODINO_TRT_BATCH_CANDIDATES//,/ }; do
   if [[ "$REBUILD_CODINO_TRT" == "1" ]] || { [[ "$REBUILD_CODINO_TRT" == "auto" ]] && ! codino_trt_ready_for_batch "$candidate"; }; then
     echo "[SETUP] rebuilding Co-DINO TensorRT engines for local GPU batch=$candidate"
@@ -446,6 +557,7 @@ set_codino_trt_paths_for_batch "$CODINO_TRT_BATCH_SIZE"
 
 if [[ "$RUN_BATCH_BENCHMARK" == "1" ]]; then
   echo "[SETUP] benchmarking runtime batch sizes"
+  echo "[SETUP] batch benchmark detectors: $BATCH_BENCHMARK_DETECTORS"
   echo "[SETUP] batch benchmark frames: $BATCH_BENCHMARK_FRAMES"
   echo "[SETUP] batch benchmark tie FPS ratio: $BATCH_BENCHMARK_TIE_FPS_RATIO"
   echo "[SETUP] EVA02 benchmark compile-backbone: $EVA02_BENCHMARK_COMPILE_BACKBONE"
@@ -470,6 +582,13 @@ if [[ "$RUN_BATCH_BENCHMARK" == "1" ]]; then
     CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
     CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DECODER_ENGINE" \
     CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
+    RTDETR_REPO="${RTDETR_REPO:-}" \
+    RTDETR_BATCH_CANDIDATES="$RTDETR_BATCH_CANDIDATES" \
+    RTDETR_BATCH_MAX="$RTDETR_BATCH_MAX" \
+    RTDETR_DEVICE="$RTDETR_DEVICE" \
+    RTDETR_PROGRESS_INTERVAL="$RTDETR_PROGRESS_INTERVAL" \
+    RTDETR_CONFIG="${RTDETR_CONFIG:-}" \
+    RTDETR_CHECKPOINT="${RTDETR_CHECKPOINT:-}" \
     "$PY" "$ROOT_DIR/tools/setup/benchmark_runtime_batches.py" \
       --python "$PY" \
       --output "$BATCH_BENCHMARK_OUTPUT" \
@@ -502,6 +621,30 @@ PY
 set_codino_trt_paths_for_batch "$SELECTED_CODINO_TRT_BATCH"
 echo "[SETUP] selected Co-DINO TensorRT batch=$CODINO_TRT_BATCH_SIZE"
 
+SELECTED_RTDETR_BATCH="$("$PY" - "$BATCH_BENCHMARK_OUTPUT" "$RTDETR_BATCH_SIZE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+fallback = sys.argv[2]
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    selected = data.get("selected", {}).get("rtdetr", {})
+    batch = int(selected.get("batch_size"))
+    if batch > 0:
+        print(batch)
+        raise SystemExit(0)
+except Exception:
+    pass
+print(fallback)
+PY
+)"
+RTDETR_BATCH_SIZE="$SELECTED_RTDETR_BATCH"
+if [[ -n "${RTDETR_REPO:-}" ]]; then
+  echo "[SETUP] selected RT-DETR batch=$RTDETR_BATCH_SIZE"
+fi
+
 DINOV3_TRT_BACKBONE_ENGINE="$ENGINE_PATH" \
 CODINO_TRT_BACKBONE_ENGINE="$CODINO_TRT_BACKBONE_ENGINE" \
 CODINO_TRT_QUERY_ENCODER_ENGINE="$CODINO_TRT_QUERY_ENCODER_ENGINE" \
@@ -509,6 +652,12 @@ CODINO_TRT_DECODER_ENGINE="$CODINO_TRT_DECODER_ENGINE" \
 CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
 CODINO_TRT_BATCH_SIZE="$CODINO_TRT_BATCH_SIZE" \
 CODINO_TRT_MANIFEST="$CODINO_TRT_MANIFEST" \
+RTDETR_REPO="${RTDETR_REPO:-}" \
+RTDETR_BATCH_SIZE="$RTDETR_BATCH_SIZE" \
+RTDETR_DEVICE="$RTDETR_DEVICE" \
+RTDETR_PROGRESS_INTERVAL="$RTDETR_PROGRESS_INTERVAL" \
+RTDETR_CONFIG="${RTDETR_CONFIG:-}" \
+RTDETR_CHECKPOINT="${RTDETR_CHECKPOINT:-}" \
 DINOV3_BATCH_BENCHMARK="$BATCH_BENCHMARK_OUTPUT" \
   "$PY" "$ROOT_DIR/tools/setup/configure_runtime_profile.py" \
     --output "$DINOV3_RUNTIME_PROFILE" \
@@ -535,7 +684,17 @@ mkdir -p "$(dirname "$GUI_RUNTIME_ENV")"
   printf 'CODINO_TRT_QUERY_ENCODER_ENGINE=%q\n' "$CODINO_TRT_QUERY_ENCODER_ENGINE"
   printf 'CODINO_TRT_DECODER_ENGINE=%q\n' "$CODINO_TRT_DECODER_ENGINE"
   printf 'CODINO_TRT_MASK_HEAD_ENGINE=%q\n' "$CODINO_TRT_MASK_HEAD_ENGINE"
+  printf 'RTDETR_BATCH_SIZE=%q\n' "$RTDETR_BATCH_SIZE"
+  printf 'RTDETR_BATCH_CANDIDATES=%q\n' "$RTDETR_BATCH_CANDIDATES"
+  printf 'RTDETR_BATCH_MAX=%q\n' "$RTDETR_BATCH_MAX"
+  printf 'RTDETR_DEVICE=%q\n' "$RTDETR_DEVICE"
+  printf 'RTDETR_PROGRESS_INTERVAL=%q\n' "$RTDETR_PROGRESS_INTERVAL"
+  printf 'RTDETR_CONFIG=%q\n' "$RTDETR_CONFIG"
+  printf 'RTDETR_CHECKPOINT=%q\n' "$RTDETR_CHECKPOINT"
   printf 'ATOSYORI_REPO=%q\n' "$ATOSYORI_REPO"
+  if [[ -n "${RTDETR_REPO:-}" ]]; then
+    printf 'RTDETR_REPO=%q\n' "$RTDETR_REPO"
+  fi
   printf 'DINO_RUNTIME_DIR=%q\n' "$DINO_RUNTIME_DIR"
   printf 'QT_UI_DIR=%q\n' "$ROOT_DIR/apps/qt_ui"
 } > "$GUI_RUNTIME_ENV"
@@ -548,19 +707,48 @@ CODINO_TRT_MASK_HEAD_ENGINE="$CODINO_TRT_MASK_HEAD_ENGINE" \
   "$PY" "$ROOT_DIR/tools/artifacts/check_artifacts.py" --require-trt
 
 if [[ "$RUN_IMPORT_CHECK" == "1" ]]; then
-  "$PY" - <<'PY'
+  SETUP_CODINO_DEPS="$SETUP_CODINO_DEPS" "$PY" - <<'PY'
 import importlib
+import os
 import sys
 
-for name in ("torch", "cv2", "orjson", "atosyori_postprocess", "mmcv", "mmdet", "tensorrt"):
+names = ["torch", "cv2", "orjson", "atosyori_postprocess", "tensorrt"]
+if os.environ.get("SETUP_CODINO_DEPS") == "1":
+    names.extend(["mmcv", "mmdet"])
+
+for name in names:
     importlib.import_module(name)
 import tensorrt as trt
 logger = trt.Logger(trt.Logger.WARNING)
 builder = trt.Builder(logger)
 if builder is None:
     raise SystemExit("[ERROR] TensorRT builder initialization failed")
-print(f"[CHECK] imports ok: {sys.executable}")
+codino_note = "" if os.environ.get("SETUP_CODINO_DEPS") == "1" else " (Co-DINO imports skipped; SETUP_CODINO_DEPS=0)"
+print(f"[CHECK] imports ok: {sys.executable}{codino_note}")
 PY
+  if [[ -n "${RTDETR_REPO:-}" && -f "$RTDETR_REPO/tools/inference/video_sqlite_inf.py" ]]; then
+    RTDETR_REPO="$RTDETR_REPO" RTDETR_CONFIG="$RTDETR_CONFIG" RTDETR_CHECKPOINT="$RTDETR_CHECKPOINT" "$PY" - <<'PY'
+import importlib
+import os
+import sys
+from pathlib import Path
+
+for name in ("torch", "torchvision", "yaml", "scipy"):
+    importlib.import_module(name)
+script = Path(os.environ["RTDETR_REPO"]) / "tools" / "inference" / "video_sqlite_inf.py"
+if not script.is_file():
+    raise SystemExit(f"[ERROR] RT-DETR video_sqlite_inf.py missing: {script}")
+config = Path(os.environ["RTDETR_CONFIG"])
+checkpoint = Path(os.environ["RTDETR_CHECKPOINT"])
+if not config.is_file():
+    raise SystemExit(f"[ERROR] RT-DETR config missing: {config}")
+if not checkpoint.is_file():
+    raise SystemExit(f"[ERROR] RT-DETR checkpoint missing: {checkpoint}")
+sys.path.insert(0, str(script.parents[2]))
+importlib.import_module("engine.core")
+print(f"[CHECK] RT-DETR Head/Face runtime ok: {script}")
+PY
+  fi
   "$PY" -m atosyori_postprocess doctor --model-root "$POSTPROCESS_MODEL_ROOT" || true
 fi
 
@@ -575,6 +763,9 @@ Run:
     --classifier \\
     --render-overlays \\
     --force
+
+Enable Head/Face sidecar detection:
+  add --head-face-detect
 
 Postprocess checkpoints are expected under:
   $POSTPROCESS_MODEL_ROOT

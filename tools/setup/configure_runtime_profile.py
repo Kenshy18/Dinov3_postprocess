@@ -74,6 +74,15 @@ DEFAULT_CODINO_TRT_MANIFEST = env_path(
     ROOT / "checkpoints/codino/trt/codino_trt_manifest.json",
 )
 DEFAULT_BENCHMARK = env_path("DINOV3_BATCH_BENCHMARK", ROOT / ".runtime" / "runtime_benchmark.json")
+DEFAULT_RTDETR_REPO = env_path("RTDETR_REPO", ROOT / "external/RT-DETR/RT-DETRv4")
+DEFAULT_RTDETR_CONFIG = env_path(
+    "RTDETR_CONFIG",
+    DEFAULT_RTDETR_REPO / "configs" / "rtv2" / "rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml",
+)
+DEFAULT_RTDETR_CHECKPOINT = env_path(
+    "RTDETR_CHECKPOINT",
+    ROOT / "checkpoints" / "rtdetr" / "head_face_best_stg1.pth",
+)
 
 
 def _codino_default_paths_for_batch(batch: int) -> dict[str, str]:
@@ -250,31 +259,37 @@ def recommendations(
         dinov3_batch = 1
         eva02_batch = 1
         codino_batch = 1
+        rtdetr_batch = 16
         classifier_batch = 512
     elif total_gib < 10:
         dinov3_batch = 2
         eva02_batch = 1
         codino_batch = 1
+        rtdetr_batch = 16
         classifier_batch = 512
     elif total_gib < 16:
         dinov3_batch = 4
         eva02_batch = 1
         codino_batch = 1
+        rtdetr_batch = 32
         classifier_batch = 1024
     elif total_gib < 24:
         dinov3_batch = 6
         eva02_batch = 2
         codino_batch = 1
+        rtdetr_batch = 64
         classifier_batch = 1536
     elif total_gib < 40:
         dinov3_batch = 8
         eva02_batch = 4
         codino_batch = 2
+        rtdetr_batch = 128
         classifier_batch = 2048
     else:
         dinov3_batch = 8
         eva02_batch = 8
         codino_batch = 2
+        rtdetr_batch = 128
         classifier_batch = 4096
 
     notes = []
@@ -294,6 +309,7 @@ def recommendations(
             benchmark_codino_batch = None
     env_codino_batch = env_int("CODINO_TRT_BATCH_SIZE")
     selected_codino_batch = benchmark_codino_batch or env_codino_batch or codino_manifest_batch() or codino_batch
+    selected_rtdetr_batch = env_int("RTDETR_BATCH_SIZE") or rtdetr_batch
     trt_paths = codino_trt_paths(selected_codino_batch)
     codino_trt_engines = tuple(Path(value) for value in trt_paths.values())
     if not all(path.is_file() for path in codino_trt_engines):
@@ -333,6 +349,19 @@ def recommendations(
             "trt_extra_site_packages": None if trt_site is None else str(trt_site),
             "trt_query_encoder_shapes": "184x320,92x160,46x80,23x40,12x20",
         },
+        "rtdetr": {
+            "batch_size": selected_rtdetr_batch,
+            "device": os.environ.get("RTDETR_DEVICE", "cuda:0"),
+            "repo": str(DEFAULT_RTDETR_REPO),
+            "config": str(DEFAULT_RTDETR_CONFIG),
+            "checkpoint": str(DEFAULT_RTDETR_CHECKPOINT),
+            "progress_interval": int(os.environ.get("RTDETR_PROGRESS_INTERVAL", "30")),
+            "conf_thr": float(os.environ.get("RTDETR_CONF_THR", "0.50")),
+            "low_thr": float(os.environ.get("RTDETR_LOW_THR", "0.15")),
+            "new_track_thr": float(os.environ.get("RTDETR_NEW_TRACK_THR", "0.55")),
+            "track_min_hits": int(os.environ.get("RTDETR_TRACK_MIN_HITS", "5")),
+            "nms_iou_thr": float(os.environ.get("RTDETR_NMS_IOU_THR", "0.55")),
+        },
         "postprocess": {
             "k2_device": "auto",
             "polygon_predictor_device": "auto",
@@ -358,7 +387,7 @@ def apply_benchmark_recommendations(recs: dict[str, Any], benchmark: dict[str, A
     selected = benchmark.get("selected")
     if not isinstance(selected, dict):
         return
-    for detector, section in (("dinov3", "dinov3"), ("eva02", "eva02"), ("codino", "codino")):
+    for detector, section in (("dinov3", "dinov3"), ("eva02", "eva02"), ("codino", "codino"), ("rtdetr", "rtdetr")):
         item = selected.get(detector)
         if not isinstance(item, dict):
             continue
@@ -448,6 +477,7 @@ def main() -> int:
         f"dinov3={rec['dinov3']['batch_size']} "
         f"eva02={rec['eva02']['batch_size']} "
         f"codino={rec['codino']['batch_size']} "
+        f"rtdetr={rec['rtdetr']['batch_size']} "
         f"eva02_classifier={rec['eva02']['classifier_batch_size']}"
     )
     for note in rec.get("notes", []):

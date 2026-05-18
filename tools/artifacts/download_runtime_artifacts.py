@@ -5,7 +5,8 @@ This script intentionally supports a small set of layouts used by this bundle:
 
 - unified portable runtime artifact folder prepared from artifacts_to_upload/runtime_artifacts/
 - current shared Google Drive runtime folder, which groups detector artifacts by
-  backbone under checkpoints/dinov3/ and checkpoints/Eva02/
+  backbone under checkpoints/dinov3/ and checkpoints/Eva02/, and RT-DETR
+  Head/Face weights under checkpoints/rtdetr/
 - postprocess Google Drive folder from Atosyori
 - DINOv3 runtime Google Drive folder prepared from artifacts_to_upload/
 

@@ -105,8 +105,16 @@ def write_audit(audit_path: Path, event: str, **fields: object) -> None:
 
 
 def _extract_fps(line: str) -> str | None:
-    match = re.search(r"(?:e2e_fps|fps|render_fps)=([0-9]+(?:\.[0-9]+)?)", line)
-    return match.group(1) if match else None
+    for pattern in (
+        r"(?:e2e_fps|fps|render_fps)=([0-9]+(?:\.[0-9]+)?)",
+        r"throughput=([0-9]+(?:\.[0-9]+)?)\s*fps",
+        r"\(([0-9]+(?:\.[0-9]+)?)\s*fps\)",
+        r"fps\(avg=([0-9]+(?:\.[0-9]+)?)",
+    ):
+        match = re.search(pattern, line)
+        if match:
+            return match.group(1)
+    return None
 
 
 def pre_sqlite_enabled(args: argparse.Namespace) -> bool:
@@ -232,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run detector inference, optional Atosyori postprocess, and overlays with stable outputs."
     )
-    parser.add_argument("--mode", choices=("full", "inference", "postprocess"), default="full")
+    parser.add_argument("--mode", choices=("full", "inference", "postprocess", "head-face"), default="full")
     parser.add_argument("--input", type=Path, default=None, help="Video file or directory for full/inference modes")
     parser.add_argument("--input-jsonl", type=Path, action="append", default=[], help="Detector JSONL for postprocess mode")
     parser.add_argument(
@@ -274,6 +282,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the pre-postprocess raw detector overlay. --raw-overlay is a compatibility alias.",
     )
     parser.add_argument("--overlay-encoder", choices=("nvenc", "cpu"), default="nvenc")
+    parser.add_argument("--head-face-detect", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--head-face-overlay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--rtdetr-repo", type=Path, default=None)
     parser.add_argument(
         "--pre-sqlite",
         "--raw-sqlite",
@@ -300,10 +311,12 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.output_root = args.output_root.expanduser().resolve()
     args.model_root = args.model_root.expanduser().resolve()
     args.atosyori_repo = args.atosyori_repo.expanduser().resolve()
+    if getattr(args, "rtdetr_repo", None) is not None:
+        args.rtdetr_repo = args.rtdetr_repo.expanduser().resolve()
     args.keyframe_interval = validate_interval(args.keyframe_interval)
     args.recall_target = validate_recall(args.recall_target)
-    if args.mode in {"full", "inference"} and args.input is None:
-        raise RuntimeError("--input is required for full/inference modes")
+    if args.mode in {"full", "inference", "head-face"} and args.input is None:
+        raise RuntimeError("--input is required for full/inference/head-face modes")
     if args.mode == "postprocess" and not args.input_jsonl and not args.input_sqlite:
         raise RuntimeError("--input-jsonl or --input-sqlite is required for postprocess mode")
     if args.input_jsonl and args.input_sqlite:
@@ -343,6 +356,8 @@ def write_policy_for_run(args: argparse.Namespace, run_dir: Path) -> Path:
 
 def build_pipeline_command(args: argparse.Namespace, *, video: Path, output_root: Path, run_name: str, policy_path: Path | None) -> list[str]:
     postprocess = args.mode == "full"
+    head_face_only = args.mode == "head-face"
+    head_face_detect = head_face_only or bool(getattr(args, "head_face_detect", False))
     command = [
         sys.executable,
         str(PIPELINE_SCRIPT),
@@ -356,15 +371,22 @@ def build_pipeline_command(args: argparse.Namespace, *, video: Path, output_root
         str(args.detector),
         "--classifier" if args.classifier else "--no-classifier",
         "--postprocess" if postprocess else "--no-postprocess",
-        "--raw-sqlite" if pre_sqlite_enabled(args) else "--no-raw-sqlite",
+        "--raw-sqlite" if pre_sqlite_enabled(args) and not head_face_only else "--no-raw-sqlite",
+        "--head-face-detect" if head_face_detect else "--no-head-face-detect",
         "--progress-interval-sec",
         str(args.progress_interval_sec),
     ]
+    if head_face_only:
+        command.append("--head-face-only")
+    rtdetr_repo = getattr(args, "rtdetr_repo", None)
+    if rtdetr_repo is not None:
+        command.extend(["--rtdetr-repo", str(rtdetr_repo)])
     if args.force:
         command.append("--force")
     if args.max_frames is not None:
         command.extend(["--max-frames", str(args.max_frames)])
-    add_detector_options(command, args)
+    if not head_face_only:
+        add_detector_options(command, args)
 
     if postprocess:
         command.extend(
@@ -401,6 +423,8 @@ def build_pipeline_command(args: argparse.Namespace, *, video: Path, output_root
 def build_ui_job_command(args: argparse.Namespace, *, video: Path, output_root: Path, run_name: str, policy_path: Path | None) -> list[str]:
     pipeline_command = build_pipeline_command(args, video=video, output_root=output_root, run_name=run_name, policy_path=policy_path)
     overlay_mode = post_overlay_mode(args) if args.mode == "full" else "none"
+    head_face_enabled = args.mode == "head-face" or bool(getattr(args, "head_face_detect", False))
+    head_face_overlay = args.mode == "head-face" or (head_face_enabled and bool(getattr(args, "head_face_overlay", False)))
     command = [
         sys.executable,
         str(UI_JOB_SCRIPT),
@@ -412,7 +436,8 @@ def build_ui_job_command(args: argparse.Namespace, *, video: Path, output_root: 
         run_name,
         "--overlay-mode",
         overlay_mode,
-        "--raw-overlay" if pre_overlay_enabled(args) else "--no-raw-overlay",
+        "--raw-overlay" if pre_overlay_enabled(args) and args.mode != "head-face" else "--no-raw-overlay",
+        "--head-face-overlay" if head_face_overlay else "--no-head-face-overlay",
         "--encoder",
         str(args.overlay_encoder),
         "--raw-sqlite-output" if pre_sqlite_enabled(args) else "--no-raw-sqlite-output",

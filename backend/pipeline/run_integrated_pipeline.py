@@ -10,14 +10,16 @@ overlay links.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from .pipeline_commands import atosyori_env, build_detector_command, build_postprocess_command
+from .pipeline_commands import atosyori_env, build_detector_command, build_head_face_command, build_postprocess_command
 from .pipeline_defaults import (
     CODINO_DEFAULT_AMP,
     CODINO_DEFAULT_ASYNC_WRITER,
@@ -71,6 +73,7 @@ from .pipeline_defaults import (
 )
 from .pipeline_outputs import collect_postprocess_outputs, model_status, summarize_detector, write_json
 from .progress import ProgressReporter, limited_total
+from backend.schemas.head_face_sqlite import enrich_head_face_sqlite, merge_ai_and_head_face_sqlite
 from backend.schemas.mask_sqlite import jsonl_to_raw_sqlite
 
 
@@ -82,6 +85,65 @@ DEFAULT_ATOSYORI_REPO = Path(
         str(LOCAL_ATOSYORI_REPO),
     )
 )
+
+
+def default_rtdetr_repo() -> Path:
+    env_value = os.environ.get("RTDETR_REPO")
+    if env_value:
+        return Path(env_value)
+    for candidate in (
+        INTEGRATION_ROOT / "external" / "RT-DETR" / "RT-DETRv4",
+        INTEGRATION_ROOT.parent / "CV" / "RT-DETR" / "RT-DETRv4",
+        INTEGRATION_ROOT.parent / "RT-DETR" / "RT-DETRv4",
+    ):
+        if (candidate / "tools" / "inference" / "video_sqlite_inf.py").is_file():
+            return candidate
+    return INTEGRATION_ROOT / "external" / "RT-DETR" / "RT-DETRv4"
+
+
+DEFAULT_RTDETR_REPO = default_rtdetr_repo()
+DEFAULT_RTDETR_CONFIG = DEFAULT_RTDETR_REPO / "configs" / "rtv2" / "rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml"
+DEFAULT_RTDETR_CHECKPOINT = INTEGRATION_ROOT / "checkpoints" / "rtdetr" / "head_face_best_stg1.pth"
+
+
+def runtime_profile_recommendations() -> dict[str, Any]:
+    for raw in (
+        os.environ.get("DINOV3_RUNTIME_PROFILE"),
+        str(INTEGRATION_ROOT / ".runtime" / "runtime_profile.json"),
+        str(INTEGRATION_ROOT / "configs" / "runtime_profile.json"),
+    ):
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = INTEGRATION_ROOT / path
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                recs = data.get("recommendations", {})
+                return recs if isinstance(recs, dict) else {}
+        except Exception:
+            continue
+    return {}
+
+
+def runtime_profile_int(section: str, key: str, default: int) -> int:
+    try:
+        value = runtime_profile_recommendations().get(section, {}).get(key)
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except Exception:
+        return default
+
+
+def runtime_profile_str(section: str, key: str, default: str | None = None) -> str | None:
+    try:
+        value = runtime_profile_recommendations().get(section, {}).get(key)
+    except Exception:
+        return default
+    if value in (None, ""):
+        return default
+    return str(value)
 
 
 def abs_path(path: str | Path) -> Path:
@@ -130,6 +192,87 @@ def run_command(
     }
 
 
+def run_head_face_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    label: str,
+    video: Path,
+    total_frames: int | None,
+    progress_interval_sec: float,
+) -> dict[str, Any]:
+    print(f"[run] {label}", flush=True)
+    print(f"[phase-start] command: {label}", flush=True)
+    print("[cmd] " + " ".join(command), flush=True)
+    progress = ProgressReporter(
+        "head_face",
+        total=total_frames,
+        unit="frames",
+        interval_sec=float(progress_interval_sec),
+        static_fields={"video": video.name},
+    )
+    progress.emit(0, force=True)
+    env = dict(os.environ)
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    start = time.perf_counter()
+    processed_frames = 0
+    rows = 0
+    last_fps: float | None = None
+    pattern = re.compile(r"processed\s+(\d+)(?:/(\d+))?\s+frames.*?rows=(\d+).*?throughput=([0-9.]+)")
+    final_pattern = re.compile(r"processed\s+(\d+)\s+frames\s+in\s+[0-9.]+s\s+\(([0-9.]+)\s+fps\)")
+    rows_pattern = re.compile(r"wrote\s+(\d+)\s+detection rows")
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        match = pattern.search(line)
+        if match:
+            processed_frames = int(match.group(1))
+            rows = int(match.group(3))
+            fps = float(match.group(4))
+            last_fps = fps
+            progress.emit(processed_frames, fps=fps, extra={"detections": rows})
+            continue
+        final_match = final_pattern.search(line)
+        if final_match:
+            processed_frames = int(final_match.group(1))
+            fps = float(final_match.group(2))
+            last_fps = fps
+            progress.emit(processed_frames, fps=fps, extra={"detections": rows})
+            continue
+        rows_match = rows_pattern.search(line)
+        if rows_match:
+            rows = int(rows_match.group(1))
+            progress.emit(processed_frames, extra={"detections": rows})
+    returncode = process.wait()
+    elapsed = time.perf_counter() - start
+    if progress.last_current != processed_frames:
+        progress.emit(processed_frames, force=True, extra={"detections": rows})
+    if returncode != 0:
+        raise RuntimeError(f"{label} failed with exit code {returncode}")
+    print(f"[done] {label}: {elapsed:.2f}s", flush=True)
+    print(f"[phase-done] command: {label} elapsed={elapsed:.2f}s", flush=True)
+    return {
+        "label": label,
+        "cmd": command,
+        "cwd": str(cwd),
+        "returncode": int(returncode),
+        "wall_seconds": float(elapsed),
+        "processed_frames": int(processed_frames),
+        "detections": int(rows),
+        "fps": last_fps,
+        "e2e_fps": last_fps,
+    }
+
+
 def detector_processed_frames(summary: dict[str, Any]) -> int | None:
     runs = summary.get("runs")
     if not isinstance(runs, list):
@@ -141,10 +284,26 @@ def detector_processed_frames(summary: dict[str, Any]) -> int | None:
     return total or None
 
 
+def video_frame_count(video: Path) -> int | None:
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    cap = cv2.VideoCapture(str(video))
+    try:
+        if not cap.isOpened():
+            return None
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        return count if count > 0 else None
+    finally:
+        cap.release()
+
+
 def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
     detector_out = run_dir / args.detector
     postprocess_out = run_dir / "postprocess"
+    head_face_only = bool(args.head_face_only)
     detector_runtime = {
         "dinov3": args.dinov3_runtime,
         "eva02": args.eva02_runtime,
@@ -152,17 +311,24 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
     }[args.detector]
 
     timings: list[dict[str, Any]] = []
-    timings.append(
-        run_command(
-            build_detector_command(args, video, detector_out),
-            cwd=detector_runtime,
-            label=f"{args.detector} inference: {video.name}",
+    jsonl_path: Path | None = None
+    detector_summary: dict[str, Any] = {
+        "classifier_enabled": None,
+        "class_names": [],
+        "runs": [{"processed_frames": video_frame_count(video)}],
+    }
+    if not head_face_only:
+        timings.append(
+            run_command(
+                build_detector_command(args, video, detector_out),
+                cwd=detector_runtime,
+                label=f"{args.detector} inference: {video.name}",
+            )
         )
-    )
-    jsonl_path, detector_summary = summarize_detector(detector_out, video)
+        jsonl_path, detector_summary = summarize_detector(detector_out, video)
     raw_sqlite_summary: dict[str, Any] | None = None
     raw_sqlite_path: Path | None = None
-    if args.raw_sqlite:
+    if args.raw_sqlite and jsonl_path is not None:
         raw_sqlite_path = run_dir / "sqlite" / f"{video.stem}_raw_detections.sqlite"
         raw_progress = ProgressReporter(
             "raw_sqlite",
@@ -185,8 +351,51 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             flush=True,
         )
 
+    head_face_summary: dict[str, Any] | None = None
+    head_face_sqlite_path: Path | None = None
+    if args.head_face_detect:
+        head_face_sqlite_path = run_dir / "head_face" / "sqlite" / f"{video.stem}_head_face.sqlite"
+        head_face_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        if head_face_sqlite_path.exists() and args.force:
+            head_face_sqlite_path.unlink()
+        if not args.rtdetr_repo.is_dir():
+            raise FileNotFoundError(
+                f"RT-DETR repo not found: {args.rtdetr_repo}. "
+                "Set RTDETR_REPO or pass --rtdetr-repo when --head-face-detect is enabled."
+            )
+        if args.rtdetr_config is None or not args.rtdetr_config.is_file():
+            raise FileNotFoundError(
+                f"RT-DETR config not found: {args.rtdetr_config}. "
+                "Run tools/setup_runtime.sh or pass --rtdetr-config."
+            )
+        if args.rtdetr_checkpoint is None or not args.rtdetr_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"RT-DETR checkpoint not found: {args.rtdetr_checkpoint}. "
+                "Run tools/setup_runtime.sh with RUNTIME_ARTIFACTS_URL/RUNTIME_ARTIFACTS_DIR, "
+                "or pass --rtdetr-checkpoint."
+            )
+        timings.append(
+            run_head_face_command(
+                build_head_face_command(args, video, head_face_sqlite_path),
+                cwd=args.rtdetr_repo,
+                label=f"head/face RT-DETR inference: {video.name}",
+                video=video,
+                total_frames=limited_total(detector_processed_frames(detector_summary) or video_frame_count(video), args.max_frames),
+                progress_interval_sec=float(args.progress_interval_sec),
+            )
+        )
+        head_face_summary = enrich_head_face_sqlite(head_face_sqlite_path)
+        print(
+            f"[head-face-sqlite] {head_face_sqlite_path} "
+            f"detections={head_face_summary['detections']} faces={head_face_summary['faces']} "
+            f"heads={head_face_summary['heads']} tracks={head_face_summary['tracks']}",
+            flush=True,
+        )
+
     postprocess_summary: dict[str, Any] | None = None
-    if args.postprocess:
+    combined_final_summary: dict[str, Any] | None = None
+    combined_final_sqlite_path: Path | None = None
+    if args.postprocess and jsonl_path is not None:
         timings.append(
             run_command(
                 build_postprocess_command(args, video, jsonl_path, postprocess_out),
@@ -196,6 +405,19 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             )
         )
         postprocess_summary = collect_postprocess_outputs(run_dir, postprocess_out, video)
+        if head_face_sqlite_path is not None and head_face_summary is not None:
+            combined_final_sqlite_path = run_dir / "sqlite" / f"{video.stem}_combined_final.sqlite"
+            combined_final_summary = merge_ai_and_head_face_sqlite(
+                ai_sqlites={str(key): str(value) for key, value in (postprocess_summary.get("prediction_sqlite_links") or {}).items()},
+                head_face_sqlite=head_face_sqlite_path,
+                output_sqlite=combined_final_sqlite_path,
+            )
+            print(
+                f"[combined-final-sqlite] {combined_final_sqlite_path} "
+                f"ai_masks={combined_final_summary['ai_mask_rows']} "
+                f"head_face={combined_final_summary['head_face_detections']}",
+                flush=True,
+            )
 
     summary = {
         "video": str(video),
@@ -207,18 +429,24 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
         "codino_runtime": str(args.codino_runtime),
         "atosyori_repo": str(args.atosyori_repo),
         "postprocess_model_status": model_status(args.postprocess_model_root),
+        "head_face_enabled": bool(args.head_face_detect),
+        "head_face_only": head_face_only,
         "class_policy_json": None if args.class_policy_json is None else str(args.class_policy_json),
         "artifacts": {
-            "detector_jsonl": str(jsonl_path),
+            "detector_jsonl": None if jsonl_path is None else str(jsonl_path),
             "raw_sqlite": None if raw_sqlite_path is None else str(raw_sqlite_path),
-            "detector_summary": str(detector_out / "summary.json"),
-            "dinov3_jsonl": str(jsonl_path) if args.detector == "dinov3" else None,
-            "dinov3_summary": str(detector_out / "summary.json") if args.detector == "dinov3" else None,
-            "codino_jsonl": str(jsonl_path) if args.detector == "codino" else None,
-            "codino_summary": str(detector_out / "summary.json") if args.detector == "codino" else None,
+            "head_face_sqlite": None if head_face_sqlite_path is None else str(head_face_sqlite_path),
+            "combined_final_sqlite": None if combined_final_sqlite_path is None else str(combined_final_sqlite_path),
+            "detector_summary": None if jsonl_path is None else str(detector_out / "summary.json"),
+            "dinov3_jsonl": str(jsonl_path) if args.detector == "dinov3" and jsonl_path is not None else None,
+            "dinov3_summary": str(detector_out / "summary.json") if args.detector == "dinov3" and jsonl_path is not None else None,
+            "codino_jsonl": str(jsonl_path) if args.detector == "codino" and jsonl_path is not None else None,
+            "codino_summary": str(detector_out / "summary.json") if args.detector == "codino" and jsonl_path is not None else None,
             "postprocess_summary": None if postprocess_summary is None else postprocess_summary["summary"],
         },
         "raw_sqlite": raw_sqlite_summary,
+        "head_face": head_face_summary,
+        "combined_final_sqlite": combined_final_summary,
         "detector_summary": {
             "classifier_enabled": detector_summary.get("classifier_enabled"),
             "class_names": detector_summary.get("class_names"),
@@ -258,6 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eva02-runtime", type=Path, default=DEFAULT_EVA02_RUNTIME)
     parser.add_argument("--codino-runtime", type=Path, default=DEFAULT_CODINO_RUNTIME)
     parser.add_argument("--atosyori-repo", type=Path, default=DEFAULT_ATOSYORI_REPO)
+    parser.add_argument("--rtdetr-repo", type=Path, default=DEFAULT_RTDETR_REPO)
     parser.add_argument("--postprocess-model-root", type=Path, default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--force", action="store_true")
 
@@ -289,6 +518,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-detector-overlay", action="store_true")
     parser.add_argument("--raw-sqlite", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--progress-interval-sec", type=float, default=float(os.environ.get("PIPELINE_PROGRESS_INTERVAL_SEC", "5")))
+    parser.add_argument("--head-face-detect", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--head-face-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run only RT-DETR Head/Face detection and skip the main AI detector/postprocess.",
+    )
+    parser.add_argument(
+        "--rtdetr-config",
+        type=Path,
+        default=os.environ.get("RTDETR_CONFIG")
+        or runtime_profile_str("rtdetr", "config", str(DEFAULT_RTDETR_CONFIG)),
+    )
+    parser.add_argument(
+        "--rtdetr-checkpoint",
+        type=Path,
+        default=os.environ.get("RTDETR_CHECKPOINT")
+        or runtime_profile_str("rtdetr", "checkpoint", str(DEFAULT_RTDETR_CHECKPOINT)),
+    )
+    parser.add_argument("--head-face-device", default=os.environ.get("RTDETR_DEVICE", runtime_profile_str("rtdetr", "device", "cuda:0")))
+    parser.add_argument(
+        "--head-face-batch-size",
+        type=int,
+        default=int(os.environ.get("RTDETR_BATCH_SIZE") or runtime_profile_int("rtdetr", "batch_size", 128)),
+    )
+    parser.add_argument("--head-face-conf-thr", type=float, default=float(os.environ.get("RTDETR_CONF_THR", "0.50")))
+    parser.add_argument("--head-face-low-thr", type=float, default=float(os.environ.get("RTDETR_LOW_THR", "0.15")))
+    parser.add_argument("--head-face-new-track-thr", type=float, default=float(os.environ.get("RTDETR_NEW_TRACK_THR", "0.55")))
+    parser.add_argument("--head-face-track-min-hits", type=int, default=int(os.environ.get("RTDETR_TRACK_MIN_HITS", "5")))
+    parser.add_argument("--head-face-nms-iou-thr", type=float, default=float(os.environ.get("RTDETR_NMS_IOU_THR", "0.55")))
+    parser.add_argument(
+        "--head-face-progress-interval",
+        type=int,
+        default=int(os.environ.get("RTDETR_PROGRESS_INTERVAL") or runtime_profile_int("rtdetr", "progress_interval", 30)),
+    )
+    parser.add_argument("--head-face-compile", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--eva02-target-size", type=int, default=EVA02_DEFAULT_TARGET_SIZE)
     parser.add_argument("--eva02-score-thresh", type=float, default=EVA02_DEFAULT_SCORE_THRESH)
@@ -345,8 +610,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
-    if args.detector == "eva02" and not args.classifier:
+    if args.detector == "eva02" and not args.classifier and not args.head_face_only:
         raise RuntimeError("EVA02 runtime currently requires --classifier")
+    if args.head_face_only:
+        args.head_face_detect = True
+        args.postprocess = False
+        args.raw_sqlite = False
     args.input = abs_path(args.input)
     args.output_root = abs_path(args.output_root)
     args.python = abs_path_preserve_symlink(args.python)
@@ -354,6 +623,7 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.eva02_runtime = abs_path(args.eva02_runtime)
     args.codino_runtime = abs_path(args.codino_runtime)
     args.atosyori_repo = abs_path(args.atosyori_repo)
+    args.rtdetr_repo = abs_path(args.rtdetr_repo)
     args.postprocess_model_root = abs_path(args.postprocess_model_root)
     for name in (
         "classifier_checkpoint",
@@ -373,6 +643,8 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         "codino_trt_decoder_engine",
         "codino_trt_mask_head_engine",
         "codino_trt_extra_site_packages",
+        "rtdetr_config",
+        "rtdetr_checkpoint",
     ):
         value = getattr(args, name)
         if value is not None:

@@ -35,6 +35,19 @@
       "trt_mask_head_engine": "checkpoints/codino/trt/codino_mask_head_core_n1_736x1280_fp16.engine",
       "trt_query_encoder_shapes": "184x320,92x160,46x80,23x40,12x20"
     },
+    "rtdetr": {
+      "batch_size": 64,
+      "device": "cuda:0",
+      "repo": "external/RT-DETR/RT-DETRv4",
+      "config": "external/RT-DETR/RT-DETRv4/configs/rtv2/rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml",
+      "checkpoint": "checkpoints/rtdetr/head_face_best_stg1.pth",
+      "progress_interval": 30,
+      "conf_thr": 0.5,
+      "low_thr": 0.15,
+      "new_track_thr": 0.55,
+      "track_min_hits": 5,
+      "nms_iou_thr": 0.55
+    },
     "postprocess": {
       "k2_device": "auto",
       "polygon_predictor_device": "auto",
@@ -47,35 +60,40 @@
       "dinov3_batch_size": 2,
       "eva02_batch_size": 1,
       "eva02_classifier_batch_size": 512,
-      "codino_batch_size": 1
+      "codino_batch_size": 1,
+      "rtdetr_batch_size": 16
     },
     {
       "vram_gib": "10-15",
       "dinov3_batch_size": 4,
       "eva02_batch_size": 1,
       "eva02_classifier_batch_size": 1024,
-      "codino_batch_size": 1
+      "codino_batch_size": 1,
+      "rtdetr_batch_size": 32
     },
     {
       "vram_gib": "16-23",
       "dinov3_batch_size": 6,
       "eva02_batch_size": 2,
       "eva02_classifier_batch_size": 1536,
-      "codino_batch_size": 1
+      "codino_batch_size": 1,
+      "rtdetr_batch_size": 64
     },
     {
       "vram_gib": "24-39",
       "dinov3_batch_size": 8,
       "eva02_batch_size": 4,
       "eva02_classifier_batch_size": 2048,
-      "codino_batch_size": 2
+      "codino_batch_size": 2,
+      "rtdetr_batch_size": 128
     },
     {
       "vram_gib": ">= 40",
       "dinov3_batch_size": 8,
       "eva02_batch_size": 8,
       "eva02_classifier_batch_size": 4096,
-      "codino_batch_size": 2
+      "codino_batch_size": 2,
+      "rtdetr_batch_size": 128
     }
   ],
   "notes": [

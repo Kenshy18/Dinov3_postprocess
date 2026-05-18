@@ -16,6 +16,7 @@ import re
 import selectors
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -32,6 +33,9 @@ DEFAULT_CODINO_TRT_BACKBONE = DEFAULT_CODINO_TRT_DIR / "codino_dinov3_vitl_backb
 DEFAULT_CODINO_TRT_QUERY_ENCODER = DEFAULT_CODINO_TRT_DIR / "codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
 DEFAULT_CODINO_TRT_DECODER = DEFAULT_CODINO_TRT_DIR / "codino_decoder_b2_736x1280_msda_plugin_fp16.engine"
 DEFAULT_CODINO_TRT_MASK_HEAD = DEFAULT_CODINO_TRT_DIR / "codino_mask_head_core_n1_736x1280_fp16.engine"
+DEFAULT_RTDETR_REPO = Path(os.environ.get("RTDETR_REPO", ROOT / "external" / "RT-DETR" / "RT-DETRv4"))
+DEFAULT_RTDETR_CONFIG = DEFAULT_RTDETR_REPO / "configs" / "rtv2" / "rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml"
+DEFAULT_RTDETR_CHECKPOINT = ROOT / "checkpoints" / "rtdetr" / "head_face_best_stg1.pth"
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 
 
@@ -146,6 +150,22 @@ def parse_candidates(raw: str | None) -> list[int]:
 
 
 def auto_candidates(detector: str, total_mib: int | None) -> list[int]:
+    if detector == "rtdetr":
+        total_gib = (total_mib or 0) / 1024.0
+        max_batch = int(os.environ.get("RTDETR_BATCH_MAX", "256"))
+        if total_gib <= 0:
+            candidates = [16]
+        elif total_gib < 10:
+            candidates = [8, 16, 32]
+        elif total_gib < 16:
+            candidates = [16, 32, 64]
+        elif total_gib < 24:
+            candidates = [32, 64, 96, 128]
+        elif total_gib < 40:
+            candidates = [64, 96, 128, 192]
+        else:
+            candidates = [64, 128, 192, 256]
+        return [batch for batch in candidates if batch <= max_batch]
     if detector == "codino":
         total_gib = (total_mib or 0) / 1024.0
         max_batch = int(os.environ.get("CODINO_TRT_MAX_BATCH", "8"))
@@ -250,6 +270,33 @@ def count_jsonl_lines(output_dir: Path) -> int:
     return total
 
 
+def sqlite_processed_frames(output_dir: Path) -> int:
+    for path in sorted(output_dir.rglob("*.sqlite")):
+        try:
+            conn = sqlite3.connect(str(path))
+            try:
+                tables = {str(row[0]) for row in conn.execute("select name from sqlite_master where type='table'")}
+                if "metadata" in tables:
+                    row = conn.execute("select value from metadata where key = 'processed_frames'").fetchone()
+                    if row is not None:
+                        try:
+                            return int(json.loads(str(row[0])))
+                        except Exception:
+                            try:
+                                return int(str(row[0]))
+                            except Exception:
+                                pass
+                if "frames" in tables:
+                    count = int(conn.execute("select count(*) from frames").fetchone()[0])
+                    if count > 0:
+                        return count
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+    return 0
+
+
 def parse_measured_fps(text: str, summary_path: Path | None) -> float | None:
     if summary_path is not None and summary_path.is_file():
         try:
@@ -269,6 +316,18 @@ def parse_measured_fps(text: str, summary_path: Path | None) -> float | None:
         except ValueError:
             return None
     matches = re.findall(r"fps_total=([0-9.]+)", text)
+    if matches:
+        try:
+            return float(matches[-1])
+        except ValueError:
+            return None
+    matches = re.findall(r"processed\s+\d+\s+frames\s+in\s+[0-9.]+s\s+\(([0-9.]+)\s+fps\)", text)
+    if matches:
+        try:
+            return float(matches[-1])
+        except ValueError:
+            return None
+    matches = re.findall(r"throughput=([0-9.]+)\s+fps", text)
     if matches:
         try:
             return float(matches[-1])
@@ -331,7 +390,54 @@ def command_for_candidate(
     engine: Path,
     classifier_batch_size: int,
     eva02_compile_backbone: str,
+    rtdetr_repo: Path = DEFAULT_RTDETR_REPO,
+    rtdetr_config: Path | None = None,
+    rtdetr_checkpoint: Path | None = None,
+    rtdetr_device: str = "cuda:0",
+    rtdetr_progress_interval: int = 30,
 ) -> list[str]:
+    if detector == "rtdetr":
+        script = rtdetr_repo / "tools" / "inference" / "video_sqlite_inf.py"
+        command = [
+            str(python),
+            str(script),
+            "--input",
+            str(input_video),
+            "--output",
+            str(output_dir / "head_face.sqlite"),
+            "--classes",
+            "Head",
+            "Face",
+            "--output-mode",
+            "tracks",
+            "--tracker",
+            "bytetrack",
+            "--conf-thr",
+            os.environ.get("RTDETR_CONF_THR", "0.50"),
+            "--bytetrack-high-thr",
+            os.environ.get("RTDETR_CONF_THR", "0.50"),
+            "--bytetrack-low-thr",
+            os.environ.get("RTDETR_LOW_THR", "0.15"),
+            "--bytetrack-new-thr",
+            os.environ.get("RTDETR_NEW_TRACK_THR", "0.55"),
+            "--track-min-hits",
+            os.environ.get("RTDETR_TRACK_MIN_HITS", "5"),
+            "--nms-iou-thr",
+            os.environ.get("RTDETR_NMS_IOU_THR", "0.55"),
+            "--batch-size",
+            str(batch),
+            "--device",
+            str(rtdetr_device),
+            "--max-frames",
+            str(frames),
+            "--progress-interval",
+            str(rtdetr_progress_interval),
+        ]
+        if rtdetr_config is not None:
+            command.extend(["--config", str(rtdetr_config)])
+        if rtdetr_checkpoint is not None:
+            command.extend(["--resume", str(rtdetr_checkpoint)])
+        return command
     if detector == "eva02":
         return [
             str(python),
@@ -433,7 +539,14 @@ def command_for_candidate(
     ]
 
 
-def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, poll_sec: float) -> dict[str, Any]:
+def run_candidate(
+    command: list[str],
+    *,
+    detector: str,
+    output_dir: Path,
+    timeout_sec: int,
+    poll_sec: float,
+) -> dict[str, Any]:
     start_sample = current_gpu_sample()
     start_used = start_sample.get("memory_used_mib")
     peak_used = start_used
@@ -488,11 +601,12 @@ def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, pol
     text = "\n".join(lines)
     summary_path = output_dir / "summary.json"
     jsonl_lines = count_jsonl_lines(output_dir)
+    processed_frames = sqlite_processed_frames(output_dir) if detector == "rtdetr" else jsonl_lines
     measured_fps = parse_measured_fps(text, summary_path)
-    wall_fps = jsonl_lines / elapsed if elapsed > 0 and jsonl_lines > 0 else 0.0
+    wall_fps = processed_frames / elapsed if elapsed > 0 and processed_frames > 0 else 0.0
     metric_fps = float(measured_fps if measured_fps and measured_fps > 0 else wall_fps)
     failure = classify_failure(text, returncode, timed_out)
-    success = bool(returncode == 0 and jsonl_lines > 0 and not timed_out)
+    success = bool(returncode == 0 and processed_frames > 0 and not timed_out)
     util_values = [
         float(sample["utilization_gpu_percent"])
         for sample in samples
@@ -517,6 +631,7 @@ def run_candidate(command: list[str], *, output_dir: Path, timeout_sec: int, pol
         "failure": failure,
         "elapsed_sec": elapsed,
         "jsonl_lines": jsonl_lines,
+        "processed_frames": processed_frames,
         "measured_fps": measured_fps,
         "wall_fps": wall_fps,
         "metric_fps": metric_fps,
@@ -573,6 +688,11 @@ def benchmark_detector(
     eva02_compile_backbone: str,
     max_vram_fraction: float,
     tie_fps_ratio: float,
+    rtdetr_repo: Path = DEFAULT_RTDETR_REPO,
+    rtdetr_config: Path | None = None,
+    rtdetr_checkpoint: Path | None = None,
+    rtdetr_device: str = "cuda:0",
+    rtdetr_progress_interval: int = 30,
 ) -> dict[str, Any]:
     results = []
     selected: dict[str, Any] | None = None
@@ -590,9 +710,20 @@ def benchmark_detector(
             engine=engine,
             classifier_batch_size=classifier_batch_size,
             eva02_compile_backbone=eva02_compile_backbone,
+            rtdetr_repo=rtdetr_repo,
+            rtdetr_config=rtdetr_config,
+            rtdetr_checkpoint=rtdetr_checkpoint,
+            rtdetr_device=rtdetr_device,
+            rtdetr_progress_interval=rtdetr_progress_interval,
         )
         print(f"[BENCH] {detector} batch={batch}", flush=True)
-        result = run_candidate(command, output_dir=output_dir, timeout_sec=timeout_sec, poll_sec=poll_sec)
+        result = run_candidate(
+            command,
+            detector=detector,
+            output_dir=output_dir,
+            timeout_sec=timeout_sec,
+            poll_sec=poll_sec,
+        )
         result["batch_size"] = batch
         peak_mib = result.get("gpu_memory_used_peak_mib")
         total_mib = result.get("gpu_memory_total_mib")
@@ -673,8 +804,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eva02-candidates", default=os.environ.get("EVA02_BATCH_CANDIDATES", ""))
     parser.add_argument("--dinov3-candidates", default=os.environ.get("DINOV3_BATCH_CANDIDATES", ""))
     parser.add_argument("--codino-candidates", default=os.environ.get("CODINO_BATCH_CANDIDATES", ""))
+    parser.add_argument("--rtdetr-candidates", default=os.environ.get("RTDETR_BATCH_CANDIDATES", ""))
     parser.add_argument("--classifier-batch-size", type=int, default=int(os.environ.get("EVA02_CLASSIFIER_BATCH_SIZE", "1024")))
     parser.add_argument("--engine", type=Path, default=Path(os.environ.get("DINOV3_TRT_BACKBONE_ENGINE", DEFAULT_TRT_ENGINE)))
+    parser.add_argument("--rtdetr-repo", type=Path, default=DEFAULT_RTDETR_REPO)
+    parser.add_argument(
+        "--rtdetr-config",
+        type=Path,
+        default=Path(os.environ["RTDETR_CONFIG"]) if os.environ.get("RTDETR_CONFIG") else DEFAULT_RTDETR_CONFIG,
+    )
+    parser.add_argument(
+        "--rtdetr-checkpoint",
+        type=Path,
+        default=Path(os.environ["RTDETR_CHECKPOINT"]) if os.environ.get("RTDETR_CHECKPOINT") else DEFAULT_RTDETR_CHECKPOINT,
+    )
+    parser.add_argument("--rtdetr-device", default=os.environ.get("RTDETR_DEVICE", "cuda:0"))
+    parser.add_argument("--rtdetr-progress-interval", type=int, default=int(os.environ.get("RTDETR_PROGRESS_INTERVAL", "30")))
     parser.add_argument(
         "--eva02-compile-backbone",
         default=os.environ.get("EVA02_BENCHMARK_COMPILE_BACKBONE", "max-autotune"),
@@ -718,8 +863,18 @@ def main() -> int:
             print(f"[BENCH] input video not found, using synthetic dummy video: {input_video}", file=sys.stderr)
             input_video = None
             input_mode = "synthetic_missing_input"
+    rtdetr_repo = args.rtdetr_repo.expanduser()
+    if not rtdetr_repo.is_absolute():
+        rtdetr_repo = ROOT / rtdetr_repo
+    rtdetr_repo = rtdetr_repo.resolve()
+    rtdetr_config = args.rtdetr_config.expanduser().resolve() if args.rtdetr_config is not None else None
+    rtdetr_checkpoint = args.rtdetr_checkpoint.expanduser().resolve() if args.rtdetr_checkpoint is not None else None
+
     detectors = [item.strip().lower() for item in args.detectors.split(",") if item.strip()]
-    detectors = [item for item in detectors if item in {"eva02", "dinov3", "codino"}]
+    detectors = [item for item in detectors if item in {"eva02", "dinov3", "codino", "rtdetr"}]
+    if "rtdetr" in detectors and not (rtdetr_repo / "tools" / "inference" / "video_sqlite_inf.py").is_file():
+        print(f"[BENCH] skip rtdetr; video_sqlite_inf.py not found under {rtdetr_repo}", file=sys.stderr, flush=True)
+        detectors = [item for item in detectors if item != "rtdetr"]
     if not detectors:
         detectors = ["eva02"]
 
@@ -743,6 +898,9 @@ def main() -> int:
             "timeout_sec": int(args.timeout_sec),
             "cleanup": bool(args.cleanup),
             "eva02_compile_backbone": str(args.eva02_compile_backbone),
+            "rtdetr_repo": str(rtdetr_repo),
+            "rtdetr_device": str(args.rtdetr_device),
+            "rtdetr_progress_interval": int(args.rtdetr_progress_interval),
             "max_vram_fraction": float(args.max_vram_fraction),
             "tie_fps_ratio": float(args.tie_fps_ratio),
         },
@@ -772,6 +930,7 @@ def main() -> int:
                 "eva02": args.eva02_candidates,
                 "dinov3": args.dinov3_candidates,
                 "codino": args.codino_candidates,
+                "rtdetr": args.rtdetr_candidates,
             }[detector]
             explicit = parse_candidates(explicit_raw)
             candidates = explicit or auto_candidates(detector, total_mib)
@@ -789,6 +948,11 @@ def main() -> int:
                 eva02_compile_backbone=str(args.eva02_compile_backbone),
                 max_vram_fraction=float(args.max_vram_fraction),
                 tie_fps_ratio=float(args.tie_fps_ratio),
+                rtdetr_repo=rtdetr_repo,
+                rtdetr_config=rtdetr_config,
+                rtdetr_checkpoint=rtdetr_checkpoint,
+                rtdetr_device=str(args.rtdetr_device),
+                rtdetr_progress_interval=int(args.rtdetr_progress_interval),
             )
             result["detectors"][detector] = detector_result
             if detector_result.get("selected"):

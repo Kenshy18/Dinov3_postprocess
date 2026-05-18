@@ -3,9 +3,10 @@
 Large runtime artifacts are intentionally kept outside Git. Upload them to
 Google Drive or another artifact store, then let the setup script restore the
 same layout under `checkpoints/`. Small Python/config files such as
-`checkpoints/codino/detector/resolved_config.py` are tracked in Git. TensorRT
-engines are local-device artifacts and are rebuilt by setup instead of being
-required from Drive.
+`checkpoints/codino/detector/resolved_config.py` and the RT-DETR Head/Face
+config under `external/RT-DETR/RT-DETRv4` are tracked in Git. TensorRT engines
+are local-device artifacts and are rebuilt by setup instead of being required
+from Drive.
 
 Expected local runtime layout after download/placement:
 
@@ -28,6 +29,8 @@ checkpoints/
       epoch_2.pth
     classifier/
       best.pt
+  rtdetr/
+    head_face_best_stg1.pth
   postprocess/
     k2_v5/
       best_exact.pt
@@ -77,6 +80,7 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/Eva02/classifier/best.pt
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt
+  checkpoints/rtdetr/head_face_best_stg1.pth
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
@@ -103,6 +107,7 @@ Notes:
 
 - TensorRT engines are device/CUDA/TensorRT dependent and are not required in the Drive artifact folder.
 - The setup script rebuilds DINOv3 and Co-DINO TensorRT engines automatically when they are missing.
+- The RT-DETR source and config are Git-managed under `external/RT-DETR/RT-DETRv4`; only `checkpoints/rtdetr/head_face_best_stg1.pth` is a required Drive artifact.
 - `run_config.json` and model definition files are small and tracked.
 - Runtime checkpoint bodies, `.engine`, `.pt`, `.pth`, and `.npz` files under
   the documented `checkpoints/` paths are ignored by Git and should come from

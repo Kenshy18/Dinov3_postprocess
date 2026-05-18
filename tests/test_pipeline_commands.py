@@ -4,6 +4,7 @@ import argparse
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -17,6 +18,7 @@ import run_full_flow  # noqa: E402
 import pipeline_commands  # noqa: E402
 import run_postprocess_only  # noqa: E402
 import run_integrated_pipeline  # noqa: E402
+from backend.pipeline.cli import infer as pipeline_infer  # noqa: E402
 from backend.detectors.codino.commands import build_command as build_codino_adapter_command  # noqa: E402
 from backend.detectors.dinov3.commands import build_command as build_dinov3_adapter_command  # noqa: E402
 from backend.detectors.eva02.commands import build_command as build_eva02_adapter_command  # noqa: E402
@@ -58,6 +60,9 @@ class PipelineCommandTests(unittest.TestCase):
             k2_device="auto",
             polygon_predictor_device="auto",
             progress_interval_sec=5.0,
+            head_face_detect=False,
+            head_face_overlay=True,
+            rtdetr_repo=None,
         )
 
         command = infer.build_ui_job_command(
@@ -77,6 +82,107 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertEqual(command[command.index("--codino-score-thresh") + 1], "0.25")
         self.assertIn("--postprocess", command)
         self.assertIn("--raw-sqlite", command)
+        self.assertIn("--no-head-face-detect", command)
+
+    def test_primary_infer_entrypoint_passes_head_face_options(self) -> None:
+        args = argparse.Namespace(
+            mode="full",
+            detector="eva02",
+            classifier=True,
+            force=True,
+            max_frames=4,
+            batch_size=None,
+            warmup_frames=None,
+            score_thresh=None,
+            post_overlay="both",
+            pre_overlay=False,
+            overlay_encoder="cpu",
+            pre_sqlite=True,
+            post_sqlite=True,
+            shape_mode="ellipse",
+            keyframe_interval=3,
+            recall_target=0.96,
+            class_policy=[],
+            class_policy_json=None,
+            raw_cut_detect=True,
+            short_track_max_frames=10,
+            raw_det_score_min=0.35,
+            k2_device="auto",
+            polygon_predictor_device="auto",
+            progress_interval_sec=5.0,
+            head_face_detect=True,
+            head_face_overlay=True,
+            rtdetr_repo=ROOT / "external" / "RT-DETR" / "RT-DETRv4",
+        )
+
+        command = infer.build_ui_job_command(
+            args,
+            video=ROOT / "input" / "sample.mp4",
+            output_root=ROOT / "output" / "runs",
+            run_name="unit_head_face",
+            policy_path=ROOT / "output" / "runs" / "unit_head_face" / "config" / "class_policy.generated.json",
+        )
+
+        self.assertIn("--head-face-overlay", command)
+        self.assertIn("--head-face-detect", command)
+        self.assertEqual(command[command.index("--rtdetr-repo") + 1], str(args.rtdetr_repo))
+
+    def test_primary_infer_entrypoint_builds_head_face_only_mode(self) -> None:
+        args = argparse.Namespace(
+            mode="head-face",
+            detector="dinov3",
+            classifier=True,
+            force=True,
+            max_frames=4,
+            batch_size=None,
+            warmup_frames=None,
+            score_thresh=None,
+            post_overlay="none",
+            pre_overlay=True,
+            overlay_encoder="cpu",
+            pre_sqlite=True,
+            post_sqlite=True,
+            shape_mode="ellipse",
+            keyframe_interval=3,
+            recall_target=0.96,
+            class_policy=[],
+            class_policy_json=None,
+            raw_cut_detect=True,
+            short_track_max_frames=10,
+            raw_det_score_min=0.35,
+            k2_device="auto",
+            polygon_predictor_device="auto",
+            progress_interval_sec=5.0,
+            head_face_detect=False,
+            head_face_overlay=False,
+            rtdetr_repo=ROOT / "external" / "RT-DETR" / "RT-DETRv4",
+        )
+
+        command = infer.build_ui_job_command(
+            args,
+            video=ROOT / "input" / "sample.mp4",
+            output_root=ROOT / "output" / "runs",
+            run_name="unit_head_face_only",
+            policy_path=None,
+        )
+
+        self.assertIn("--head-face-overlay", command)
+        self.assertNotIn("--no-head-face-overlay", command)
+        self.assertIn("--head-face-only", command)
+        self.assertIn("--head-face-detect", command)
+        self.assertIn("--no-postprocess", command)
+        self.assertIn("--no-raw-overlay", command)
+        self.assertIn("--no-raw-sqlite", command)
+
+    def test_primary_infer_extracts_head_face_fps_logs(self) -> None:
+        self.assertEqual(
+            pipeline_infer._extract_fps("processed 30/120 frames, rows=8, throughput=12.34 fps"),
+            "12.34",
+        )
+        self.assertEqual(
+            pipeline_infer._extract_fps("processed 120 frames in 9.50s (12.63 fps)"),
+            "12.63",
+        )
 
     def test_overlay_direct_specs_support_raw_and_sqlite_inputs(self) -> None:
         raw_args = argparse.Namespace(
@@ -213,6 +319,43 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertIn("--tf32", command)
         self.assertIn("--disable-mask-iou-head", command)
         self.assertEqual(command[command.index("--max-frames") + 1], "1")
+
+    def test_detailed_entrypoint_normalizes_head_face_only(self) -> None:
+        args = run_integrated_pipeline.normalize_args(
+            run_integrated_pipeline.build_parser().parse_args(
+                [
+                    "--input",
+                    "input/sample.mp4",
+                    "--head-face-only",
+                    "--postprocess",
+                    "--raw-sqlite",
+                ]
+            )
+        )
+
+        self.assertTrue(args.head_face_only)
+        self.assertTrue(args.head_face_detect)
+        self.assertFalse(args.postprocess)
+        self.assertFalse(args.raw_sqlite)
+
+    def test_detailed_entrypoint_defaults_to_repo_local_rtdetr_runtime(self) -> None:
+        with patch.dict("os.environ", {"DINOV3_RUNTIME_PROFILE": str(ROOT / ".runtime" / "missing-test-profile.json")}):
+            args = run_integrated_pipeline.normalize_args(
+                run_integrated_pipeline.build_parser().parse_args(
+                    [
+                        "--input",
+                        "input/sample.mp4",
+                        "--head-face-only",
+                    ]
+                )
+            )
+
+        self.assertEqual(args.rtdetr_repo, ROOT / "external" / "RT-DETR" / "RT-DETRv4")
+        self.assertEqual(
+            args.rtdetr_config,
+            ROOT / "external" / "RT-DETR" / "RT-DETRv4" / "configs" / "rtv2" / "rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml",
+        )
+        self.assertEqual(args.rtdetr_checkpoint, ROOT / "checkpoints" / "rtdetr" / "head_face_best_stg1.pth")
 
     def test_detector_adapters_are_pipeline_command_source(self) -> None:
         args = run_integrated_pipeline.normalize_args(

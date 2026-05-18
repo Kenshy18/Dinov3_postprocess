@@ -35,6 +35,11 @@ backend/detectors/codino
   export/build tools live under tools/. It uses the repo-local Co-DINO source
   under `external/codino` and repo-local artifacts under `checkpoints/codino`.
 
+backend/detectors/rtdetr
+  Backend-facing RT-DETR Head/Face adapter. It builds commands for the
+  repo-local RT-DETRv4 runtime under `external/RT-DETR/RT-DETRv4`, with the
+  portable Head/Face checkpoint under `checkpoints/rtdetr`.
+
 backend/detectors/jsonl_writer.py
   Shared streaming JSONL writer used by detector runtimes.
 
@@ -64,6 +69,11 @@ external/codino
   Managed Co-DINO source used by the Co-DINO detector runtime. Heavy work dirs,
   checkpoints, videos, and TensorRT engines stay out of Git and belong under
   `checkpoints/codino` or `output/`.
+
+external/RT-DETR/RT-DETRv4
+  Managed RT-DETRv4 source used by optional Head/Face detection. Training data,
+  checkpoints, videos, and generated outputs stay out of Git and belong under
+  `checkpoints/rtdetr` or `output/`.
 
 tools
   Stable compatibility commands for operational tooling.

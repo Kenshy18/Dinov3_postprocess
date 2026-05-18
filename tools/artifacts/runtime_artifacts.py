@@ -136,6 +136,18 @@ CODINO_CLASSIFIER = RuntimeArtifact(
         "checkpoints/CO-DINO/classifier/best.pt",
     ),
 )
+RTDETR_CHECKPOINT = RuntimeArtifact(
+    "RT-DETR Head/Face checkpoint",
+    "checkpoints/rtdetr/head_face_best_stg1.pth",
+    (
+        "checkpoints/rtdetr/head_face_best_stg1.pth",
+        "checkpoints/RT-DETR/head_face_best_stg1.pth",
+        "checkpoints/RT-DETR/HeadFace/head_face_best_stg1.pth",
+        "rtdetr/head_face_best_stg1.pth",
+        "RT-DETR/head_face_best_stg1.pth",
+        "outputs/pth/rtv2-r18-vhf-512x896-80e-bs16-20260518-010638/best_stg1.pth",
+    ),
+)
 CODINO_TRT_BACKBONE = RuntimeArtifact(
     "Co-DINO TensorRT DINOv3 backbone engine",
     env_dest(
@@ -193,6 +205,7 @@ PORTABLE_REQUIRED_ARTIFACTS = (
     CODINO_CONFIG,
     CODINO_CHECKPOINT,
     CODINO_CLASSIFIER,
+    RTDETR_CHECKPOINT,
     POSTPROCESS_K2,
     POSTPROCESS_POLYGON,
     POSTPROCESS_POLYGON_STATS,
@@ -208,6 +221,10 @@ REQUIRED_ARTIFACTS = PORTABLE_REQUIRED_ARTIFACTS
 ALL_RUNTIME_ARTIFACTS = (*PORTABLE_REQUIRED_ARTIFACTS, *TRT_ARTIFACTS)
 
 DETECTRON2_EXTENSION_ROOT = ROOT / "eva02" / "eva02_det" / "detectron2"
+RTDETR_SOURCE_ROOT = ROOT / "external" / "RT-DETR" / "RT-DETRv4"
+RTDETR_RUNTIME_SCRIPT = RTDETR_SOURCE_ROOT / "tools" / "inference" / "video_sqlite_inf.py"
+RTDETR_DEFAULT_CONFIG = RTDETR_SOURCE_ROOT / "configs" / "rtv2" / "rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml"
+RTDETR_DEFAULT_CHECKPOINT = RTDETR_CHECKPOINT.path
 
 POSTPROCESS_MAPPINGS: tuple[Mapping, ...] = (
     ("k2_v5/best_exact.pt", "checkpoints/postprocess/k2_v5/best_exact.pt"),
@@ -251,6 +268,7 @@ RUNTIME_MAPPINGS: tuple[Mapping, ...] = (
     EVA02_CLASSIFIER.mapping,
     CODINO_CHECKPOINT.mapping,
     CODINO_CLASSIFIER.mapping,
+    RTDETR_CHECKPOINT.mapping,
     *POSTPROCESS_MAPPINGS,
 )
 TRT_MAPPINGS: tuple[Mapping, ...] = (

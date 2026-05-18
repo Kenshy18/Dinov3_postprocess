@@ -8,6 +8,12 @@ checkpoints, TensorRT engines, videos, JSONL, and SQLite outputs stay ignored.
 weights, configs, classifier checkpoints, and TRT engines are resolved from
 `checkpoints/codino`.
 
+`external/RT-DETR/RT-DETRv4` contains the lightweight RT-DETRv4 source needed
+for optional Head/Face detection. Training data, generated outputs, virtual
+environments, pretrain weights, and checkpoints are intentionally excluded.
+The portable Head/Face checkpoint is resolved from
+`checkpoints/rtdetr/head_face_best_stg1.pth`.
+
 Atosyori後処理repoをこの統合ディレクトリ内へ軽量コピーしたい場合の置き場でもあります。
 
 ```bash

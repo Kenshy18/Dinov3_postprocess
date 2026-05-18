@@ -34,12 +34,16 @@ if str(ROOT) not in sys.path:
 
 from backend.pipeline.run_audit import build_output_audit  # noqa: E402
 from backend.pipeline.progress import ProgressReporter, limited_total, parse_progress_line  # noqa: E402
+from backend.schemas.head_face_sqlite import ellipse_polygon_from_bbox  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 RAW_COLOR_BGR = (0, 180, 255)
 ORIGINAL_COLOR_BGR = (255, 255, 255)
 POST_COLOR_BGR = (30, 230, 80)
+HEAD_BOX_BGR = (255, 190, 30)
+FACE_BOX_BGR = (210, 70, 255)
+FACE_MASK_BGR = (70, 190, 255)
 TEXT_BG_BGR = (12, 12, 12)
 TEXT_FG_BGR = (255, 255, 255)
 LABEL_FONT_CANDIDATES = [
@@ -64,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--overlay-mode", choices=("none", "detailed", "simple", "both"), default="none")
     parser.add_argument("--raw-overlay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--head-face-overlay", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--encoder", choices=("nvenc", "cpu"), default="nvenc")
     parser.add_argument("--raw-sqlite-output", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--post-sqlite-output", action=argparse.BooleanOptionalAction, default=True)
@@ -141,6 +146,12 @@ def runtime_snapshot(pipeline_command: list[str]) -> dict[str, Any]:
             "DINOV3_BATCH_BENCHMARK",
             "DINOV3_TRT_BACKBONE_ENGINE",
             "ATOSYORI_REPO",
+            "RTDETR_REPO",
+            "RTDETR_BATCH_SIZE",
+            "RTDETR_DEVICE",
+            "RTDETR_PROGRESS_INTERVAL",
+            "RTDETR_CONFIG",
+            "RTDETR_CHECKPOINT",
             "PYTHONPATH",
         )
         if os.environ.get(key)
@@ -170,6 +181,10 @@ def runtime_snapshot(pipeline_command: list[str]) -> dict[str, Any]:
             "codino_score_thresh": option_value(pipeline_command, "--codino-score-thresh"),
             "trt_backbone_engine": option_value(pipeline_command, "--trt-backbone-engine"),
             "codino_trt_backbone_engine": option_value(pipeline_command, "--codino-trt-backbone-engine"),
+            "head_face_detect": option_enabled(pipeline_command, "--head-face-detect", "--no-head-face-detect"),
+            "rtdetr_repo": option_value(pipeline_command, "--rtdetr-repo"),
+            "head_face_batch_size": option_value(pipeline_command, "--head-face-batch-size"),
+            "head_face_device": option_value(pipeline_command, "--head-face-device"),
         },
     }
 
@@ -642,6 +657,26 @@ def draw_label(frame: np.ndarray, text: str, anchor: tuple[int, int], color: tup
     frame[roi_top:roi_bottom, roi_left:roi_right] = cv2_mod.cvtColor(np.asarray(image), cv2_mod.COLOR_RGB2BGR)
 
 
+def draw_bbox(frame: np.ndarray, bbox: tuple[float, float, float, float], color: tuple[int, int, int], thickness: int = 2) -> None:
+    cv2_mod = require_cv2()
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    left = int(np.clip(round(min(x1, x2)), 0, max(0, width - 1)))
+    right = int(np.clip(round(max(x1, x2)), 0, max(0, width - 1)))
+    top = int(np.clip(round(min(y1, y2)), 0, max(0, height - 1)))
+    bottom = int(np.clip(round(max(y1, y2)), 0, max(0, height - 1)))
+    if right <= left or bottom <= top:
+        return
+    cv2_mod.rectangle(frame, (left, top), (right, bottom), color, thickness, cv2_mod.LINE_AA)
+
+
+def bbox_anchor(bbox: tuple[float, float, float, float], width: int, height: int) -> tuple[int, int]:
+    x1, y1, x2, y2 = bbox
+    x = int(np.clip(min(x1, x2), 4, max(4, width - 160)))
+    y = int(np.clip(min(y1, y2) - 6, 24, max(24, height - 8)))
+    return x, y
+
+
 def open_writer(output_video: Path, width: int, height: int, fps: float, encoder: str) -> subprocess.Popen:
     output_video.parent.mkdir(parents=True, exist_ok=True)
     if output_video.exists():
@@ -808,6 +843,125 @@ class FrameSqliteReader:
             self.conn = None
 
 
+class HeadFaceSqliteReader:
+    def __init__(self, path: Path | str | None) -> None:
+        self.path = Path(str(path)) if path is not None else None
+        self.conn: sqlite3.Connection | None = None
+        self.mode: str | None = None
+        self.columns: set[str] = set()
+        if self.path is None or not self.path.exists():
+            return
+        self.conn = sqlite3.connect(str(self.path))
+        self.conn.row_factory = sqlite3.Row
+        tables = {str(row[0]) for row in self.conn.execute("select name from sqlite_master where type='table'")}
+        if "head_face_detections" in tables:
+            self.mode = "enriched"
+            self.columns = sqlite_columns(self.conn, "head_face_detections")
+        elif "detections" in tables:
+            self.mode = "raw"
+            self.columns = sqlite_columns(self.conn, "detections")
+        else:
+            self.close()
+
+    def rows_for_frame(self, frame: int) -> list[dict[str, Any]]:
+        if self.conn is None or self.mode is None:
+            return []
+        if self.mode == "enriched":
+            return self._enriched_rows_for_frame(frame)
+        return self._raw_rows_for_frame(frame)
+
+    def _enriched_rows_for_frame(self, frame: int) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        mask_expr = "mask_polygons" if "mask_polygons" in self.columns else "NULL as mask_polygons"
+        ellipse_expr = "ellipse_polygon" if "ellipse_polygon" in self.columns else "NULL as ellipse_polygon"
+        track_expr = "track_id" if "track_id" in self.columns else "NULL as track_id"
+        rows: list[dict[str, Any]] = []
+        for row in self.conn.execute(
+            f"""
+            SELECT detection_id, frame, class_name, score, x1, y1, x2, y2,
+                   {track_expr}, {mask_expr}, {ellipse_expr}
+            FROM head_face_detections
+            WHERE frame = ?
+            ORDER BY detection_id
+            """,
+            (int(frame),),
+        ):
+            rows.append(self._row_to_entry(row))
+        return rows
+
+    def _raw_rows_for_frame(self, frame: int) -> list[dict[str, Any]]:
+        assert self.conn is not None
+        required = {"class_name", "score", "x1", "y1", "x2", "y2"}
+        if not required.issubset(self.columns):
+            return []
+        id_expr = "id as detection_id" if "id" in self.columns else "rowid as detection_id"
+        frame_col = "frame_index" if "frame_index" in self.columns else "frame"
+        if frame_col not in self.columns:
+            return []
+        track_expr = "track_id" if "track_id" in self.columns else "NULL as track_id"
+        rows: list[dict[str, Any]] = []
+        for row in self.conn.execute(
+            f"""
+            SELECT {id_expr}, {frame_col} as frame, class_name, score, x1, y1, x2, y2,
+                   {track_expr}, NULL as mask_polygons, NULL as ellipse_polygon
+            FROM detections
+            WHERE {frame_col} = ?
+            ORDER BY detection_id
+            """,
+            (int(frame),),
+        ):
+            rows.append(self._row_to_entry(row))
+        return rows
+
+    def _row_to_entry(self, row: sqlite3.Row) -> dict[str, Any]:
+        bbox = (float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"]))
+        class_name = str(row["class_name"])
+        ellipse_polygons = parse_polygons(row["mask_polygons"] or row["ellipse_polygon"])
+        if not ellipse_polygons and class_name.strip().lower() == "face":
+            polygon = ellipse_polygon_from_bbox(*bbox)
+            if polygon:
+                ellipse_polygons = [np.asarray(polygon, dtype=np.float32)]
+        return {
+            "detection_id": str(row["detection_id"]),
+            "frame": int(row["frame"]),
+            "class_name": class_name,
+            "score": float(row["score"]),
+            "bbox": bbox,
+            "track_id": None if row["track_id"] is None else str(row["track_id"]),
+            "ellipse_polygons": ellipse_polygons,
+        }
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+
+def draw_head_face_entries(
+    frame: np.ndarray,
+    entries: list[dict[str, Any]],
+    *,
+    detailed: bool,
+    width: int,
+    height: int,
+) -> None:
+    for entry in entries:
+        if str(entry.get("class_name", "")).strip().lower() == "face":
+            fill_polygons(frame, entry.get("ellipse_polygons") or [], FACE_MASK_BGR, 0.35)
+            if detailed:
+                draw_polygons(frame, entry.get("ellipse_polygons") or [], FACE_MASK_BGR, 2)
+    if not detailed:
+        return
+    for entry in entries:
+        class_name = str(entry.get("class_name") or "-")
+        color = FACE_BOX_BGR if class_name.strip().lower() == "face" else HEAD_BOX_BGR
+        bbox = entry["bbox"]
+        draw_bbox(frame, bbox, color, 2)
+        track_id = entry.get("track_id") or entry.get("detection_id") or "-"
+        text = f"{class_name} ID:{track_id} {float(entry.get('score') or 0.0):.2f}"
+        draw_label(frame, text, bbox_anchor(bbox, width, height), color)
+
+
 def render_sqlite_overlay(
     video_path: Path,
     tracked_sqlite: Path | None,
@@ -817,6 +971,7 @@ def render_sqlite_overlay(
     mode: str,
     encoder: str,
     frame_limit: int | None = None,
+    head_face_sqlite: Path | str | None = None,
 ) -> None:
     def _render(active_encoder: str) -> None:
         cv2_mod = require_cv2()
@@ -834,6 +989,7 @@ def render_sqlite_overlay(
         assert proc.stdin is not None
         raw_reader = FrameSqliteReader(tracked_sqlite)
         pred_reader = FrameSqliteReader(pred_sqlite)
+        head_face_reader = HeadFaceSqliteReader(head_face_sqlite)
         frame_idx = 0
         progress = ProgressReporter(
             f"{mode}_overlay",
@@ -852,6 +1008,7 @@ def render_sqlite_overlay(
                     break
                 raw_entries = raw_reader.rows_for_frame(frame_idx)
                 pred_entries = pred_reader.rows_for_frame(frame_idx)
+                head_face_entries = head_face_reader.rows_for_frame(frame_idx)
                 if mode == "detailed":
                     for entry in raw_entries:
                         fill_polygons(frame, entry["polygons"], (255, 255, 255), 0.22)
@@ -862,9 +1019,11 @@ def render_sqlite_overlay(
                         label = labels_by_track.get(str(entry["track_id"]), entry.get("label") or "-")
                         text = f"ID:{entry['track_id']} {label}"
                         draw_label(frame, text, polygon_anchor(polygons, width, height), POST_COLOR_BGR)
+                    draw_head_face_entries(frame, head_face_entries, detailed=True, width=width, height=height)
                 else:
                     for entry in pred_entries:
                         fill_polygons(frame, entry["polygons"], POST_COLOR_BGR, 0.45)
+                    draw_head_face_entries(frame, head_face_entries, detailed=False, width=width, height=height)
                 proc.stdin.write(frame.tobytes())
                 frame_idx += 1
                 if frame_idx % 300 == 0:
@@ -874,12 +1033,70 @@ def render_sqlite_overlay(
         finally:
             raw_reader.close()
             pred_reader.close()
+            head_face_reader.close()
             cap.release()
             close_writer(proc)
 
     print(f"[phase-start] {mode}_overlay: {output_video}", flush=True)
     render_with_fallback(_render, encoder=encoder)
     print(f"[phase-done] {mode}_overlay: output={output_video}", flush=True)
+
+
+def render_head_face_overlay(
+    video_path: Path,
+    head_face_sqlite: Path,
+    output_video: Path,
+    *,
+    encoder: str,
+    frame_limit: int | None = None,
+) -> None:
+    def _render(active_encoder: str) -> None:
+        cv2_mod = require_cv2()
+        width, height, fps = video_meta(video_path)
+        cap = cv2_mod.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {video_path}")
+        total_frames = limited_frame_count(cap, frame_limit)
+        proc = open_writer(output_video, width, height, fps, active_encoder)
+        assert proc.stdin is not None
+        reader = HeadFaceSqliteReader(head_face_sqlite)
+        frame_idx = 0
+        progress = ProgressReporter(
+            "head_face_overlay",
+            total=total_frames,
+            unit="frames",
+            interval_sec=float(os.environ.get("OVERLAY_PROGRESS_INTERVAL_SEC", "5")),
+            static_fields={"kind": "head_face_raw", "video": video_path.name},
+        )
+        progress.emit(0, force=True)
+        try:
+            while True:
+                if frame_limit is not None and frame_idx >= frame_limit:
+                    break
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                draw_head_face_entries(
+                    frame,
+                    reader.rows_for_frame(frame_idx),
+                    detailed=True,
+                    width=width,
+                    height=height,
+                )
+                proc.stdin.write(frame.tobytes())
+                frame_idx += 1
+                if frame_idx % 300 == 0:
+                    progress.emit(frame_idx)
+            if progress.last_current != frame_idx:
+                progress.emit(frame_idx, force=True)
+        finally:
+            reader.close()
+            cap.release()
+            close_writer(proc)
+
+    print(f"[phase-start] head_face_overlay: {output_video}", flush=True)
+    render_with_fallback(_render, encoder=encoder)
+    print(f"[phase-done] head_face_overlay: output={output_video}", flush=True)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -896,6 +1113,7 @@ def organize_outputs(
     keep_normalized_input: bool,
     overlay_mode: str,
     raw_overlay: bool,
+    head_face_overlay: bool,
     encoder: str,
     frame_limit: int | None,
     raw_sqlite_output: bool = True,
@@ -913,6 +1131,7 @@ def organize_outputs(
         "integrated_overlay": run_dir / "統合マスクオーバーレイ",
         "detailed_overlay": run_dir / "詳細オーバーレイ",
         "raw_overlay": run_dir / "AI生成カバーオーバーレイ",
+        "head_face_overlay": run_dir / "顔頭生出力オーバーレイ",
         "final_sqlite": run_dir / "最終SQLite",
         "raw_sqlite": run_dir / "推論生SQLite",
         "jsonl": run_dir / "jsonl",
@@ -934,12 +1153,25 @@ def organize_outputs(
 
     tracked_sqlite_raw = postprocess.get("tracked_sqlite") or postprocess.get("tracked_sqlite_link")
     tracked_sqlite = Path(str(tracked_sqlite_raw)) if tracked_sqlite_raw else None
-    detector_raw_sqlite_raw = artifacts.get("raw_sqlite") or summary.get("raw_sqlite", {}).get("path")
+    raw_sqlite_summary = summary.get("raw_sqlite") or {}
+    detector_raw_sqlite_raw = artifacts.get("raw_sqlite") or raw_sqlite_summary.get("path")
     detector_raw_sqlite = Path(str(detector_raw_sqlite_raw)) if detector_raw_sqlite_raw else None
+    head_face_summary = summary.get("head_face") or {}
+    head_face_sqlite_raw = artifacts.get("head_face_sqlite") or (
+        head_face_summary.get("path") if isinstance(head_face_summary, dict) else None
+    )
+    head_face_sqlite = Path(str(head_face_sqlite_raw)) if head_face_sqlite_raw else None
+    combined_summary = summary.get("combined_final_sqlite") or {}
+    combined_final_sqlite_raw = artifacts.get("combined_final_sqlite") or (
+        combined_summary.get("path") if isinstance(combined_summary, dict) else None
+    )
+    combined_final_sqlite = Path(str(combined_final_sqlite_raw)) if combined_final_sqlite_raw else None
     if raw_sqlite_output and detector_raw_sqlite is not None and detector_raw_sqlite.exists():
         link_or_copy(detector_raw_sqlite, layout["raw_sqlite"] / detector_raw_sqlite.name)
     if raw_sqlite_output and tracked_sqlite is not None and tracked_sqlite.exists():
         link_or_copy(tracked_sqlite, layout["raw_sqlite"] / tracked_sqlite.name)
+    if head_face_sqlite is not None and head_face_sqlite.exists():
+        head_face_sqlite = link_or_copy(head_face_sqlite, layout["raw_sqlite"] / head_face_sqlite.name)
 
     prediction_links = postprocess.get("prediction_sqlite_links") or {}
     overlay_outputs: dict[str, str] = {}
@@ -966,13 +1198,24 @@ def organize_outputs(
                     mode=mode,
                     encoder=encoder,
                     frame_limit=frame_limit,
+                    head_face_sqlite=head_face_sqlite,
                 )
                 overlay_outputs[f"{label}_{mode}"] = str(output_video)
+
+    if post_sqlite_output and combined_final_sqlite is not None and combined_final_sqlite.exists():
+        final_sqlite = link_or_copy(combined_final_sqlite, layout["final_sqlite"] / combined_final_sqlite.name)
+        combined_final_sqlite = final_sqlite
+        sqlite_outputs["combined_final"] = str(final_sqlite)
 
     if raw_overlay and detector_jsonl.exists():
         output_video = layout["raw_overlay"] / f"{detector_jsonl.stem}_ai_raw_mask.mp4"
         render_raw_overlay(processed_input, detector_jsonl, output_video, encoder=encoder, frame_limit=frame_limit)
         overlay_outputs["ai_raw_mask"] = str(output_video)
+
+    if head_face_overlay and head_face_sqlite is not None and head_face_sqlite.exists():
+        output_video = layout["head_face_overlay"] / f"{processed_input.stem}_head_face_raw.mp4"
+        render_head_face_overlay(processed_input, head_face_sqlite, output_video, encoder=encoder, frame_limit=frame_limit)
+        overlay_outputs["head_face_raw"] = str(output_video)
 
     normalized_input_removed = False
     if normalized and not keep_normalized_input and processed_input.exists():
@@ -992,6 +1235,8 @@ def organize_outputs(
         "detector_jsonl": str(detector_jsonl) if detector_jsonl.exists() else None,
         "raw_detector_sqlite": None if detector_raw_sqlite is None or not detector_raw_sqlite.exists() else str(detector_raw_sqlite),
         "tracked_sqlite": None if tracked_sqlite is None else str(tracked_sqlite),
+        "head_face_sqlite": None if head_face_sqlite is None or not head_face_sqlite.exists() else str(head_face_sqlite),
+        "combined_final_sqlite": None if combined_final_sqlite is None or not combined_final_sqlite.exists() else str(combined_final_sqlite),
         "final_sqlite": sqlite_outputs,
         "overlays": overlay_outputs,
         "folders": {name: str(path) for name, path in layout.items()},
@@ -1000,6 +1245,8 @@ def organize_outputs(
         detector_jsonl=detector_jsonl,
         raw_detector_sqlite=detector_raw_sqlite if detector_raw_sqlite and detector_raw_sqlite.exists() else None,
         tracked_sqlite=tracked_sqlite,
+        head_face_sqlite=head_face_sqlite if head_face_sqlite and head_face_sqlite.exists() else None,
+        combined_final_sqlite=combined_final_sqlite if combined_final_sqlite and combined_final_sqlite.exists() else None,
         sqlite_outputs=sqlite_outputs,
         overlay_outputs=overlay_outputs,
         pipeline_summary=summary,
@@ -1018,6 +1265,8 @@ def main() -> int:
     pipeline_command = strip_remainder(list(args.pipeline_command))
     if not pipeline_command:
         raise RuntimeError("Missing pipeline command after --")
+    if "--head-face-only" in pipeline_command:
+        args.head_face_overlay = True
     frame_limit = extract_max_frames(pipeline_command)
 
     run_dir = args.output_root.expanduser().resolve() / args.run_name
@@ -1052,6 +1301,7 @@ def main() -> int:
             keep_normalized_input=bool(args.keep_normalized_input),
             overlay_mode=args.overlay_mode,
             raw_overlay=bool(args.raw_overlay),
+            head_face_overlay=bool(args.head_face_overlay),
             encoder=str(args.encoder),
             frame_limit=frame_limit,
             raw_sqlite_output=bool(args.raw_sqlite_output),

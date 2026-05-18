@@ -29,6 +29,7 @@ from apps.qt_ui.runtime_config import (
     load_gui_runtime_env,
     profile_int,
     profile_path,
+    profile_recommendations,
     runtime_profile_path,
     runtime_summary_text,
     selected_trt_engine,
@@ -145,15 +146,28 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.detector_combo.addItem("DINOv3", "dinov3")
         self.detector_combo.addItem("EVA02", "eva02")
         self.detector_combo.addItem("Co-DINO", "codino")
+        self.detector_combo.addItem("顔・頭のみ（AIなし）", "head_face")
         self.detector_combo.setCurrentIndex(1)
+        self.detector_combo.currentIndexChanged.connect(self.update_detector_mode)
 
         self.detailed_overlay_check = QtWidgets.QCheckBox("詳細オーバーレイ（元マスク + 後処理輪郭 + ID/クラス）")
         self.detector_overlay_check = QtWidgets.QCheckBox("AI生成カバーオーバーレイ（推論JSONLのみ）")
         self.simple_overlay_check = QtWidgets.QCheckBox("簡易オーバーレイ（後処理後マスクのみ）")
-        for check in (self.detailed_overlay_check, self.detector_overlay_check, self.simple_overlay_check):
+        self.head_face_detect_check = QtWidgets.QCheckBox("AI検出に顔・頭検出を追加（RT-DETR）")
+        self.head_face_overlay_check = QtWidgets.QCheckBox("顔・頭検出オーバーレイ")
+        self.head_face_overlay_check.setToolTip("顔・頭のみモードでは常に生成します。通常AI検出では任意です。")
+        self.head_face_detect_check.toggled.connect(self.update_head_face_enabled)
+        for check in (
+            self.detailed_overlay_check,
+            self.detector_overlay_check,
+            self.simple_overlay_check,
+            self.head_face_detect_check,
+            self.head_face_overlay_check,
+        ):
             check.setObjectName("largeCheck")
             check.setCursor(QtCore.Qt.PointingHandCursor)
         self.detailed_overlay_check.setChecked(True)
+        self.update_head_face_enabled(False)
 
         self.start_button = QtWidgets.QPushButton("推論開始")
         self.start_button.setObjectName("startButton")
@@ -180,23 +194,35 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         left_grid.addWidget(QtWidgets.QLabel("WSLディストリ"), 0, 0)
         left_grid.addWidget(self.wsl_combo, 0, 1)
         left_grid.addWidget(self.refresh_wsl_button, 0, 2)
-        left_grid.addWidget(QtWidgets.QLabel("Backend"), 1, 0)
+        left_grid.addWidget(QtWidgets.QLabel("検出エンジン"), 1, 0)
         left_grid.addWidget(self.detector_combo, 1, 1, 1, 2)
         left_grid.setColumnStretch(1, 1)
 
+        detection_layout = QtWidgets.QVBoxLayout()
+        detection_layout.setSpacing(1)
+        detection_label = QtWidgets.QLabel("追加検出")
+        detection_label.setObjectName("subSectionLabel")
+        detection_layout.addWidget(detection_label)
+        detection_layout.addWidget(self.head_face_detect_check)
+        left_grid.addLayout(detection_layout, 2, 0, 1, 3)
+
         overlay_layout = QtWidgets.QVBoxLayout()
         overlay_layout.setSpacing(1)
+        overlay_label = QtWidgets.QLabel("オーバーレイ")
+        overlay_label.setObjectName("subSectionLabel")
+        overlay_layout.addWidget(overlay_label)
         overlay_layout.addWidget(self.detailed_overlay_check)
         overlay_layout.addWidget(self.detector_overlay_check)
         overlay_layout.addWidget(self.simple_overlay_check)
-        left_grid.addLayout(overlay_layout, 2, 0, 1, 3)
+        overlay_layout.addWidget(self.head_face_overlay_check)
+        left_grid.addLayout(overlay_layout, 3, 0, 1, 3)
 
         checkpoint_layout = QtWidgets.QVBoxLayout()
         checkpoint_layout.setContentsMargins(0, 1, 0, 0)
         checkpoint_layout.setSpacing(2)
         checkpoint_layout.addWidget(self.check_artifacts_button, 0, QtCore.Qt.AlignLeft)
         checkpoint_layout.addWidget(self.advanced_button, 0, QtCore.Qt.AlignLeft)
-        left_grid.addLayout(checkpoint_layout, 3, 0, 1, 3)
+        left_grid.addLayout(checkpoint_layout, 4, 0, 1, 3)
 
         right = QtWidgets.QWidget()
         right_grid = QtWidgets.QGridLayout(right)
@@ -218,7 +244,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.advanced_box = self.build_advanced_box()
         root.addWidget(self.advanced_box)
         self.advanced_box.setVisible(False)
-        box.setMaximumHeight(238)
+        box.setMaximumHeight(270)
         return box
 
     def build_advanced_box(self) -> QtWidgets.QGroupBox:
@@ -419,6 +445,12 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                 padding: 1px 0 0 2px;
                 min-height: 16px;
             }
+            QLabel#subSectionLabel {
+                color: #4b5563;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 2px 0 0 2px;
+            }
             QGroupBox {
                 border: 1px solid #c9d3df;
                 border-radius: 2px;
@@ -551,13 +583,41 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 
     def toggle_advanced(self, checked: bool) -> None:
         self.advanced_box.setVisible(checked)
-        self.run_settings_box.setMaximumHeight(490 if checked else 238)
+        self.run_settings_box.setMaximumHeight(520 if checked else 270)
         self.advanced_button.setText("▾ 詳細を閉じる" if checked else "▸ 詳細を開く")
 
     def sync_overlay_checks(self, source: str, checked: bool) -> None:
         return
 
+    def update_head_face_enabled(self, enabled: bool) -> None:
+        self.head_face_overlay_check.setEnabled(enabled)
+        if not enabled:
+            self.head_face_overlay_check.setChecked(False)
+
+    def head_face_only_mode(self) -> bool:
+        return str(self.detector_combo.currentData()) == "head_face"
+
+    def update_detector_mode(self) -> None:
+        if not hasattr(self, "postprocess_check"):
+            return
+        head_face_only = self.head_face_only_mode()
+        if head_face_only:
+            self.postprocess_check.setChecked(False)
+            self.head_face_detect_check.setChecked(True)
+            self.head_face_overlay_check.setChecked(True)
+            self.detector_overlay_check.setChecked(False)
+            self.detailed_overlay_check.setChecked(False)
+            self.simple_overlay_check.setChecked(False)
+        self.postprocess_check.setEnabled(not head_face_only)
+        self.head_face_detect_check.setEnabled(not head_face_only)
+        self.detector_overlay_check.setEnabled(not head_face_only)
+        self.detailed_overlay_check.setEnabled(not head_face_only and self.postprocess_check.isChecked())
+        self.simple_overlay_check.setEnabled(not head_face_only and self.postprocess_check.isChecked())
+        self.head_face_overlay_check.setEnabled(not head_face_only and self.head_face_detect_check.isChecked())
+
     def update_postprocess_enabled(self, enabled: bool) -> None:
+        if self.head_face_only_mode():
+            enabled = False
         widgets = [
             self.class_tabs,
             self.detailed_overlay_check,
@@ -569,6 +629,8 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         ]
         for widget in widgets:
             widget.setEnabled(enabled)
+        if self.head_face_only_mode():
+            self.update_detector_mode()
 
     def refresh_wsl_distros(self) -> None:
         current = self.wsl_combo.currentText() if self.wsl_combo.count() else ""
@@ -696,19 +758,27 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.start_next_item()
 
     def configure_progress_plan(self) -> None:
-        phases: list[tuple[str, float]] = [
-            ("normalize_input", 0.02),
-            ("inference", 0.50),
-            ("raw_sqlite", 0.05),
-        ]
-        if self.postprocess_check.isChecked():
+        head_face_only = self.head_face_only_mode()
+        phases: list[tuple[str, float]] = [("normalize_input", 0.02)]
+        if not head_face_only:
+            phases.extend(
+                [
+                    ("inference", 0.50),
+                    ("raw_sqlite", 0.05),
+                ]
+            )
+        if self.head_face_detect_check.isChecked() or head_face_only:
+            phases.append(("head_face", 0.16))
+        if self.postprocess_check.isChecked() and not head_face_only:
             phases.append(("postprocess", 0.25))
-        if self.detector_overlay_check.isChecked():
+        if self.detector_overlay_check.isChecked() and not head_face_only:
             phases.append(("raw_overlay", 0.08))
-        if self.detailed_overlay_check.isChecked():
+        if self.detailed_overlay_check.isChecked() and not head_face_only:
             phases.append(("detailed_overlay", 0.07))
-        if self.simple_overlay_check.isChecked():
+        if self.simple_overlay_check.isChecked() and not head_face_only:
             phases.append(("simple_overlay", 0.03))
+        if head_face_only or self.head_face_overlay_check.isChecked():
+            phases.append(("head_face_overlay", 0.04))
 
         total_weight = sum(weight for _, weight in phases) or 1.0
         offset = 0.0
@@ -833,10 +903,13 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.phase_value.setText("起動中")
         self.status_value_label.setText("running")
         self.progress_dashboard.set_overall_percent(self.current_index / max(1, len(self.run_queue)) * 100.0)
-        self.count_value.setText(
-            f"Inference {self.current_index + 1} / {len(self.run_queue)} | "
-            f"Postprocess {self.current_index + 1 if self.postprocess_check.isChecked() else 0} / {len(self.run_queue)}"
-        )
+        if self.head_face_only_mode():
+            self.count_value.setText(f"Head/Face {self.current_index + 1} / {len(self.run_queue)}")
+        else:
+            self.count_value.setText(
+                f"Inference {self.current_index + 1} / {len(self.run_queue)} | "
+                f"Postprocess {self.current_index + 1 if self.postprocess_check.isChecked() else 0} / {len(self.run_queue)}"
+            )
         self.remaining_value.setText(str(len(self.run_queue) - self.current_index - 1))
         self.append_log("")
         self.append_log(f"[queue] {self.current_index + 1}/{len(self.run_queue)} {path}")
@@ -873,11 +946,15 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
     def build_command(self, input_path: Path, index: int) -> list[str]:
         script = ROOT / "scripts" / "run_integrated_pipeline.py"
         job_script = ROOT / "apps" / "qt_ui" / "run_ui_job.py"
-        detector = str(self.detector_combo.currentData())
+        selected_detector = str(self.detector_combo.currentData())
+        head_face_only = selected_detector == "head_face"
+        detector = "dinov3" if head_face_only else selected_detector
         output_root = Path(self.output_edit.text()).expanduser()
         prefix = clean_run_part(self.run_prefix_edit.text() or "ui_run")
         run_name = f"{prefix}_{timestamp()}_{index + 1:02d}_{clean_run_part(input_path.stem)}"
-        postprocess = self.postprocess_check.isChecked()
+        postprocess = False if head_face_only else self.postprocess_check.isChecked()
+        head_face_enabled = head_face_only or self.head_face_detect_check.isChecked()
+        head_face_overlay = head_face_only or (head_face_enabled and self.head_face_overlay_check.isChecked())
         detailed_overlay = postprocess and self.detailed_overlay_check.isChecked()
         simple_overlay = postprocess and self.simple_overlay_check.isChecked()
         if detailed_overlay and simple_overlay:
@@ -903,9 +980,45 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             "--detector",
             detector,
             "--postprocess" if postprocess else "--no-postprocess",
+            "--head-face-detect" if head_face_enabled else "--no-head-face-detect",
             "--progress-interval-sec",
             "5",
         ]
+        if head_face_only:
+            pipeline_command.append("--head-face-only")
+        runtime_env = load_gui_runtime_env()
+        rtdetr_rec = profile_recommendations().get("rtdetr", {})
+        rtdetr_rec = rtdetr_rec if isinstance(rtdetr_rec, dict) else {}
+        rtdetr_repo_path = profile_path("rtdetr", "repo")
+        rtdetr_repo = runtime_env.get("RTDETR_REPO") or os.environ.get("RTDETR_REPO") or (
+            None if rtdetr_repo_path is None else str(rtdetr_repo_path)
+        )
+        if head_face_enabled:
+            if rtdetr_repo:
+                pipeline_command.extend(["--rtdetr-repo", rtdetr_repo])
+            rtdetr_batch = profile_int("rtdetr", "batch_size")
+            if rtdetr_batch:
+                pipeline_command.extend(["--head-face-batch-size", str(rtdetr_batch)])
+            rtdetr_device = runtime_env.get("RTDETR_DEVICE") or os.environ.get("RTDETR_DEVICE") or rtdetr_rec.get("device")
+            if rtdetr_device:
+                pipeline_command.extend(["--head-face-device", str(rtdetr_device)])
+            rtdetr_progress_interval = (
+                runtime_env.get("RTDETR_PROGRESS_INTERVAL")
+                or os.environ.get("RTDETR_PROGRESS_INTERVAL")
+                or rtdetr_rec.get("progress_interval")
+            )
+            if rtdetr_progress_interval:
+                pipeline_command.extend(["--head-face-progress-interval", str(rtdetr_progress_interval)])
+            for option, env_key, profile_key in (
+                ("--rtdetr-config", "RTDETR_CONFIG", "config"),
+                ("--rtdetr-checkpoint", "RTDETR_CHECKPOINT", "checkpoint"),
+            ):
+                raw_path = runtime_env.get(env_key) or os.environ.get(env_key)
+                if not raw_path:
+                    profile_value = rtdetr_rec.get(profile_key)
+                    raw_path = str(profile_value) if profile_value else None
+                if raw_path:
+                    pipeline_command.extend([option, str(raw_path)])
         if postprocess:
             embed_original_masks = self.detailed_overlay_check.isChecked()
             policy_path = self.write_policy_file(output_root, run_name)
@@ -929,7 +1042,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             pipeline_command.append("--force")
         if self.max_frames_spin.value() > 0:
             pipeline_command.extend(["--max-frames", str(self.max_frames_spin.value())])
-        if detector == "eva02":
+        if not head_face_only and detector == "eva02":
             eva02_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("eva02", "batch_size")
             eva02_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("eva02", "warmup_frames")
             eva02_classifier_batch = profile_int("eva02", "classifier_batch_size")
@@ -939,7 +1052,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                 pipeline_command.extend(["--eva02-warmup-frames", str(eva02_warmup)])
             if eva02_classifier_batch:
                 pipeline_command.extend(["--eva02-classifier-batch-size", str(eva02_classifier_batch)])
-        elif detector == "codino":
+        elif not head_face_only and detector == "codino":
             codino_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("codino", "batch_size")
             codino_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("codino", "warmup_frames")
             codino_trt_backbone = profile_path("codino", "trt_backbone_engine")
@@ -961,7 +1074,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                 pipeline_command.extend(["--codino-trt-decoder-engine", str(codino_trt_decoder)])
             if codino_trt_mask is not None and codino_trt_mask.is_file():
                 pipeline_command.extend(["--codino-trt-mask-head-engine", str(codino_trt_mask)])
-        else:
+        elif not head_face_only:
             dinov3_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("dinov3", "batch_size")
             dinov3_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("dinov3", "warmup_frames")
             trt_engine = selected_trt_engine()
@@ -971,7 +1084,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
                 pipeline_command.extend(["--warmup-frames", str(dinov3_warmup)])
             if trt_engine.is_file():
                 pipeline_command.extend(["--trt-backbone-engine", str(trt_engine)])
-        if self.score_enable.isChecked():
+        if self.score_enable.isChecked() and not head_face_only:
             if detector == "eva02":
                 score_flag = "--eva02-score-thresh"
             elif detector == "codino":
@@ -1005,7 +1118,8 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             run_name,
             "--overlay-mode",
             overlay_mode,
-            "--raw-overlay" if self.detector_overlay_check.isChecked() else "--no-raw-overlay",
+            "--raw-overlay" if self.detector_overlay_check.isChecked() and not head_face_only else "--no-raw-overlay",
+            "--head-face-overlay" if head_face_overlay else "--no-head-face-overlay",
             "--encoder",
             DEFAULT_OVERLAY_ENCODER,
         ]
@@ -1050,8 +1164,21 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
         environment = QtCore.QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
+        runtime_env = load_gui_runtime_env()
+        for key in (
+            "ATOSYORI_REPO",
+            "RTDETR_REPO",
+            "RTDETR_BATCH_SIZE",
+            "RTDETR_DEVICE",
+            "RTDETR_PROGRESS_INTERVAL",
+            "RTDETR_CONFIG",
+            "RTDETR_CHECKPOINT",
+        ):
+            value = runtime_env.get(key) or os.environ.get(key)
+            if value:
+                environment.insert(key, value)
         environment.insert("DINOV3_RUNTIME_PROFILE", str(runtime_profile_path()))
-        benchmark_path = load_gui_runtime_env().get("DINOV3_BATCH_BENCHMARK") or os.environ.get("DINOV3_BATCH_BENCHMARK")
+        benchmark_path = runtime_env.get("DINOV3_BATCH_BENCHMARK") or os.environ.get("DINOV3_BATCH_BENCHMARK")
         default_benchmark = DEFAULT_BATCH_BENCHMARK if DEFAULT_BATCH_BENCHMARK.is_file() else LEGACY_BATCH_BENCHMARK
         environment.insert("DINOV3_BATCH_BENCHMARK", benchmark_path or str(default_benchmark))
         environment.insert("DINOV3_TRT_BACKBONE_ENGINE", str(selected_trt_engine()))

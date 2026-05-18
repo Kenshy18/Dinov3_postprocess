@@ -1,6 +1,6 @@
 # Detector integrated postprocess runtime
 
-動画を入力し、DINOv3 + Cascade Mask R-CNN、EVA02 + Cascade Mask R-CNN、DINOv3 + Co-DINO の高速推論、任意のROI分類、Atosyori後処理をまとめて実行する自己完結型ディレクトリです。
+動画を入力し、DINOv3 + Cascade Mask R-CNN、EVA02 + Cascade Mask R-CNN、DINOv3 + Co-DINO の高速推論、任意のROI分類、RT-DETR Head/Face検出、Atosyori後処理をまとめて実行する自己完結型ディレクトリです。
 
 ## Components
 
@@ -16,14 +16,15 @@
 - DINOv3 runtime: `backend/detectors/dinov3/runtime/`
 - EVA02 runtime: `backend/detectors/eva02/runtime/`
 - Co-DINO runtime: `backend/detectors/codino/runtime/`
-- DINOv3/EVA02/Co-DINO source dependencies: `configs/`, `dinov3/`, `eva02/eva02_det/`, `external/codino/`
+- RT-DETR Head/Face runtime source: `external/RT-DETR/RT-DETRv4/`
+- DINOv3/EVA02/Co-DINO/RT-DETR source dependencies: `configs/`, `dinov3/`, `eva02/eva02_det/`, `external/codino/`, `external/RT-DETR/RT-DETRv4/`
 - Training implementations: `training/`（`scripts/train_*.py` は互換入口）
 - Atosyori postprocess source: `external/atosyori-pipeline-dev/`
 - Setup/verification commands: `tools/`（互換入口）
 - Setup/artifact/verify/debug implementations: `tools/setup/`, `tools/artifacts/`, `tools/verify/`, `tools/debug/`
 - Runtime artifacts: `checkpoints/`
 
-このディレクトリを単体でcloneし、Drive artifactを `checkpoints/` に取得すれば、3つの検出器で動画入力からJSONL、後処理SQLite、overlayまで一気通貫で実行できます。
+このディレクトリを単体でcloneし、Drive artifactを `checkpoints/` に取得すれば、3つのAI検出器とRT-DETR Head/Face検出で動画入力からJSONL/SQLite、後処理SQLite、overlayまで一気通貫で実行できます。
 
 責務境界は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、長期保守方針は [docs/MAINTENANCE.md](docs/MAINTENANCE.md)、Flowの詳細は [docs/FLOW.md](docs/FLOW.md)、後処理の現行設定は [docs/POSTPROCESS_SETTINGS.md](docs/POSTPROCESS_SETTINGS.md)、後処理エンジン管理方針は [docs/POSTPROCESS_ENGINE_POLICY.md](docs/POSTPROCESS_ENGINE_POLICY.md)、artifact配置は [docs/ARTIFACTS.md](docs/ARTIFACTS.md)、セットアップ手順は [docs/SETUP.md](docs/SETUP.md)、Windows側UI配置は [docs/WINDOWS_UI.md](docs/WINDOWS_UI.md)、ラン成果物診断は [docs/RUN_AUDIT.md](docs/RUN_AUDIT.md)、整理・変更後の検証は [docs/VERIFICATION.md](docs/VERIFICATION.md) を参照してください。
 
@@ -48,13 +49,13 @@ cp configs/artifact_sources.env.example configs/artifact_sources.env
 tools/setup_runtime.sh
 ```
 
-`tools/setup_runtime.sh` は正規セットアップ入口です。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、GPU/VRAMに応じた3モデル共通のbatch探索まで行います。互換入口として `tools/setup_integrated_runtime_env.sh` と `tools/setup_gui_runtime.sh` も残しています。
+`tools/setup_runtime.sh` は正規セットアップ入口です。UI依存関係のインストール、DINOv3/Co-DINO TensorRT engineの作成/再利用、RT-DETR依存関係のインストール、GPU/VRAMに応じたDINOv3/EVA02/Co-DINO/RT-DETRのbatch探索まで行います。互換入口として `tools/setup_integrated_runtime_env.sh` と `tools/setup_gui_runtime.sh` も残しています。
 
 ```bash
 tools/setup_gui_runtime.sh
 ```
 
-生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engineは `.runtime/gui_runtime.env` に保存されます。セットアップ時にはDINOv3、EVA02、Co-DINOのbatch-size候補を本番推論に近い設定で順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。既定では `input/` 配下の最初の動画を240フレームだけ使い、動画が無い場合は一時動画へフォールバックします。`BATCH_BENCHMARK_INPUT=/path/to/sample.mp4` を指定すると任意の実動画サンプルで探索できます。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はTensorRT engineを作らない構成でも実測batch探索を行いますが、VRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headを候補batchごとにローカルTensorRT engineとして作成し、その後の実測で選ばれたbatch-sizeをprofileへ反映します。
+生成された推奨設定は `.runtime/runtime_profile.json` に保存され、セットアップで選ばれたPython/venvやTensorRT engine、RT-DETR config/checkpoint/batchは `.runtime/gui_runtime.env` に保存されます。セットアップ時にはDINOv3、EVA02、Co-DINO、RT-DETRのbatch-size候補を本番推論に近い設定で順番に測定し、結果を `.runtime/runtime_benchmark.json` に保存してから一時動画と出力を削除します。既定では `input/` 配下の最初の動画を240フレームだけ使い、動画が無い場合は一時動画へフォールバックします。`BATCH_BENCHMARK_INPUT=/path/to/sample.mp4` を指定すると任意の実動画サンプルで探索できます。これらはPC/GPUごとのローカル設定なのでgitignore対象です。GUI起動時と `scripts/run_integrated_pipeline.py` の既定値はこの設定を参照します。目安値とスキーマは `configs/runtime_profile.example.json` に記載しています。特にEVA02はTensorRT engineを作らない構成でも実測batch探索を行いますが、VRAM不足時に共有メモリへ落ちると極端に遅くなるため、測定できない場合の既定batch-sizeは安全寄りにしています。Co-DINOはDeformable Attentionを含むquery encoder/decoder/mask headを候補batchごとにローカルTensorRT engineとして作成し、その後の実測で選ばれたbatch-sizeをprofileへ反映します。
 
 別のAtosyori repoを使う場合:
 
@@ -85,12 +86,14 @@ checkpoints/
   codino/detector/resolved_config.py
   codino/detector/epoch_2.pth
   codino/classifier/best.pt
+  rtdetr/head_face_best_stg1.pth
   postprocess/k2_v5/best_exact.pt
   postprocess/polygon_point_predictor/best.pt
   postprocess/polygon_point_predictor/feature_stats.npz
 ```
 
 TensorRT engineはセットアップ時にローカルGPU向けに作成されます。
+RT-DETRのmodel configと推論sourceは `external/RT-DETR/RT-DETRv4` でGit管理し、Head/Face重みだけをDrive artifactとして取得します。
 
 配置確認:
 
@@ -281,6 +284,7 @@ artifacts_to_upload/runtime_artifacts/
   checkpoints/eva02/classifier/best.pt
   checkpoints/codino/detector/epoch_2.pth
   checkpoints/codino/classifier/best.pt
+  checkpoints/rtdetr/head_face_best_stg1.pth
   checkpoints/postprocess/k2_v5/best_exact.pt
   checkpoints/postprocess/k2_v5/run_config.json
   checkpoints/postprocess/k2_v5/train_k2_slot_set_spd_standalone_v5.py
