@@ -23,7 +23,7 @@ from .flow_cli_common import (
 )
 
 
-PIPELINE_SCRIPT = Path(__file__).resolve().parents[1] / "run_integrated_pipeline.py"
+PIPELINE_MODULE = "backend.pipeline.run_integrated_pipeline"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,7 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
 def build_command(args: argparse.Namespace, run_dir: Path, policy_path: Path | None) -> list[str]:
     command = [
         sys.executable,
-        str(PIPELINE_SCRIPT),
+        "-m",
+        PIPELINE_MODULE,
         "--input",
         str(args.input),
         "--output-root",

@@ -10,9 +10,10 @@ from backend.detectors.common import maybe_add, require_script
 
 def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> list[str]:
     script = require_script(args.eva02_runtime / "infer_video_eva02_jsonl.py")
+    python = getattr(args, "eva02_python", None) or args.python
 
     command = [
-        str(args.python),
+        str(python),
         str(script),
         "--input",
         str(video),
@@ -33,6 +34,8 @@ def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> li
         str(args.eva02_warmup_frames),
         "--classifier-batch-size",
         str(args.eva02_classifier_batch_size),
+        "--compile-backbone",
+        str(args.eva02_compile_backbone),
         "--json-backend",
         str(args.eva02_json_backend),
         "--mask-approx",

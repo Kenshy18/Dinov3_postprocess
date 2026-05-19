@@ -50,13 +50,16 @@ except Exception:
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parents[3]
 EVA02_DET_CANDIDATES = [
+    Path(os.environ["EVA02_DET_PATH"]).expanduser()
+    if os.environ.get("EVA02_DET_PATH")
+    else None,
     BASE_DIR / "eva02_det",
     REPO_ROOT / "eva02" / "eva02_det",
 ]
 
 # Prefer bundled EVA-02 detectron2 if available.
 for _eva02_det in EVA02_DET_CANDIDATES:
-    if _eva02_det.is_dir():
+    if _eva02_det is not None and _eva02_det.is_dir():
         sys.path.insert(0, str(_eva02_det))
         break
 

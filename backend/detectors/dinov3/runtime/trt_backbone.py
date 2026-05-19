@@ -82,7 +82,13 @@ def build_engine_from_onnx(
     network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
     network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, logger)
-    if not parser.parse(onnx_path.read_bytes()):
+    # Use the file-path parser so TensorRT can resolve ONNX external-data
+    # sidecar files next to the model, e.g. "*.onnx.data".
+    if hasattr(parser, "parse_from_file"):
+        parsed = parser.parse_from_file(str(onnx_path))
+    else:
+        parsed = parser.parse(onnx_path.read_bytes())
+    if not parsed:
         errors = "\n".join(str(parser.get_error(i)) for i in range(parser.num_errors))
         raise RuntimeError(f"TensorRT ONNX parse failed:\n{errors}")
 

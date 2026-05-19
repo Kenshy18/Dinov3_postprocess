@@ -1,6 +1,8 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
+import torch
 from torch import nn
 from torchvision.ops import roi_align
+from torchvision.ops.roi_align import _roi_align as roi_align_fallback
 
 
 # NOTE: torchvision's RoIAlign has a different default aligned=False
@@ -55,14 +57,18 @@ class ROIAlign(nn.Module):
         assert rois.dim() == 2 and rois.size(1) == 5
         if input.is_quantized:
             input = input.dequantize()
-        return roi_align(
-            input,
-            rois.to(dtype=input.dtype),
-            self.output_size,
-            self.spatial_scale,
-            self.sampling_ratio,
-            self.aligned,
-        )
+        rois = rois.to(dtype=input.dtype)
+        if input.is_cuda and torch.cuda.get_device_capability(input.device)[0] >= 12:
+            return roi_align_fallback(
+                input,
+                rois,
+                self.spatial_scale,
+                self.output_size[0],
+                self.output_size[1],
+                self.sampling_ratio,
+                self.aligned,
+            )
+        return roi_align(input, rois, self.output_size, self.spatial_scale, self.sampling_ratio, self.aligned)
 
     def __repr__(self):
         tmpstr = self.__class__.__name__ + "("

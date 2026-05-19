@@ -180,6 +180,8 @@ if [[ ! -d "$ENV_DIR" ]]; then
 fi
 
 PY="$ENV_DIR/bin/python"
+BASE_PYTHON_BIN="$(cd "$(dirname "$BASE_PYTHON")" && pwd)"
+BASE_PYTHON_PREFIX="$(cd "$BASE_PYTHON_BIN/.." && pwd)"
 SITE_DIR="$("$PY" - <<'PY'
 import site
 print(site.getsitepackages()[0])
@@ -291,7 +293,8 @@ fi
 
 if [[ "$BUILD_DETECTRON2" == "1" ]] || { [[ "$BUILD_DETECTRON2" == "auto" ]] && ! ls "$ROOT_DIR/eva02/eva02_det/detectron2"/_C*.so >/dev/null 2>&1; }; then
   echo "[SETUP] building/installing bundled Detectron2/EVA02 extension"
-  "$PY" -m pip install -q -e "$ROOT_DIR/eva02/eva02_det"
+  "$PY" -m pip install -q "setuptools>=70,<82"
+  "$PY" -m pip install -q --no-build-isolation -e "$ROOT_DIR/eva02/eva02_det"
 else
   echo "[SETUP] bundled Detectron2 extension exists"
 fi
@@ -669,6 +672,12 @@ mkdir -p "$(dirname "$GUI_RUNTIME_ENV")"
   printf 'GUI_RUNTIME_ROOT=%q\n' "$ROOT_DIR"
   printf 'GUI_RUNTIME_ENV_DIR=%q\n' "$ENV_DIR"
   printf 'GUI_RUNTIME_PYTHON=%q\n' "$PY"
+  if [[ -x "$BASE_PYTHON_BIN/ffmpeg" ]]; then
+    printf 'PATH=%q:${PATH}\n' "$BASE_PYTHON_BIN"
+  fi
+  if [[ -d "$BASE_PYTHON_PREFIX/targets/x86_64-linux/lib" ]]; then
+    printf 'LD_LIBRARY_PATH=%q:${LD_LIBRARY_PATH:-}\n' "$BASE_PYTHON_PREFIX/targets/x86_64-linux/lib"
+  fi
   printf 'DINOV3_RUNTIME_PROFILE=%q\n' "$DINOV3_RUNTIME_PROFILE"
   printf 'DINOV3_BATCH_BENCHMARK=%q\n' "$BATCH_BENCHMARK_OUTPUT"
   printf 'BATCH_BENCHMARK_MAX_VRAM_FRACTION=%q\n' "$BATCH_BENCHMARK_MAX_VRAM_FRACTION"

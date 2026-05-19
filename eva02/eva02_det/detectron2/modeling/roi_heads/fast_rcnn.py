@@ -21,6 +21,11 @@ except Exception:
     mmcv_soft_nms = None
 
 try:
+    from mmcv.ops import nms as mmcv_hard_nms
+except Exception:
+    mmcv_hard_nms = None
+
+try:
     from torchvision.ops import nms as torch_nms  # fallback hard-NMS
 except Exception:
     torch_nms = None  # last-resort: we will use detectron2.batched_nms
@@ -303,7 +308,9 @@ def fast_rcnn_inference_single_image(
     # For the single-class path, all foreground predictions share class id 0, so
     # torchvision's plain NMS is equivalent and avoids batched_nms bookkeeping.
     if filter_classes.numel() > 0 and torch.all(filter_classes == 0):
-        if torch_nms is not None:
+        if mmcv_hard_nms is not None and boxes.is_cuda and torch.cuda.get_device_capability(boxes.device)[0] >= 12:
+            _, keep = mmcv_hard_nms(boxes, scores, nms_thresh)
+        elif torch_nms is not None:
             keep = torch_nms(boxes, scores, nms_thresh)
         else:
             keep = batched_nms(boxes, scores, filter_classes, nms_thresh)

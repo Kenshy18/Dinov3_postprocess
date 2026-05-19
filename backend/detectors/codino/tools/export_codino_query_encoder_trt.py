@@ -257,6 +257,7 @@ def export_onnx(wrapper: torch.nn.Module, args: argparse.Namespace, feature_shap
                 opset_version=args.opset,
                 do_constant_folding=False,
                 custom_opsets={"trt": 1},
+                dynamo=False,
             )
         except Exception as exc:
             if exc.__class__.__name__ != "CheckerError" or not args.onnx.is_file() or args.onnx.stat().st_size <= 0:

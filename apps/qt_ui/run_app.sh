@@ -14,6 +14,11 @@ elif [[ -f "${LEGACY_RUNTIME_ENV}" ]]; then
   source "${LEGACY_RUNTIME_ENV}"
 fi
 
+LOCAL_XCB_LIBS="${ROOT_DIR}/.runtime/xcb_libs/usr/lib/x86_64-linux-gnu"
+if [[ -d "${LOCAL_XCB_LIBS}" ]]; then
+  export LD_LIBRARY_PATH="${LOCAL_XCB_LIBS}:${LD_LIBRARY_PATH:-}"
+fi
+
 RUNTIME_PROFILE_DEFAULT="${ROOT_DIR}/.runtime/runtime_profile.json"
 if [[ ! -f "${RUNTIME_PROFILE_DEFAULT}" && -f "${ROOT_DIR}/configs/runtime_profile.json" ]]; then
   RUNTIME_PROFILE_DEFAULT="${ROOT_DIR}/configs/runtime_profile.json"

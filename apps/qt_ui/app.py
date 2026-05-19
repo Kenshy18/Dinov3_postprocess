@@ -58,6 +58,26 @@ def configure_qt_environment() -> None:
 configure_qt_environment()
 
 
+def configure_application_font(app: QtWidgets.QApplication) -> None:
+    font_candidates = [
+        Path("/mnt/c/Windows/Fonts/NotoSansJP-VF.ttf"),
+        Path("/mnt/c/Windows/Fonts/meiryo.ttc"),
+        Path("/mnt/c/Windows/Fonts/YuGothR.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+    ]
+    for path in font_candidates:
+        if not path.is_file():
+            continue
+        font_id = QtGui.QFontDatabase.addApplicationFont(str(path))
+        if font_id < 0:
+            continue
+        families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            app.setFont(QtGui.QFont(families[0], 10))
+            return
+
+
 class PipelineUiWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -155,7 +175,6 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         self.detector_combo = ClosingComboBox()
         self.detector_combo.addItem("DINOv3", "dinov3")
         self.detector_combo.addItem("EVA02", "eva02")
-        self.detector_combo.addItem("Co-DINO", "codino")
         self.detector_combo.addItem("顔・頭のみ（AIなし）", "head_face")
         self.detector_combo.setCurrentIndex(1)
         self.detector_combo.currentIndexChanged.connect(self.update_detector_mode)
@@ -1252,9 +1271,18 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
         if self.max_frames_spin.value() > 0:
             pipeline_command.extend(["--max-frames", str(self.max_frames_spin.value())])
         if not head_face_only and detector == "eva02":
+            eva02_python = runtime_env.get("EVA02_DETECTOR_PYTHON") or os.environ.get("EVA02_DETECTOR_PYTHON")
+            eva02_compile_backbone = (
+                runtime_env.get("EVA02_COMPILE_BACKBONE")
+                or os.environ.get("EVA02_COMPILE_BACKBONE")
+                or "none"
+            )
             eva02_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("eva02", "batch_size")
             eva02_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("eva02", "warmup_frames")
             eva02_classifier_batch = profile_int("eva02", "classifier_batch_size")
+            if eva02_python:
+                pipeline_command.extend(["--eva02-python", str(eva02_python)])
+            pipeline_command.extend(["--eva02-compile-backbone", str(eva02_compile_backbone)])
             if eva02_batch:
                 pipeline_command.extend(["--eva02-batch-size", str(eva02_batch)])
             if eva02_warmup is not None:
@@ -1284,9 +1312,12 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             if codino_trt_mask is not None and codino_trt_mask.is_file():
                 pipeline_command.extend(["--codino-trt-mask-head-engine", str(codino_trt_mask)])
         elif not head_face_only:
+            dinov3_python = runtime_env.get("DINOV3_DETECTOR_PYTHON") or os.environ.get("DINOV3_DETECTOR_PYTHON")
             dinov3_batch = self.batch_size_spin.value() if self.batch_size_spin.value() > 0 else profile_int("dinov3", "batch_size")
             dinov3_warmup = self.warmup_spin.value() if self.warmup_spin.value() >= 0 else profile_int("dinov3", "warmup_frames")
             trt_engine = selected_trt_engine()
+            if dinov3_python:
+                pipeline_command.extend(["--dinov3-python", str(dinov3_python)])
             if dinov3_batch:
                 pipeline_command.extend(["--batch-size", str(dinov3_batch)])
             if dinov3_warmup is not None:
@@ -1382,6 +1413,12 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
             "RTDETR_PROGRESS_INTERVAL",
             "RTDETR_CONFIG",
             "RTDETR_CHECKPOINT",
+            "DINOV3_DETECTOR_PYTHON",
+            "EVA02_DETECTOR_PYTHON",
+            "EVA02_DET_PATH",
+            "EVA02_COMPILE_BACKBONE",
+            "CC",
+            "CXX",
         ):
             value = runtime_env.get(key) or os.environ.get(key)
             if value:
@@ -1597,6 +1634,7 @@ class PipelineUiWindow(QtWidgets.QMainWindow):
 def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("SOD推論システム")
+    configure_application_font(app)
     window = PipelineUiWindow()
     window.show()
     return app.exec_()

@@ -10,9 +10,10 @@ from backend.detectors.common import maybe_add, require_script
 
 def build_command(args: argparse.Namespace, video: Path, output_dir: Path) -> list[str]:
     script = require_script(args.dinov3_runtime / "infer_video_dinov3_jsonl.py")
+    python = getattr(args, "dinov3_python", None) or args.python
 
     command = [
-        str(args.python),
+        str(python),
         str(script),
         "--input",
         str(video),

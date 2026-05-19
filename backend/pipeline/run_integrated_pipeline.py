@@ -482,6 +482,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
+    parser.add_argument(
+        "--dinov3-python",
+        type=Path,
+        default=None,
+        help="Python executable for DINOv3 detector inference. Defaults to --python.",
+    )
+    parser.add_argument(
+        "--eva02-python",
+        type=Path,
+        default=None,
+        help="Python executable for EVA02 detector inference. Defaults to --python.",
+    )
     parser.add_argument("--detector", choices=DETECTOR_CHOICES, default="dinov3")
     parser.add_argument("--dinov3-runtime", type=Path, default=DEFAULT_DINOV3_RUNTIME)
     parser.add_argument("--eva02-runtime", type=Path, default=DEFAULT_EVA02_RUNTIME)
@@ -563,6 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eva02-batch-size", type=int, default=EVA02_DEFAULT_BATCH_SIZE)
     parser.add_argument("--eva02-warmup-frames", type=int, default=EVA02_DEFAULT_WARMUP_FRAMES)
     parser.add_argument("--eva02-classifier-batch-size", type=int, default=EVA02_DEFAULT_CLASSIFIER_BATCH_SIZE)
+    parser.add_argument("--eva02-compile-backbone", default="max-autotune")
     parser.add_argument("--eva02-json-backend", choices=("json", "orjson"), default=EVA02_DEFAULT_JSON_BACKEND)
     parser.add_argument("--eva02-mask-approx", choices=("none", "simple"), default=EVA02_DEFAULT_MASK_APPROX)
     parser.add_argument("--eva02-async-writer", action=argparse.BooleanOptionalAction, default=EVA02_DEFAULT_ASYNC_WRITER)
@@ -620,6 +633,8 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.input = abs_path(args.input)
     args.output_root = abs_path(args.output_root)
     args.python = abs_path_preserve_symlink(args.python)
+    args.dinov3_python = abs_path_preserve_symlink(args.dinov3_python) if args.dinov3_python is not None else args.python
+    args.eva02_python = abs_path_preserve_symlink(args.eva02_python) if args.eva02_python is not None else args.python
     args.dinov3_runtime = abs_path(args.dinov3_runtime)
     args.eva02_runtime = abs_path(args.eva02_runtime)
     args.codino_runtime = abs_path(args.codino_runtime)
