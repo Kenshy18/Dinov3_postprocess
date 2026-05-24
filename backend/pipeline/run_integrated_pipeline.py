@@ -75,6 +75,11 @@ from .pipeline_outputs import collect_postprocess_outputs, model_status, summari
 from .progress import ProgressReporter, limited_total
 from backend.schemas.head_face_sqlite import enrich_head_face_sqlite, merge_ai_and_head_face_sqlite
 from backend.schemas.mask_sqlite import jsonl_to_raw_sqlite
+from backend.schemas.postprocess_coordinate_space import (
+    transform_from_summary,
+    write_postprocess_work_jsonl,
+    write_source_space_mask_sqlite,
+)
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
@@ -104,6 +109,79 @@ def default_rtdetr_repo() -> Path:
 DEFAULT_RTDETR_REPO = default_rtdetr_repo()
 DEFAULT_RTDETR_CONFIG = DEFAULT_RTDETR_REPO / "configs" / "rtv2" / "rtv2_r18vd_72e_crowdhuman_citypersons_vhf.yml"
 DEFAULT_RTDETR_CHECKPOINT = INTEGRATION_ROOT / "checkpoints" / "rtdetr" / "head_face_best_stg1.pth"
+
+
+def restore_postprocess_outputs_to_source_space(
+    *,
+    run_dir: Path,
+    video: Path,
+    postprocess_summary: dict[str, Any],
+    coordinate_summary: dict[str, Any],
+) -> dict[str, Any]:
+    transform = transform_from_summary(coordinate_summary)
+    sqlite_dir = run_dir / "sqlite"
+    restore_summaries: dict[str, Any] = {}
+
+    work_prediction_links = dict(postprocess_summary.get("prediction_sqlite_links") or {})
+    source_prediction_links: dict[str, str] = {}
+
+    if transform.is_identity:
+        work_tracked_sqlite = postprocess_summary.get("tracked_sqlite")
+        work_tracked_sqlite_link = postprocess_summary.get("tracked_sqlite_link")
+        tracked_link = Path(str(work_tracked_sqlite_link)) if work_tracked_sqlite_link else None
+        tracked_src = Path(str(work_tracked_sqlite)) if work_tracked_sqlite else None
+        source_tracked_sqlite: str | None = None
+        if tracked_link is not None and tracked_link.is_file():
+            source_tracked_sqlite = str(tracked_link)
+        elif tracked_src is not None and tracked_src.is_file():
+            source_tracked_sqlite = str(tracked_src)
+
+        postprocess_summary["coordinate_space"] = coordinate_summary
+        postprocess_summary["work_prediction_sqlite_links"] = work_prediction_links
+        postprocess_summary["source_prediction_sqlite_links"] = work_prediction_links
+        postprocess_summary["prediction_sqlite_links"] = work_prediction_links
+        postprocess_summary["work_tracked_sqlite"] = work_tracked_sqlite
+        postprocess_summary["work_tracked_sqlite_link"] = work_tracked_sqlite_link
+        if source_tracked_sqlite is not None:
+            postprocess_summary["tracked_sqlite"] = source_tracked_sqlite
+            postprocess_summary["tracked_sqlite_link"] = source_tracked_sqlite
+        postprocess_summary["coordinate_restore_summaries"] = restore_summaries
+        return postprocess_summary
+
+    for label, value in sorted(work_prediction_links.items()):
+        result = postprocess_summary.get("interval_results", {}).get(label, {})
+        paths = result.get("paths", {}) if isinstance(result, dict) else {}
+        work_src_raw = paths.get("merged_pred_sqlite") if isinstance(paths, dict) else None
+        src = Path(str(work_src_raw or value))
+        if not src.is_file():
+            continue
+        dst = Path(str(value))
+        restore_summaries[f"prediction:{label}"] = write_source_space_mask_sqlite(src, dst, coordinate_summary)
+        source_prediction_links[str(label)] = str(dst)
+        work_prediction_links[str(label)] = str(src)
+
+    work_tracked_sqlite = postprocess_summary.get("tracked_sqlite")
+    work_tracked_sqlite_link = postprocess_summary.get("tracked_sqlite_link")
+    tracked_src_raw = work_tracked_sqlite or work_tracked_sqlite_link
+    source_tracked_sqlite: str | None = None
+    if tracked_src_raw:
+        tracked_src = Path(str(tracked_src_raw))
+        if tracked_src.is_file():
+            dst = Path(str(work_tracked_sqlite_link or sqlite_dir / f"{video.stem}_tracked.sqlite"))
+            restore_summaries["tracked"] = write_source_space_mask_sqlite(tracked_src, dst, coordinate_summary)
+            source_tracked_sqlite = str(dst)
+
+    postprocess_summary["coordinate_space"] = coordinate_summary
+    postprocess_summary["work_prediction_sqlite_links"] = work_prediction_links
+    postprocess_summary["source_prediction_sqlite_links"] = source_prediction_links
+    postprocess_summary["prediction_sqlite_links"] = source_prediction_links
+    postprocess_summary["work_tracked_sqlite"] = work_tracked_sqlite
+    postprocess_summary["work_tracked_sqlite_link"] = work_tracked_sqlite_link
+    if source_tracked_sqlite is not None:
+        postprocess_summary["tracked_sqlite"] = source_tracked_sqlite
+        postprocess_summary["tracked_sqlite_link"] = source_tracked_sqlite
+    postprocess_summary["coordinate_restore_summaries"] = restore_summaries
+    return postprocess_summary
 
 
 def runtime_profile_recommendations() -> dict[str, Any]:
@@ -393,18 +471,40 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
         )
 
     postprocess_summary: dict[str, Any] | None = None
+    postprocess_work_jsonl_path: Path | None = None
+    postprocess_coordinate_summary: dict[str, Any] | None = None
+    postprocess_coordinate_summary_path: Path | None = None
     combined_final_summary: dict[str, Any] | None = None
     combined_final_sqlite_path: Path | None = None
     if args.postprocess and jsonl_path is not None:
+        postprocess_work_jsonl_path = run_dir / "postprocess_input" / f"{video.stem}_postprocess_1920x1080.jsonl"
+        postprocess_coordinate_summary = write_postprocess_work_jsonl(jsonl_path, postprocess_work_jsonl_path)
+        postprocess_coordinate_summary_path = run_dir / "postprocess_input" / "coordinate_space.json"
+        write_json(postprocess_coordinate_summary_path, postprocess_coordinate_summary)
+        transform = transform_from_summary(postprocess_coordinate_summary)
+        if not transform.is_identity:
+            print(
+                "[postprocess-coordinate-space] "
+                f"{transform.source_width}x{transform.source_height} -> "
+                f"{transform.work_width}x{transform.work_height} "
+                f"scale={transform.scale:.8f} pad=({transform.pad_left:.3f},{transform.pad_top:.3f})",
+                flush=True,
+            )
         timings.append(
             run_command(
-                build_postprocess_command(args, video, jsonl_path, postprocess_out),
+                build_postprocess_command(args, video, postprocess_work_jsonl_path, postprocess_out),
                 cwd=args.atosyori_repo,
                 env=atosyori_env(args),
                 label=f"atosyori postprocess: {video.name}",
             )
         )
         postprocess_summary = collect_postprocess_outputs(run_dir, postprocess_out, video)
+        postprocess_summary = restore_postprocess_outputs_to_source_space(
+            run_dir=run_dir,
+            video=video,
+            postprocess_summary=postprocess_summary,
+            coordinate_summary=postprocess_coordinate_summary,
+        )
         if head_face_sqlite_path is not None and head_face_summary is not None:
             combined_final_sqlite_path = run_dir / "sqlite" / f"{video.stem}_combined_final.sqlite"
             combined_final_summary = merge_ai_and_head_face_sqlite(
@@ -438,6 +538,10 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             "raw_sqlite": None if raw_sqlite_path is None else str(raw_sqlite_path),
             "head_face_sqlite": None if head_face_sqlite_path is None else str(head_face_sqlite_path),
             "combined_final_sqlite": None if combined_final_sqlite_path is None else str(combined_final_sqlite_path),
+            "postprocess_work_jsonl": None if postprocess_work_jsonl_path is None else str(postprocess_work_jsonl_path),
+            "postprocess_coordinate_summary": None
+            if postprocess_coordinate_summary_path is None
+            else str(postprocess_coordinate_summary_path),
             "detector_summary": None if jsonl_path is None else str(detector_out / "summary.json"),
             "dinov3_jsonl": str(jsonl_path) if args.detector == "dinov3" and jsonl_path is not None else None,
             "dinov3_summary": str(detector_out / "summary.json") if args.detector == "dinov3" and jsonl_path is not None else None,
@@ -465,6 +569,7 @@ def run_one_video(args: argparse.Namespace, video: Path, run_dir: Path) -> dict[
             "trt": detector_summary.get("trt") if args.detector == "codino" else None,
         },
         "postprocess": postprocess_summary,
+        "postprocess_coordinate_space": postprocess_coordinate_summary,
         "timings": timings,
         "total_wall_seconds": float(sum(float(row["wall_seconds"]) for row in timings)),
     }

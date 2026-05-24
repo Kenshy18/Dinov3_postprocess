@@ -633,6 +633,7 @@ def cleanup_success_debug_outputs(
         "codino",
         "head_face",
         "postprocess",
+        "postprocess_input",
         "postprocessed",
         "jsonl",
         "sqlite",

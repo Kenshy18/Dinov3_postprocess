@@ -230,6 +230,8 @@ class UiJobAuditTests(unittest.TestCase):
             self._write_head_face_sqlite(head_face_sqlite)
             (run_dir / "postprocess" / "artifacts").mkdir(parents=True)
             (run_dir / "postprocess" / "artifacts" / "debug.csv").write_text("x\n", encoding="utf-8")
+            (run_dir / "postprocess_input").mkdir()
+            (run_dir / "postprocess_input" / "video_postprocess_1920x1080.jsonl").write_text("{}\n", encoding="utf-8")
             (run_dir / "config").mkdir()
             (run_dir / "config" / "class_policy.ui.json").write_text("{}", encoding="utf-8")
             (run_dir / "sod_job_dir").mkdir()
@@ -288,7 +290,17 @@ class UiJobAuditTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            for name in ("dinov3", "head_face", "postprocess", "sqlite", "config", "sod_job_dir", "summary.json", "index.json"):
+            for name in (
+                "dinov3",
+                "head_face",
+                "postprocess",
+                "postprocess_input",
+                "sqlite",
+                "config",
+                "sod_job_dir",
+                "summary.json",
+                "index.json",
+            ):
                 self.assertFalse((run_dir / name).exists(), name)
             self.assertFalse((run_dir / "AI生成カバーオーバーレイ").exists())
             self.assertFalse((run_dir / "詳細オーバーレイ").exists())
@@ -297,6 +309,7 @@ class UiJobAuditTests(unittest.TestCase):
             final_summary = json.loads((run_dir / "最終成果物.json").read_text(encoding="utf-8"))
             self.assertFalse(final_summary["debug_outputs_retained"])
             self.assertIn("postprocess", final_summary["removed_debug_outputs"])
+            self.assertIn("postprocess_input", final_summary["removed_debug_outputs"])
             self.assertEqual(final_summary["raw_detector_sqlite"], str(raw_output))
             self.assertEqual(final_summary["tracked_sqlite"], str(tracked_output))
             self.assertEqual(final_summary["combined_final_sqlite"], str(combined_output))
