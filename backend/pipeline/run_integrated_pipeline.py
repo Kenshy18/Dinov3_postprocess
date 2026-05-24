@@ -619,7 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codino-classifier-checkpoint", type=Path, default=DEFAULT_CODINO_CLASSIFIER_CHECKPOINT)
     parser.add_argument("--trt-backbone-engine", type=Path, default=DEFAULT_TRT_BACKBONE_ENGINE)
     parser.add_argument("--backbone-weights", type=Path, default=DEFAULT_DINOV3_WEIGHTS)
-    parser.add_argument("--target-size", default="1280x720")
+    parser.add_argument("--target-size", default="720x1280")
     parser.add_argument("--score-thresh", type=float, default=0.3)
     parser.add_argument("--nms-thresh", type=float, default=0.4)
     parser.add_argument("--topk", type=int, default=200)

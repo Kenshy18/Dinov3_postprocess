@@ -1199,8 +1199,8 @@ def main() -> int:
     parser.add_argument(
         "--target-size",
         type=_parse_target_size,
-        default=(1280, 720),
-        help="Letterbox size as INT or HxW. Default matches training: 1280x720",
+        default=(720, 1280),
+        help="Letterbox size as INT or HxW. Default: 720x1280",
     )
     parser.add_argument("--score-thresh", type=float, default=0.3, help="Score threshold for drawing")
     parser.add_argument("--nms-thresh", type=float, default=0.4, help="Cascade test NMS threshold")

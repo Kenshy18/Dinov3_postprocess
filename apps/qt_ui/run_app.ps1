@@ -46,7 +46,7 @@ if (-not $env:DINOV3_BATCH_BENCHMARK) {
     $env:DINOV3_BATCH_BENCHMARK = $BatchBenchmarkDefault
 }
 if (-not $env:DINOV3_TRT_BACKBONE_ENGINE) {
-    $env:DINOV3_TRT_BACKBONE_ENGINE = Join-Path $RootDir "checkpoints\trt\dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+    $env:DINOV3_TRT_BACKBONE_ENGINE = Join-Path $RootDir "checkpoints\trt\dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine"
 }
 
 $PythonCandidates = @()
@@ -69,4 +69,3 @@ if (-not $Python) {
 }
 
 & $Python (Join-Path $RootDir "apps\qt_ui\app.py") @args
-

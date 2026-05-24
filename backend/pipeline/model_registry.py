@@ -17,6 +17,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RUNTIME_PROFILE = ROOT / ".runtime" / "runtime_profile.json"
 LEGACY_RUNTIME_PROFILE = ROOT / "configs" / "runtime_profile.json"
+DINOV3_DEFAULT_TRT_BACKBONE_ENGINE = (
+    ROOT
+    / "checkpoints"
+    / "trt"
+    / "dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine"
+)
+DINOV3_DEFAULT_TRT_HW = (720, 1280)
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,52 @@ def _profile_path(section: str, key: str, default: Path | None) -> Path | None:
     return default
 
 
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else ROOT / path
+
+
+def _trt_engine_input_hw(path: Path) -> tuple[int, int] | None:
+    meta_path = path.with_suffix(".json")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    tensors = meta.get("tensors", [])
+    if not isinstance(tensors, list):
+        return None
+    for tensor in tensors:
+        if not isinstance(tensor, dict) or tensor.get("name") != "input":
+            continue
+        shape = tensor.get("shape")
+        if isinstance(shape, list) and len(shape) >= 4:
+            try:
+                return int(shape[-2]), int(shape[-1])
+            except Exception:
+                return None
+    return None
+
+
+def _dinov3_trt_engine_matches_default(path: Path) -> bool:
+    input_hw = _trt_engine_input_hw(path)
+    if input_hw is not None:
+        return input_hw == DINOV3_DEFAULT_TRT_HW
+    return "720x1280" in path.name
+
+
+def _dinov3_trt_engine_default() -> Path:
+    for path in (
+        _env_path("DINOV3_TRT_BACKBONE_ENGINE"),
+        _profile_path("dinov3", "trt_backbone_engine", None),
+    ):
+        if path is not None and _dinov3_trt_engine_matches_default(path):
+            return path
+    return DINOV3_DEFAULT_TRT_BACKBONE_ENGINE
+
+
 def _local(path: str) -> Path:
     return ROOT / path
 
@@ -128,11 +181,7 @@ def _build_registry() -> dict[str, DetectorSpec]:
             artifacts={
                 "detector_checkpoint": _local("checkpoints/detector/model_final.pth"),
                 "classifier_checkpoint": _local("checkpoints/classifier/best.pt"),
-                "trt_backbone_engine": _profile_path(
-                    "dinov3",
-                    "trt_backbone_engine",
-                    _local("checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"),
-                ),
+                "trt_backbone_engine": _dinov3_trt_engine_default(),
             },
             defaults={
                 "batch_size": _profile_int("dinov3", "batch_size", 8),

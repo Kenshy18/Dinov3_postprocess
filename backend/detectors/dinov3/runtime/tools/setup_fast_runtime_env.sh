@@ -23,7 +23,7 @@ SMOKE_INPUT="${SMOKE_INPUT:-$REPO_ROOT/input/アクセル様２月解析用白�
 SMOKE_OUTPUT="${SMOKE_OUTPUT:-$RUNTIME_DIR/output_runs/setup_smoke}"
 SMOKE_BATCH_SIZE="${SMOKE_BATCH_SIZE:-}"
 REBUILD_TRT="${REBUILD_TRT:-auto}"
-ENGINE_PATH="${ENGINE_PATH:-$REPO_ROOT/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
+ENGINE_PATH="${ENGINE_PATH:-$REPO_ROOT/checkpoints/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine}"
 TRT_PRECISION="${TRT_PRECISION:-bf16}"
 TRT_FALLBACK_FP16="${TRT_FALLBACK_FP16:-1}"
 TENSORRT_PIP_SPEC="${TENSORRT_PIP_SPEC:-tensorrt==10.13.0.35}"

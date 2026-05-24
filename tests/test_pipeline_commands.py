@@ -371,8 +371,10 @@ class PipelineCommandTests(unittest.TestCase):
         )
 
         out_dir = ROOT / "out" / "dinov3"
+        dinov3_command = pipeline_commands.build_dinov3_command(args, args.input, out_dir)
+        self.assertEqual(dinov3_command[dinov3_command.index("--target-size") + 1], "720x1280")
         self.assertEqual(
-            pipeline_commands.build_dinov3_command(args, args.input, out_dir),
+            dinov3_command,
             build_dinov3_adapter_command(args, args.input, out_dir),
         )
 

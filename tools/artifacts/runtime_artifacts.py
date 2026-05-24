@@ -108,9 +108,9 @@ TRT_BACKBONE = RuntimeArtifact(
     "TensorRT backbone engine",
     env_dest(
         "DINOV3_TRT_BACKBONE_ENGINE",
-        "checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
+        "checkpoints/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine",
     ),
-    ("checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",),
+    ("checkpoints/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine",),
 )
 CODINO_CONFIG = RuntimeArtifact(
     "Co-DINO config",

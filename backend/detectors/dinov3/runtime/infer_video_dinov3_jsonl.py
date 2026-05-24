@@ -36,7 +36,7 @@ BUNDLE_CHECKPOINTS = REPO_ROOT / "checkpoints"
 DEFAULT_TRT_ENGINE = (
     BUNDLE_CHECKPOINTS
     / "trt"
-    / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+    / "dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine"
 )
 DEFAULT_CLASSIFIER_CKPT = BUNDLE_CHECKPOINTS / "classifier" / "best.pt"
 DEFAULT_DINOV3_WEIGHTS = (
@@ -689,7 +689,7 @@ def main() -> int:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--backbone-weights", default=None)
     parser.add_argument("--trt-backbone-engine", default=str(DEFAULT_TRT_ENGINE))
-    parser.add_argument("--target-size", type=_parse_target_size, default=(1280, 720))
+    parser.add_argument("--target-size", type=_parse_target_size, default=(720, 1280))
     parser.add_argument("--score-thresh", type=float, default=0.3)
     parser.add_argument("--nms-thresh", type=float, default=0.4)
     parser.add_argument("--topk", type=int, default=200)

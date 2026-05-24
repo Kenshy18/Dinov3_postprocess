@@ -27,7 +27,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / ".runtime" / "runtime_benchmark.json"
 DEFAULT_WORK_DIR = ROOT / "output" / "runtime_batch_benchmark"
-DEFAULT_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+DEFAULT_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine"
 DEFAULT_CODINO_TRT_DIR = ROOT / "checkpoints" / "codino" / "trt"
 DEFAULT_CODINO_TRT_BACKBONE = DEFAULT_CODINO_TRT_DIR / "codino_dinov3_vitl_backbone_736x1280_fp32_b2_fixed_bf16.engine"
 DEFAULT_CODINO_TRT_QUERY_ENCODER = DEFAULT_CODINO_TRT_DIR / "codino_query_encoder_b2_736x1280_msda_plugin_sbc_fp16.engine"
@@ -523,7 +523,7 @@ def command_for_candidate(
         "--trt-backbone-engine",
         str(engine),
         "--target-size",
-        "1280x720",
+        "720x1280",
         "--batch-size",
         str(batch),
         "--warmup-frames",

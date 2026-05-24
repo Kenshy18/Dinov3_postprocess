@@ -20,7 +20,8 @@ DEFAULT_RUNTIME_PROFILE = RUNTIME_STATE_DIR / "runtime_profile.json"
 LEGACY_RUNTIME_PROFILE = ROOT / "configs" / "runtime_profile.json"
 DEFAULT_BATCH_BENCHMARK = RUNTIME_STATE_DIR / "runtime_benchmark.json"
 LEGACY_BATCH_BENCHMARK = ROOT / "configs" / "runtime_benchmark.json"
-FALLBACK_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+FALLBACK_TRT_ENGINE = ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine"
+DINOV3_TRT_INPUT_HW = (720, 1280)
 
 
 def ensure_repo_on_path() -> None:
@@ -121,13 +122,50 @@ def profile_path(section: str, key: str) -> Path | None:
         return None
 
 
+def _trt_engine_input_hw(path: Path) -> tuple[int, int] | None:
+    try:
+        meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    tensors = meta.get("tensors", [])
+    if not isinstance(tensors, list):
+        return None
+    for tensor in tensors:
+        if not isinstance(tensor, dict) or tensor.get("name") != "input":
+            continue
+        shape = tensor.get("shape")
+        if isinstance(shape, list) and len(shape) >= 4:
+            try:
+                return int(shape[-2]), int(shape[-1])
+            except Exception:
+                return None
+    return None
+
+
+def _matches_default_dinov3_trt(path: Path) -> bool:
+    input_hw = _trt_engine_input_hw(path)
+    if input_hw is not None:
+        return input_hw == DINOV3_TRT_INPUT_HW
+    return "720x1280" in path.name
+
+
+def _resolve_engine_candidate(value: str | os.PathLike[str] | None) -> Path | None:
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else ROOT / path
+
+
 def selected_trt_engine() -> Path:
     runtime_env = load_gui_runtime_env()
-    raw = os.environ.get("DINOV3_TRT_BACKBONE_ENGINE") or runtime_env.get("DINOV3_TRT_BACKBONE_ENGINE")
-    if raw:
-        path = Path(raw).expanduser()
-        return path if path.is_absolute() else ROOT / path
-    return profile_path("dinov3", "trt_backbone_engine") or FALLBACK_TRT_ENGINE
+    for candidate in (
+        _resolve_engine_candidate(os.environ.get("DINOV3_TRT_BACKBONE_ENGINE")),
+        _resolve_engine_candidate(runtime_env.get("DINOV3_TRT_BACKBONE_ENGINE")),
+        profile_path("dinov3", "trt_backbone_engine"),
+    ):
+        if candidate is not None and _matches_default_dinov3_trt(candidate):
+            return candidate
+    return FALLBACK_TRT_ENGINE
 
 
 def runtime_summary_text() -> str:

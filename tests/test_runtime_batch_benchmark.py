@@ -59,6 +59,7 @@ class RuntimeBatchBenchmarkTests(unittest.TestCase):
         )
 
         self.assertEqual(command[command.index("--mask-approx") + 1], "none")
+        self.assertEqual(command[command.index("--target-size") + 1], "720x1280")
 
     def test_parser_defaults_are_longer_and_match_eva02_production_compile(self) -> None:
         with patch.dict(

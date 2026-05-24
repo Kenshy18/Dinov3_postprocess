@@ -44,7 +44,7 @@ FALLBACK_TRT_BACKBONE_ENGINE = (
     INTEGRATION_ROOT
     / "checkpoints"
     / "trt"
-    / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine"
+    / "dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine"
 )
 DEFAULT_TRT_BACKBONE_ENGINE = DINOV3_SPEC.artifact("trt_backbone_engine")
 DEFAULT_CODINO_TRT_FEATURE_ENGINE = CODINO_SPEC.artifact("trt_feature_engine")

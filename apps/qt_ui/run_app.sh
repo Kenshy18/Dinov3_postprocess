@@ -30,7 +30,7 @@ fi
 
 export DINOV3_RUNTIME_PROFILE="${DINOV3_RUNTIME_PROFILE:-${RUNTIME_PROFILE_DEFAULT}}"
 export DINOV3_BATCH_BENCHMARK="${DINOV3_BATCH_BENCHMARK:-${BATCH_BENCHMARK_DEFAULT}}"
-export DINOV3_TRT_BACKBONE_ENGINE="${DINOV3_TRT_BACKBONE_ENGINE:-${ROOT_DIR}/checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine}"
+export DINOV3_TRT_BACKBONE_ENGINE="${DINOV3_TRT_BACKBONE_ENGINE:-${ROOT_DIR}/checkpoints/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine}"
 
 PYTHON="${GUI_RUNTIME_PYTHON:-${ROOT_DIR}/.venv_integrated/bin/python}"
 if [[ ! -x "${PYTHON}" ]]; then

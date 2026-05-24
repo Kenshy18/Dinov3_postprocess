@@ -29,7 +29,7 @@
   - 他PCへ持ち出す際の注意点。
 - `two_stage_multiclass_20260426/scripts/two_stage_roi_classifier.py`
   - optional classifierのモデル定義とcheckpoint loader。
-- `checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine`
+- `checkpoints/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine`
   - TensorRT BF16 DINOv3 backbone engine。
 - `checkpoints/classifier/best.pt`
   - no-expanded rich attention classifier checkpoint。

@@ -20,7 +20,7 @@
 - classifier checkpoint:
   - `checkpoints/classifier/best.pt`
 - TensorRT engine:
-  - `checkpoints/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine`
+- `checkpoints/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine`
 
 他PCではrepo全体をcloneし、Drive artifactを取得してください。
 
@@ -62,8 +62,8 @@ PYTHON=../eva02_cascade_experimental/venv/bin/python ./tools/rebuild_default_trt
 
 作成されるもの:
 
-- `output/onnx/dinov3_backbone_fp32_1280x720_dynamic.onnx`
-- `output/trt/dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine`
+- `output/onnx/dinov3_backbone_fp32_720x1280_dynamic.onnx`
+- `output/trt/dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine`
 
 ## Practical recommendation
 

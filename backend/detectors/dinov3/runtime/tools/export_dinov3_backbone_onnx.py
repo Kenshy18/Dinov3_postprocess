@@ -164,10 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        default=str(infer.BASE_DIR / "output" / "onnx" / "dinov3_backbone_fp16_1280x720.onnx"),
+        default=str(infer.REPO_ROOT / "output" / "onnx" / "dinov3_backbone_fp32_720x1280_dynamic.onnx"),
         help="Output ONNX path",
     )
-    parser.add_argument("--target-size", type=infer._parse_target_size, default=(1280, 720))
+    parser.add_argument("--target-size", type=infer._parse_target_size, default=(720, 1280))
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--score-thresh", type=float, default=0.3)
     parser.add_argument("--nms-thresh", type=float, default=0.4)

@@ -51,7 +51,7 @@ def codino_engine_env_is_set() -> bool:
 
 DEFAULT_TRT_ENGINE = env_path(
     "DINOV3_TRT_BACKBONE_ENGINE",
-    ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_1280x720_dynamic_bf16_forced_b1_8_8.engine",
+    ROOT / "checkpoints" / "trt" / "dinov3_backbone_fp32_720x1280_dynamic_bf16_forced_b1_8_8.engine",
 )
 DEFAULT_CODINO_TRT_BACKBONE = env_path(
     "CODINO_TRT_BACKBONE_ENGINE",
