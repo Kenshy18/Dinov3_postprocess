@@ -35,6 +35,7 @@ if str(ROOT) not in sys.path:
 from backend.pipeline.run_audit import build_output_audit  # noqa: E402
 from backend.pipeline.progress import ProgressReporter, limited_total, parse_progress_line  # noqa: E402
 from backend.schemas.head_face_sqlite import ellipse_polygon_from_bbox  # noqa: E402
+from apps.qt_ui.runtime_config import default_python, load_gui_runtime_env, selected_trt_engine  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
@@ -512,6 +513,35 @@ def replace_option_value(command: list[str], option: str, value: str) -> list[st
         raise RuntimeError(f"Missing value after {option}")
     updated[index + 1] = value
     return updated
+
+
+def ensure_current_dinov3_runtime(command: list[str]) -> list[str]:
+    if option_value(command, "--detector") != "dinov3":
+        return command
+    runtime_env = load_gui_runtime_env()
+    raw_python = runtime_env.get("DINOV3_DETECTOR_PYTHON") or os.environ.get("DINOV3_DETECTOR_PYTHON")
+    selected_python = Path(raw_python).expanduser() if raw_python else default_python()
+    if not selected_python.is_absolute():
+        selected_python = ROOT / selected_python
+    if selected_python.is_file():
+        current_python = option_value(command, "--dinov3-python")
+        if current_python != str(selected_python):
+            print(
+                f"[runtime] overriding DINOv3 Python: {current_python or 'none'} -> {selected_python}",
+                flush=True,
+            )
+            command = replace_option_value(command, "--dinov3-python", str(selected_python))
+    selected = selected_trt_engine()
+    if not selected.is_file():
+        return command
+    current = option_value(command, "--trt-backbone-engine")
+    if current == str(selected):
+        return command
+    print(
+        f"[runtime] overriding DINOv3 TensorRT engine: {current or 'none'} -> {selected}",
+        flush=True,
+    )
+    return replace_option_value(command, "--trt-backbone-engine", str(selected))
 
 
 def remove_existing(path: Path) -> None:
@@ -1453,6 +1483,7 @@ def main() -> int:
     if "--head-face-only" in pipeline_command:
         args.head_face_overlay = True
     frame_limit = extract_max_frames(pipeline_command)
+    pipeline_command = ensure_current_dinov3_runtime(pipeline_command)
 
     run_dir = args.output_root.expanduser().resolve() / args.run_name
     run_dir.mkdir(parents=True, exist_ok=True)

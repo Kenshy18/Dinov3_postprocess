@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from torchvision.ops import roi_align
 from torchvision.ops.roi_align import _roi_align as roi_align_fallback
+import os
 
 
 # NOTE: torchvision's RoIAlign has a different default aligned=False
@@ -58,7 +59,7 @@ class ROIAlign(nn.Module):
         if input.is_quantized:
             input = input.dequantize()
         rois = rois.to(dtype=input.dtype)
-        if input.is_cuda and torch.cuda.get_device_capability(input.device)[0] >= 12:
+        if os.environ.get("DETECTRON2_FORCE_ROI_ALIGN_FALLBACK") == "1":
             return roi_align_fallback(
                 input,
                 rois,
