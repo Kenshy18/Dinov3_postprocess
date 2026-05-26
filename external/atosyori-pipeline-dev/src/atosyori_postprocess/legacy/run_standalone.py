@@ -641,9 +641,10 @@ extern "C" int polygon_repair_key_scores(
             if not lib_path.exists():
                 source_path.write_text(native_source, encoding="utf-8")
                 tmp_lib_path = build_dir / f"polygon_dp_{digest}.{os_mod.getpid()}.tmp.so"
+                compiler = os_mod.environ.get("CXX") or "g++"
                 subprocess.run(
                     [
-                        "g++",
+                        compiler,
                         "-O3",
                         "-std=c++17",
                         "-shared",
@@ -695,7 +696,12 @@ extern "C" int polygon_repair_key_scores(
         except Exception as exc:
             module._native_polygon_dp_unavailable = True
             if not bool(getattr(module, "_native_polygon_dp_warning_printed", False)):
-                print(f"[polygon-optimize-warning] native DP unavailable; using Python DP ({exc})", flush=True)
+                compiler_text = os_mod.environ.get("CXX") or "g++"
+                print(
+                    f"[polygon-optimize-warning] native DP unavailable with compiler={compiler_text!r}; "
+                    f"using Python DP ({exc})",
+                    flush=True,
+                )
                 module._native_polygon_dp_warning_printed = True
             return None
 
