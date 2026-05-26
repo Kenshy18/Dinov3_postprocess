@@ -3643,6 +3643,16 @@ def infer_detect_cut_frames_for_jsonl(jsonl_path: Path, video_path: Path, *, met
         print(f'raw_preprocess: {method_value} cut detection fallback to exact OpenCV scan: {exc}', flush=True)
         cut_frames = infer_detect_cut_frames_for_indices_exact(frame_indices, video_path)
         used_method = 'opencv_exact'
+    if not cut_frames and len(frame_indices) >= 2 and method_value in infer_RAW_CUT_METHODS:
+        fallback_frames = infer_detect_cut_frames_for_indices_exact(frame_indices, video_path)
+        if fallback_frames:
+            print(
+                f'raw_preprocess: {used_method} produced zero cuts; '
+                f'using exact OpenCV scan fallback with {len(fallback_frames)} cuts',
+                flush=True,
+            )
+            cut_frames = fallback_frames
+            used_method = f'{used_method}+opencv_exact_empty_fallback'
     return cut_frames, float(time.perf_counter() - start_time), used_method
 
 def infer_raw_normalize_label(label: object) -> str:
