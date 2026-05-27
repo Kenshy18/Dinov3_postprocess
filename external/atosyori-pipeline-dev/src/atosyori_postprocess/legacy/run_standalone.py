@@ -226,44 +226,86 @@ def _build_embedded_polygon_v22_module() -> types.ModuleType:
             return [int(nodes[0])]
 
         nodes_i = module.np.asarray([int(v) for v in nodes], dtype=module.np.int32)
-        edge_costs = module.np.full((node_count, node_count), module.np.inf, dtype=module.np.float64)
         min_prev_positions = module.np.zeros((node_count,), dtype=module.np.int32)
         max_gap_i = int(max_gap)
+        max_width = 0
         for end_pos in range(1, node_count):
             end_node = int(nodes_i[end_pos])
             min_prev_pos = int(module.bisect.bisect_left(nodes, end_node - max_gap_i, 0, end_pos))
             min_prev_positions[end_pos] = min_prev_pos
-            for prev_pos in range(min_prev_pos, end_pos):
-                edge_costs[prev_pos, end_pos] = float(cost_fn(int(nodes_i[prev_pos]), end_node))
+            max_width = max(max_width, int(end_pos - min_prev_pos))
 
-        dp = module.np.full((target_count, node_count), module.np.inf, dtype=module.np.float64)
-        back = module.np.full((target_count, node_count), -1, dtype=module.np.int32)
-        dp[0, 0] = 0.0
-        for used in range(1, target_count):
-            prev_dp = dp[used - 1]
-            for end_pos in range(used, node_count):
-                min_prev_pos = max(used - 1, int(min_prev_positions[end_pos]))
-                if min_prev_pos >= end_pos:
-                    continue
-                values = prev_dp[min_prev_pos:end_pos] + edge_costs[min_prev_pos:end_pos, end_pos]
-                best_rel = int(module.np.argmin(values))
-                best_cost = float(values[best_rel])
-                if not module.np.isfinite(best_cost):
-                    continue
-                dp[used, end_pos] = best_cost
-                back[used, end_pos] = int(min_prev_pos + best_rel)
+        edge_costs = module.np.full((node_count, max(1, int(max_width))), module.np.inf, dtype=module.np.float64)
+        for end_pos in range(1, node_count):
+            end_node = int(nodes_i[end_pos])
+            min_prev_pos = int(min_prev_positions[end_pos])
+            width = int(end_pos - min_prev_pos)
+            if width <= 0:
+                continue
+            edge_costs[end_pos, :width] = module.np.asarray(
+                [
+                    float(cost_fn(int(nodes_i[prev_pos]), end_node))
+                    for prev_pos in range(min_prev_pos, end_pos)
+                ],
+                dtype=module.np.float64,
+            )
+        try:
+            for closure_cell in getattr(cost_fn, "__closure__", None) or ():
+                cell_value = closure_cell.cell_contents
+                if isinstance(cell_value, dict):
+                    cell_value.clear()
+        except Exception:
+            pass
 
-        path = [node_count - 1]
-        cur_pos = node_count - 1
-        cur_used = target_count - 1
-        while cur_used > 0:
-            cur_pos = int(back[cur_used, cur_pos])
-            if cur_pos < 0:
-                return [int(nodes[0]), int(nodes[-1])]
-            path.append(cur_pos)
-            cur_used -= 1
-        path.reverse()
-        return [int(nodes[pos]) for pos in path]
+        import tempfile as tempfile_mod
+
+        back_dtype = module.np.uint16 if max_gap_i < int(module.np.iinfo(module.np.uint16).max) else module.np.int32
+        back_itemsize = int(module.np.dtype(back_dtype).itemsize)
+        row_bytes = int(node_count * back_itemsize)
+        prev_dp = module.np.full((node_count,), module.np.inf, dtype=module.np.float64)
+        prev_dp[0] = 0.0
+
+        with tempfile_mod.TemporaryFile() as back_file:
+            back_file.truncate(int(target_count) * row_bytes)
+            for used in range(1, target_count):
+                curr_dp = module.np.full((node_count,), module.np.inf, dtype=module.np.float64)
+                back_offsets = module.np.zeros((node_count,), dtype=back_dtype)
+                for end_pos in range(used, node_count):
+                    min_prev_pos = max(used - 1, int(min_prev_positions[end_pos]))
+                    if min_prev_pos >= end_pos:
+                        continue
+                    edge_offset = int(min_prev_pos - int(min_prev_positions[end_pos]))
+                    edge_values = edge_costs[end_pos, edge_offset : edge_offset + int(end_pos - min_prev_pos)]
+                    values = prev_dp[min_prev_pos:end_pos] + edge_values
+                    best_rel = int(module.np.argmin(values))
+                    best_cost = float(values[best_rel])
+                    if not module.np.isfinite(best_cost):
+                        continue
+                    best_prev = int(min_prev_pos + best_rel)
+                    curr_dp[end_pos] = best_cost
+                    back_offsets[end_pos] = int(end_pos - best_prev)
+                back_file.seek(int(used) * row_bytes)
+                back_file.write(back_offsets.tobytes(order="C"))
+                prev_dp = curr_dp
+
+            path = [node_count - 1]
+            cur_pos = node_count - 1
+            cur_used = target_count - 1
+            while cur_used > 0:
+                back_file.seek(int(cur_used) * row_bytes + int(cur_pos) * back_itemsize)
+                raw = back_file.read(back_itemsize)
+                if len(raw) != back_itemsize:
+                    return [int(nodes[0]), int(nodes[-1])]
+                offset = int(module.np.frombuffer(raw, dtype=back_dtype, count=1)[0])
+                if offset <= 0:
+                    return [int(nodes[0]), int(nodes[-1])]
+                cur_pos = int(cur_pos - offset)
+                if cur_pos < 0:
+                    return [int(nodes[0]), int(nodes[-1])]
+                path.append(cur_pos)
+                cur_used -= 1
+            path.reverse()
+            return [int(nodes[pos]) for pos in path]
 
     def ensure_native_polygon_dp_lib():
         if bool(getattr(module, "_native_polygon_dp_unavailable", False)):
@@ -713,6 +755,21 @@ extern "C" int polygon_repair_key_scores(
         args,
         eval_contexts=None,
     ):
+        node_count = int(len(candidate_frames))
+        dense_bytes = int(node_count) * int(node_count) * 16
+        try:
+            dense_limit = int(__import__("os").environ.get("ATOSYORI_POLYGON_NATIVE_DENSE_LIMIT_BYTES", str(512 * 1024 * 1024)))
+        except ValueError:
+            dense_limit = 512 * 1024 * 1024
+        if dense_bytes > max(1, int(dense_limit)):
+            return original_run_single_state_penalty_path(
+                run,
+                candidate_frames,
+                candidates_by_frame,
+                target_count,
+                args,
+                eval_contexts=eval_contexts,
+            )
         if ensure_native_polygon_dp_lib() is None:
             return original_run_single_state_penalty_path(
                 run,
@@ -722,7 +779,6 @@ extern "C" int polygon_repair_key_scores(
                 args,
                 eval_contexts=eval_contexts,
             )
-        node_count = int(len(candidate_frames))
         if node_count <= 0:
             return original_run_single_state_penalty_path(
                 run,
@@ -1180,6 +1236,101 @@ extern "C" int polygon_repair_key_scores(
                 pass
         return result
 
+    def memory_bounded_build_frame_eval_contexts(run, args):
+        import collections as collections_mod
+        import os as os_mod
+
+        default_cache = 512
+        try:
+            max_items = int(os_mod.environ.get("ATOSYORI_POLYGON_EVAL_CONTEXT_CACHE", str(default_cache)))
+        except ValueError:
+            max_items = default_cache
+        max_items = max(1, int(max_items))
+
+        class LazyFrameEvalContexts:
+            def __init__(self):
+                self._cache = collections_mod.OrderedDict()
+
+            def __len__(self):
+                return int(len(run.frame_numbers))
+
+            def _build_one(self, frame_idx):
+                scale_factor = float(module.np.clip(float(args.dp_eval_scale), 0.1, 1.0))
+                pad = int(max(0, int(args.dp_eval_pad)))
+                raw_vector = module.flatten_contours(run.anchors[int(frame_idx)])
+                gt_polygon_area, gt_center, gt_radii, gt_mean_radius = module.vector_proxy_stats(
+                    raw_vector,
+                    run.contour_count,
+                    run.anchors_per_contour,
+                )
+                raw_polys = module.split_vector_to_polygons(
+                    module.flatten_contours(run.anchors[int(frame_idx)]),
+                    run.contour_count,
+                    run.anchors_per_contour,
+                )
+                all_polys = [
+                    module.np.asarray(poly, dtype=module.np.float32)
+                    for poly in run.gt_polygons[int(frame_idx)] + raw_polys
+                    if len(poly) >= 3
+                ]
+                if all_polys:
+                    all_pts = module.np.concatenate(all_polys, axis=0)
+                    min_xy = module.np.floor(all_pts.min(axis=0)).astype(module.np.int32) - pad
+                    max_xy = module.np.ceil(all_pts.max(axis=0)).astype(module.np.int32) + pad
+                else:
+                    min_xy = module.np.asarray([0, 0], dtype=module.np.int32)
+                    max_xy = module.np.asarray([4, 4], dtype=module.np.int32)
+                shift_xy = min_xy.astype(module.np.float32)
+                width = int(max_xy[0] - min_xy[0] + 1)
+                height = int(max_xy[1] - min_xy[1] + 1)
+                shape_hw = (
+                    max(1, int(module.math.ceil(height * scale_factor))),
+                    max(1, int(module.math.ceil(width * scale_factor))),
+                )
+                context = module.FrameEvalContext(
+                    gt_mask=module.np.zeros(shape_hw, dtype=module.np.uint8),
+                    gt_area=0,
+                    shift_xy=shift_xy,
+                    shape_hw=shape_hw,
+                    scale_factor=scale_factor,
+                    gt_center=module.np.asarray(gt_center, dtype=module.np.float32),
+                    gt_radii=module.np.asarray(gt_radii, dtype=module.np.float32),
+                    gt_mean_radius=float(gt_mean_radius),
+                    gt_polygon_area=float(gt_polygon_area),
+                )
+                gt_mask = module.rasterize_mask_with_context(run.gt_polygons[int(frame_idx)], context)
+                return module.FrameEvalContext(
+                    gt_mask=gt_mask,
+                    gt_area=int(gt_mask.sum()),
+                    shift_xy=shift_xy,
+                    shape_hw=shape_hw,
+                    scale_factor=scale_factor,
+                    gt_center=module.np.asarray(gt_center, dtype=module.np.float32),
+                    gt_radii=module.np.asarray(gt_radii, dtype=module.np.float32),
+                    gt_mean_radius=float(gt_mean_radius),
+                    gt_polygon_area=float(gt_polygon_area),
+                    scratch_pred_mask=module.np.zeros(shape_hw, dtype=module.np.uint8),
+                    scratch_intersection_mask=module.np.zeros(shape_hw, dtype=module.np.uint8),
+                )
+
+            def __getitem__(self, frame_idx):
+                idx = int(frame_idx)
+                if idx < 0:
+                    idx += int(len(run.frame_numbers))
+                if idx < 0 or idx >= int(len(run.frame_numbers)):
+                    raise IndexError(idx)
+                cached = self._cache.get(idx)
+                if cached is not None:
+                    self._cache.move_to_end(idx)
+                    return cached
+                context = self._build_one(idx)
+                self._cache[idx] = context
+                if len(self._cache) > max_items:
+                    self._cache.popitem(last=False)
+                return context
+
+        return LazyFrameEvalContexts()
+
     def apply_fixed_practical_defaults_with_worker_mode(args):
         args = original_apply_fixed_practical_defaults(args)
         module._fork_polygon_workers = True
@@ -1210,6 +1361,7 @@ extern "C" int polygon_repair_key_scores(
     module.repair_keyframe_vectors_for_exact_recall = repair_keyframe_vectors_for_exact_recall_native_key_scores
     module.json.dumps = compact_big_list_dumps
     module.build_track_streams = build_track_streams_releasing_predictor
+    module.build_frame_eval_contexts = memory_bounded_build_frame_eval_contexts
     module.load_rows = cached_load_rows
     module.evaluate_union_exact = cached_evaluate_union_exact
     module.union_rows_to_pred_sqlite = fast_union_rows_to_pred_sqlite
@@ -8260,7 +8412,7 @@ def pipeline_parse_args() -> argparse.Namespace:
     parser.add_argument('--k1n-seq-reset-gap', type=int, default=2, help=argparse.SUPPRESS)
     parser.add_argument('--k2-dp-merge-short-k2-keep-cost-norm', type=float, default=0.35, help=argparse.SUPPRESS)
     parser.add_argument('--k2-dp-force-k2-cost-norm', type=float, default=0.35, help=argparse.SUPPRESS)
-    parser.add_argument('--polygon-num-workers', type=int, default=min(16, os.cpu_count() or 1), help='Worker count passed to the embedded polygon keyframe optimizer.')
+    parser.add_argument('--polygon-num-workers', type=int, default=1, help='Worker count passed to the embedded polygon keyframe optimizer.')
     parser.add_argument(
         '--polygon-adaptive-anchor-counts',
         action=argparse.BooleanOptionalAction,
@@ -11534,7 +11686,7 @@ if False:
         parser.add_argument('--recall-min', type=float, default=DEFAULT_RECALL_MIN)
         parser.add_argument('--max-gap', type=int, default=DEFAULT_MAX_GAP)
         parser.add_argument('--max-tracks', type=int, default=-1)
-        parser.add_argument('--num-workers', type=int, default=min(16, multiprocessing.cpu_count()))
+        parser.add_argument('--num-workers', type=int, default=1)
         parser.add_argument('--evaluate-exact', action=argparse.BooleanOptionalAction, default=True)
         parser.add_argument('--write-pred-sqlite', action=argparse.BooleanOptionalAction, default=True)
         return parser
@@ -13808,32 +13960,97 @@ if False:
         return np.asarray(current, dtype=np.float32)
 
 
-    def interpolate_run(run: InstanceRun, chosen_frames: list[int], keyframe_vectors: np.ndarray) -> list[list[np.ndarray]]:
-        length = len(run.frame_numbers)
-        output: list[list[np.ndarray]] = []
-        if length <= 0:
-            return output
-        chosen_frames_arr = [int(v) for v in chosen_frames]
-        interval_pos = 0
-        for frame_idx in range(length):
-            if frame_idx <= chosen_frames_arr[0]:
-                vec = np.asarray(keyframe_vectors[0], dtype=np.float32)
-            elif frame_idx >= chosen_frames_arr[-1]:
-                vec = np.asarray(keyframe_vectors[-1], dtype=np.float32)
+    class LazyInterpolatedRun:
+        def __init__(self, run: InstanceRun, chosen_frames: list[int], keyframe_vectors: np.ndarray):
+            self.run = run
+            self.chosen_frames = [int(v) for v in chosen_frames]
+            self.keyframe_vectors = np.asarray(keyframe_vectors, dtype=np.float32)
+            self.length = int(len(run.frame_numbers))
+
+        def __len__(self) -> int:
+            return int(self.length)
+
+        def _polygons_at(self, frame_idx: int) -> list[np.ndarray]:
+            idx = int(frame_idx)
+            if idx < 0:
+                idx += int(self.length)
+            if idx < 0 or idx >= int(self.length):
+                raise IndexError(frame_idx)
+            chosen = self.chosen_frames
+            if idx <= chosen[0]:
+                vec = np.asarray(self.keyframe_vectors[0], dtype=np.float32)
+            elif idx >= chosen[-1]:
+                vec = np.asarray(self.keyframe_vectors[-1], dtype=np.float32)
             else:
-                while interval_pos + 1 < len(chosen_frames_arr) and frame_idx > int(chosen_frames_arr[interval_pos + 1]):
-                    interval_pos += 1
-                right_pos = int(interval_pos + 1)
+                right_pos = int(np.searchsorted(np.asarray(chosen, dtype=np.int32), int(idx), side="left"))
                 left_pos = max(0, right_pos - 1)
-                left_frame = int(chosen_frames_arr[left_pos])
-                right_frame = int(chosen_frames_arr[right_pos])
-                if frame_idx == right_frame:
-                    vec = np.asarray(keyframe_vectors[right_pos], dtype=np.float32)
+                left_frame = int(chosen[left_pos])
+                right_frame = int(chosen[right_pos])
+                if idx == right_frame:
+                    vec = np.asarray(self.keyframe_vectors[right_pos], dtype=np.float32)
                 else:
-                    alpha = float((frame_idx - left_frame) / max(right_frame - left_frame, 1))
-                    vec = interpolate_vectors(keyframe_vectors[left_pos], keyframe_vectors[right_pos], alpha)
-            output.append(split_vector_to_polygons(vec, run.contour_count, run.anchors_per_contour))
-        return output
+                    alpha = float((idx - left_frame) / max(right_frame - left_frame, 1))
+                    vec = interpolate_vectors(self.keyframe_vectors[left_pos], self.keyframe_vectors[right_pos], alpha)
+            return split_vector_to_polygons(vec, self.run.contour_count, self.run.anchors_per_contour)
+
+        def __getitem__(self, frame_idx):
+            if isinstance(frame_idx, slice):
+                return [self._polygons_at(idx) for idx in range(*frame_idx.indices(int(self.length)))]
+            return self._polygons_at(int(frame_idx))
+
+        def __iter__(self):
+            if self.length <= 0:
+                return
+            chosen = self.chosen_frames
+            interval_pos = 0
+            for frame_idx in range(int(self.length)):
+                if frame_idx <= chosen[0]:
+                    vec = np.asarray(self.keyframe_vectors[0], dtype=np.float32)
+                elif frame_idx >= chosen[-1]:
+                    vec = np.asarray(self.keyframe_vectors[-1], dtype=np.float32)
+                else:
+                    while interval_pos + 1 < len(chosen) and frame_idx > int(chosen[interval_pos + 1]):
+                        interval_pos += 1
+                    right_pos = int(interval_pos + 1)
+                    left_pos = max(0, right_pos - 1)
+                    left_frame = int(chosen[left_pos])
+                    right_frame = int(chosen[right_pos])
+                    if frame_idx == right_frame:
+                        vec = np.asarray(self.keyframe_vectors[right_pos], dtype=np.float32)
+                    else:
+                        alpha = float((frame_idx - left_frame) / max(right_frame - left_frame, 1))
+                        vec = interpolate_vectors(self.keyframe_vectors[left_pos], self.keyframe_vectors[right_pos], alpha)
+                yield split_vector_to_polygons(vec, self.run.contour_count, self.run.anchors_per_contour)
+
+
+    def interpolate_run(run: InstanceRun, chosen_frames: list[int], keyframe_vectors: np.ndarray):
+        length = len(run.frame_numbers)
+        if length <= 0:
+            return []
+        return LazyInterpolatedRun(run, chosen_frames, keyframe_vectors)
+
+
+    class LazyUnionRows:
+        def __init__(self, run: InstanceRun, interp_polygons, chosen_frames: list[int]):
+            self.run = run
+            self.interp_polygons = interp_polygons
+            self.chosen_set = {int(v) for v in chosen_frames}
+
+        def __len__(self) -> int:
+            return int(len(self.run.frame_numbers))
+
+        def __iter__(self):
+            for local_idx, (frame, polygons) in enumerate(zip(self.run.frame_numbers.tolist(), self.interp_polygons)):
+                yield {
+                    "frame": int(frame),
+                    "track_id": str(self.run.track_id),
+                    "run_id": int(self.run.run_id),
+                    "polygons": [np.asarray(poly, dtype=np.float32).tolist() for poly in polygons],
+                    "has_keyframe": 1 if local_idx in self.chosen_set else 0,
+                    "is_gapfill": int(self.run.gapfilled_flags[local_idx])
+                    if self.run.gapfilled_flags is not None and local_idx < len(self.run.gapfilled_flags)
+                    else 0,
+                }
 
 
     def process_single_run(run: InstanceRun, args: argparse.Namespace) -> dict[str, object]:
@@ -13893,20 +14110,8 @@ if False:
         interp_polygons = interpolate_run(run, chosen_frames, keyframe_vectors)
         stage_times["final_eval_seconds"] = float(time.perf_counter() - stage_t0)
 
-        chosen_set = set(int(v) for v in chosen_frames)
         chosen_frame_to_candidate = {int(frame_idx): int(cand_id) for frame_idx, cand_id in zip(chosen_frames, chosen_candidate_ids)}
-        union_rows: list[dict[str, object]] = []
-        for local_idx, frame in enumerate(run.frame_numbers.tolist()):
-            union_rows.append(
-                {
-                    "frame": int(frame),
-                    "track_id": str(run.track_id),
-                    "run_id": int(run.run_id),
-                    "polygons": [np.asarray(poly, dtype=np.float32).tolist() for poly in interp_polygons[local_idx]],
-                    "has_keyframe": 1 if local_idx in chosen_set else 0,
-                    "is_gapfill": int(run.gapfilled_flags[local_idx]) if run.gapfilled_flags is not None and local_idx < len(run.gapfilled_flags) else 0,
-                }
-            )
+        union_rows = LazyUnionRows(run, interp_polygons, chosen_frames)
 
         final_keyframes: list[dict[str, object]] = []
         for keyframe_pos, frame_idx in enumerate(chosen_frames):
@@ -13985,6 +14190,206 @@ if False:
         }
 
 
+    def write_compact_json_array(output_path: Path, rows) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            f.write("[")
+            first = True
+            for row in rows:
+                if first:
+                    first = False
+                else:
+                    f.write(",")
+                f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+            f.write("]")
+
+
+    class SqliteUnionRowStore:
+        def __init__(self, store_path: Path):
+            self.store_path = Path(store_path)
+            if self.store_path.exists():
+                self.store_path.unlink()
+            self.conn = sqlite3.connect(str(self.store_path))
+            self.conn.execute(
+                "CREATE TABLE union_rows (frame INTEGER NOT NULL, track_id TEXT NOT NULL, track_sort INTEGER NOT NULL, row_json TEXT NOT NULL)"
+            )
+            self.conn.execute("CREATE INDEX idx_union_rows_order ON union_rows(frame, track_sort)")
+            self.row_count = 0
+
+        def add_rows(self, rows) -> int:
+            inserted = 0
+
+            def iter_records():
+                nonlocal inserted
+                for row in rows:
+                    inserted += 1
+                    track_id = str(row["track_id"])
+                    yield (
+                        int(row["frame"]),
+                        track_id,
+                        int(track_id),
+                        json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+                    )
+
+            self.conn.executemany(
+                "INSERT INTO union_rows(frame, track_id, track_sort, row_json) VALUES (?, ?, ?, ?)",
+                iter_records(),
+            )
+            self.row_count += int(inserted)
+            return int(inserted)
+
+        def commit(self) -> None:
+            self.conn.commit()
+
+        def iter_rows_sorted(self):
+            self.commit()
+            for (row_json,) in self.conn.execute("SELECT row_json FROM union_rows ORDER BY frame, track_sort"):
+                yield json.loads(str(row_json))
+
+        def write_union_json(self, output_path: Path) -> None:
+            write_compact_json_array(output_path, self.iter_rows_sorted())
+
+        def write_pred_sqlite(self, output_sqlite: Path) -> None:
+            output_sqlite.parent.mkdir(parents=True, exist_ok=True)
+            if output_sqlite.exists():
+                output_sqlite.unlink()
+            self.commit()
+            out_conn = sqlite3.connect(str(output_sqlite))
+            try:
+                cur = out_conn.cursor()
+                cur.execute("CREATE TABLE masks (frame INTEGER, track_id TEXT, polygons TEXT)")
+                cur.executemany(
+                    "INSERT INTO masks(frame, track_id, polygons) VALUES (?, ?, ?)",
+                    (
+                        (
+                            int(row["frame"]),
+                            str(row["track_id"]),
+                            json.dumps(row["polygons"], ensure_ascii=False),
+                        )
+                        for row in self.iter_rows_sorted()
+                    ),
+                )
+                out_conn.commit()
+            finally:
+                out_conn.close()
+
+        def evaluate_exact(self, tracked_sqlite: Path, output_dir: Path) -> dict[str, object]:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self.commit()
+            metrics_csv = output_dir / "keyframe_exact_metrics.csv"
+            attached = False
+            totals = {
+                "row_count": 0.0,
+                "gt_area": 0.0,
+                "pred_area": 0.0,
+                "intersection": 0.0,
+                "union": 0.0,
+                "weighted_error_total": 0.0,
+                "recall_sum": 0.0,
+                "precision_sum": 0.0,
+                "iou_sum": 0.0,
+            }
+            try:
+                self.conn.execute("ATTACH DATABASE ? AS tracked_eval", (str(tracked_sqlite),))
+                attached = True
+                rows_iter = self.conn.execute(
+                    """
+                    SELECT m.frame, m.track_id, m.polygons, u.row_json
+                    FROM tracked_eval.masks AS m
+                    JOIN union_rows AS u
+                      ON u.frame = m.frame AND u.track_id = CAST(m.track_id AS TEXT)
+                    ORDER BY m.frame, CAST(m.track_id AS INTEGER)
+                    """
+                )
+                with metrics_csv.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=[
+                            "frame",
+                            "track_id",
+                            "run_id",
+                            "has_keyframe",
+                            "gt_area",
+                            "pred_area",
+                            "intersection",
+                            "union",
+                            "recall",
+                            "precision",
+                            "iou",
+                            "weighted_error",
+                        ],
+                    )
+                    writer.writeheader()
+                    for frame, track_id, polygons_json, row_json in rows_iter:
+                        pred = json.loads(str(row_json))
+                        gt_polys = parse_polygons(str(polygons_json))
+                        pred_polys = [np.asarray(poly, dtype=np.float32).reshape(-1, 2) for poly in pred["polygons"]]
+                        metrics = compute_exact_metrics_from_polygons(gt_polys, pred_polys)
+                        weighted_error = float(compute_weighted_error(metrics))
+                        result_row = {
+                            "frame": int(frame),
+                            "track_id": str(track_id),
+                            "run_id": int(pred.get("run_id", -1)),
+                            "has_keyframe": int(pred.get("has_keyframe", 0)),
+                            "gt_area": float(metrics["gt_area"]),
+                            "pred_area": float(metrics["pred_area"]),
+                            "intersection": float(metrics["intersection"]),
+                            "union": float(metrics["union"]),
+                            "recall": float(metrics["recall"]),
+                            "precision": float(metrics["precision"]),
+                            "iou": float(metrics["iou"]),
+                            "weighted_error": weighted_error,
+                        }
+                        writer.writerow(result_row)
+                        totals["row_count"] += 1.0
+                        totals["gt_area"] += float(result_row["gt_area"])
+                        totals["pred_area"] += float(result_row["pred_area"])
+                        totals["intersection"] += float(result_row["intersection"])
+                        totals["union"] += float(result_row["union"])
+                        totals["weighted_error_total"] += weighted_error
+                        totals["recall_sum"] += float(result_row["recall"])
+                        totals["precision_sum"] += float(result_row["precision"])
+                        totals["iou_sum"] += float(result_row["iou"])
+            finally:
+                if attached:
+                    self.conn.execute("DETACH DATABASE tracked_eval")
+            row_count = float(totals["row_count"])
+            gt_area = float(totals["gt_area"])
+            pred_area = float(totals["pred_area"])
+            intersection = float(totals["intersection"])
+            union = float(totals["union"])
+            weighted_error = float(totals["weighted_error_total"])
+            optimized = {
+                "row_count": row_count,
+                "gt_area": gt_area,
+                "pred_area": pred_area,
+                "intersection": intersection,
+                "union": union,
+                "global_recall": float(intersection / gt_area) if gt_area > 0 else 1.0,
+                "global_precision": float(intersection / pred_area) if pred_area > 0 else 1.0,
+                "global_iou": float(intersection / union) if union > 0 else 1.0,
+                "mean_recall": float(totals["recall_sum"] / max(row_count, 1.0)),
+                "mean_precision": float(totals["precision_sum"] / max(row_count, 1.0)),
+                "mean_iou": float(totals["iou_sum"] / max(row_count, 1.0)),
+                "weighted_error_total": weighted_error,
+                "weighted_error_mean": float(weighted_error / max(row_count, 1.0)),
+            }
+            summary = {
+                "input_tracked_sqlite": str(tracked_sqlite),
+                "optimized": optimized,
+            }
+            (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            return summary
+
+        def close(self, unlink: bool = False) -> None:
+            self.conn.close()
+            if bool(unlink):
+                try:
+                    self.store_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+
     def main() -> None:
         args = apply_fixed_practical_defaults(build_parser().parse_args())
         output_dir = Path(args.output_dir)
@@ -14014,7 +14419,11 @@ if False:
             max_tracks=int(args.max_tracks),
         )
 
+        run_count = int(len(runs))
         union_rows_all: list[dict[str, object]] = []
+        union_rows: list[dict[str, object]] = []
+        union_store: SqliteUnionRowStore | None = None
+        union_row_count = 0
         final_keyframes: list[dict[str, object]] = []
         stream_rows: list[dict[str, object]] = []
         total_interval_evals = 0
@@ -14023,15 +14432,8 @@ if False:
         total_stage_times: dict[str, float] = {}
         effective_workers = max(1, int(args.num_workers))
 
-        if effective_workers == 1 or len(runs) <= 1:
-            results = [process_single_run(run, args) for run in runs]
-        else:
-            mp_ctx = multiprocessing.get_context("spawn")
-            with concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx) as executor:
-                results = list(executor.map(process_single_run, runs, [args] * len(runs)))
-
-        for result in results:
-            union_rows_all.extend(result["union_rows"])
+        def collect_result(result: dict[str, object]) -> None:
+            nonlocal total_interval_evals, total_interval_frames, total_candidate_frames
             final_keyframes.extend(result["final_keyframes"])
             stream_row = result["stream_row"]
             if stream_row is not None:
@@ -14042,10 +14444,32 @@ if False:
             for key, value in result.get("stage_times", {}).items():
                 total_stage_times[str(key)] = float(total_stage_times.get(str(key), 0.0) + float(value))
 
-        union_rows = sorted(union_rows_all, key=lambda row: (int(row["frame"]), int(str(row["track_id"]))))
+        if effective_workers == 1 or len(runs) <= 1:
+            union_store = SqliteUnionRowStore(output_dir / ".polygon_union_rows.tmp.sqlite")
+            for run_idx, run in enumerate(runs):
+                result = process_single_run(run, args)
+                union_store.add_rows(result["union_rows"])
+                collect_result(result)
+                runs[run_idx] = None
+                result = None
+                __import__("gc").collect()
+            union_store.commit()
+            union_row_count = int(union_store.row_count)
+        else:
+            mp_ctx = multiprocessing.get_context("spawn")
+            with concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx) as executor:
+                results = list(executor.map(process_single_run, runs, [args] * len(runs)))
+            for result in results:
+                union_rows_all.extend(result["union_rows"])
+                collect_result(result)
+            union_rows = sorted(union_rows_all, key=lambda row: (int(row["frame"]), int(str(row["track_id"]))))
+            union_row_count = int(len(union_rows))
         opt_dir.mkdir(parents=True, exist_ok=True)
-        (opt_dir / "interpolated_union.json").write_text(json.dumps(union_rows, ensure_ascii=False, indent=2), encoding="utf-8")
-        (opt_dir / "final_keyframes.json").write_text(json.dumps(final_keyframes, ensure_ascii=False, indent=2), encoding="utf-8")
+        if union_store is not None:
+            union_store.write_union_json(opt_dir / "interpolated_union.json")
+        else:
+            (opt_dir / "interpolated_union.json").write_text(json.dumps(union_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_compact_json_array(opt_dir / "final_keyframes.json", final_keyframes)
         write_csv(
             stream_rows,
             opt_dir / "stream_segments.csv",
@@ -14098,12 +14522,12 @@ if False:
             "description": "Readable standalone of the practical v22 polygon keyframe optimizer with gapfill-first track-level anchor counts and pair-vote keyframe-shape refinement.",
             "input_sqlite": str(args.input_sqlite),
             "output_dir": str(opt_dir),
-            "run_count": int(len(runs)),
+            "run_count": int(run_count),
             "gapfill_enabled": bool(args.gapfill_enabled),
             "gapfill_max_gap": int(args.gapfill_max_gap),
             "gapfill_temp_points": int(args.gapfill_temp_points),
             "num_workers": int(effective_workers),
-            "row_count": int(len(union_rows)),
+            "row_count": int(union_row_count),
             "target_ratio": float(args.target_ratio),
             "anchors_per_contour_cap": int(args.anchors_per_contour),
             "adaptive_anchor_counts": bool(args.adaptive_anchor_counts),
@@ -14152,7 +14576,7 @@ if False:
             "candidate_frame_count_total": int(total_candidate_frames),
             "optimizer_seconds": float(optimizer_seconds),
             "stage_seconds_total": {key: float(val) for key, val in sorted(total_stage_times.items())},
-            "stage_seconds_mean_per_run": {key: float(val / max(len(runs), 1)) for key, val in sorted(total_stage_times.items())},
+            "stage_seconds_mean_per_run": {key: float(val / max(run_count, 1)) for key, val in sorted(total_stage_times.items())},
             "artifacts": {
                 "interpolated_union_json": str(opt_dir / "interpolated_union.json"),
                 "final_keyframes_json": str(opt_dir / "final_keyframes.json"),
@@ -14162,10 +14586,19 @@ if False:
         (opt_dir / "summary.json").write_text(json.dumps(optimizer_summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
         exact_summary: dict[str, object] | None = None
-        if bool(args.evaluate_exact):
-            exact_summary = evaluate_union_exact(union_rows, args.input_sqlite, exact_dir)
-        if bool(args.write_pred_sqlite):
-            union_rows_to_pred_sqlite(union_rows, pred_sqlite)
+        if union_store is not None:
+            try:
+                if bool(args.evaluate_exact):
+                    exact_summary = union_store.evaluate_exact(args.input_sqlite, exact_dir)
+                if bool(args.write_pred_sqlite):
+                    union_store.write_pred_sqlite(pred_sqlite)
+            finally:
+                union_store.close(unlink=True)
+        else:
+            if bool(args.evaluate_exact):
+                exact_summary = evaluate_union_exact(union_rows, args.input_sqlite, exact_dir)
+            if bool(args.write_pred_sqlite):
+                union_rows_to_pred_sqlite(union_rows, pred_sqlite)
 
         summary = {
             "description": "Practical v22 polygon keyframe optimizer with gapfill-first track-level anchor counts.",
