@@ -8428,6 +8428,8 @@ def pipeline_parse_args() -> argparse.Namespace:
     parser.add_argument('--polygon-adaptive-point-quantile', type=float, default=0.95, help=argparse.SUPPRESS)
     parser.add_argument('--polygon-adaptive-point-offset', type=int, default=10, help=argparse.SUPPRESS)
     parser.add_argument('--polygon-min-anchors-per-contour', type=int, default=8, help=argparse.SUPPRESS)
+    parser.add_argument('--polygon-max-run-frames', type=int, default=30000, help=argparse.SUPPRESS)
+    parser.add_argument('--polygon-run-overlap-frames', type=int, default=900, help=argparse.SUPPRESS)
     parser.add_argument('--progress-interval-sec', type=float, default=30.0, help=argparse.SUPPRESS)
     parser.add_argument('--python', default=sys.executable, help=argparse.SUPPRESS)
     parser.add_argument('--force', action='store_true')
@@ -10930,6 +10932,8 @@ def pipeline_run_polygon_interval(
             f'frames={polygon_input_stats["frame_min"]}-{polygon_input_stats["frame_max"]} '
             f'target_ratio={ratio:.6f} '
             f'workers={polygon_workers} '
+            f'max_run_frames={int(args.polygon_max_run_frames)} '
+            f'overlap_frames={int(args.polygon_run_overlap_frames)} '
             f'adaptive_anchors={bool(args.polygon_adaptive_anchor_counts)} '
             f'recall_min={recall_min_override if recall_min_override is not None else "default"}',
             flush=True,
@@ -10950,6 +10954,8 @@ def pipeline_run_polygon_interval(
                 '--adaptive-point-quantile', str(args.polygon_adaptive_point_quantile),
                 '--adaptive-point-offset', str(args.polygon_adaptive_point_offset),
                 '--min-anchors-per-contour', str(args.polygon_min_anchors_per_contour),
+                '--max-run-frames', str(args.polygon_max_run_frames),
+                '--run-overlap-frames', str(args.polygon_run_overlap_frames),
             ],
         )
         if args.polygon_point_predictor_model_dir is not None:
@@ -11627,6 +11633,8 @@ if False:
     DEFAULT_GAPFILL_ENABLED = True
     DEFAULT_GAPFILL_MAX_GAP = 30
     DEFAULT_GAPFILL_TEMP_POINTS = 128
+    DEFAULT_MAX_RUN_FRAMES = 30000
+    DEFAULT_RUN_OVERLAP_FRAMES = 900
     DEFAULT_POINT_PREDICTOR_MODEL_DIR = (
         ROOT
         / "experiments"
@@ -11683,6 +11691,8 @@ if False:
         parser.add_argument('--gapfill-enabled', action=argparse.BooleanOptionalAction, default=DEFAULT_GAPFILL_ENABLED)
         parser.add_argument('--gapfill-max-gap', type=int, default=DEFAULT_GAPFILL_MAX_GAP)
         parser.add_argument('--gapfill-temp-points', type=int, default=DEFAULT_GAPFILL_TEMP_POINTS)
+        parser.add_argument('--max-run-frames', type=int, default=DEFAULT_MAX_RUN_FRAMES)
+        parser.add_argument('--run-overlap-frames', type=int, default=DEFAULT_RUN_OVERLAP_FRAMES)
         parser.add_argument('--recall-min', type=float, default=DEFAULT_RECALL_MIN)
         parser.add_argument('--max-gap', type=int, default=DEFAULT_MAX_GAP)
         parser.add_argument('--max-tracks', type=int, default=-1)
@@ -11756,6 +11766,13 @@ if False:
         gapfilled_flags: np.ndarray | None = None
         predicted_total_points: np.ndarray | None = None
         run_target_total_points: int = 0
+        emit_start_idx: int = 0
+        emit_end_idx: int = -1
+        chunk_index: int = 0
+        chunk_count: int = 1
+        chunk_process_start: int = 0
+        chunk_process_end: int = -1
+        chunked_from_long_run: bool = False
 
 
     @dataclass
@@ -12553,6 +12570,110 @@ if False:
         return sorted(set(float(v) for v in values))
 
 
+    def split_long_track_segments(
+        segments: list[list[TrackRow]],
+        max_run_frames: int,
+        run_overlap_frames: int,
+    ) -> tuple[list[list[TrackRow]], dict[int, dict[str, int]], dict[str, int]]:
+        source_lengths = [int(len(segment)) for segment in segments]
+        max_source_segment_frames = int(max(source_lengths, default=0))
+        max_frames = int(max_run_frames)
+        requested_overlap = max(0, int(run_overlap_frames))
+        disabled = max_frames <= 0
+        effective_overlap = 0 if disabled else int(min(requested_overlap, max(0, (max_frames - 1) // 2)))
+        emit_stride = 0 if disabled else int(max(1, max_frames - 2 * effective_overlap))
+
+        def make_stats(
+            *,
+            processed_segment_count: int,
+            long_segment_count: int,
+            chunked_source_segment_count: int,
+            chunk_output_segment_count: int,
+            max_processed_segment_frames: int,
+            overlap_added_rows: int,
+        ) -> dict[str, int]:
+            return {
+                "max_run_frames": int(max_frames),
+                "run_overlap_frames": int(effective_overlap),
+                "source_segment_count": int(len(segments)),
+                "processed_segment_count": int(processed_segment_count),
+                "long_segment_count": int(long_segment_count),
+                "chunked_source_segment_count": int(chunked_source_segment_count),
+                "chunk_output_segment_count": int(chunk_output_segment_count),
+                "max_source_segment_frames": int(max_source_segment_frames),
+                "max_processed_segment_frames": int(max_processed_segment_frames),
+                "emit_stride_frames": int(emit_stride),
+                "overlap_added_rows": int(overlap_added_rows),
+            }
+
+        if disabled or max_source_segment_frames <= max_frames:
+            return segments, {}, make_stats(
+                processed_segment_count=len(segments),
+                long_segment_count=sum(1 for length in source_lengths if max_frames > 0 and length > max_frames),
+                chunked_source_segment_count=0,
+                chunk_output_segment_count=0,
+                max_processed_segment_frames=max_source_segment_frames,
+                overlap_added_rows=0,
+            )
+
+        split_segments: list[list[TrackRow]] = []
+        segment_meta: dict[int, dict[str, int]] = {}
+        chunked_source_segment_count = 0
+        chunk_output_segment_count = 0
+        overlap_added_rows = 0
+        max_processed_segment_frames = 0
+
+        for source_run_id, segment in enumerate(segments):
+            length = int(len(segment))
+            if length <= max_frames:
+                split_segments.append(segment)
+                max_processed_segment_frames = max(max_processed_segment_frames, length)
+                continue
+
+            chunk_ranges: list[tuple[int, int, int, int]] = []
+            for emit_start in range(0, length, emit_stride):
+                emit_end = int(min(length, emit_start + emit_stride))
+                if emit_start >= emit_end:
+                    continue
+                process_start = int(max(0, emit_start - effective_overlap))
+                process_end = int(min(length, emit_end + effective_overlap))
+                chunk_ranges.append((process_start, process_end, int(emit_start), emit_end))
+
+            chunk_count = int(len(chunk_ranges))
+            if chunk_count <= 1:
+                split_segments.append(segment)
+                max_processed_segment_frames = max(max_processed_segment_frames, length)
+                continue
+
+            chunked_source_segment_count += 1
+            chunk_output_segment_count += chunk_count
+            for chunk_index, (process_start, process_end, emit_start, emit_end) in enumerate(chunk_ranges):
+                chunk_rows = list(segment[process_start:process_end])
+                split_segments.append(chunk_rows)
+                segment_meta[id(chunk_rows)] = {
+                    "source_run_id": int(source_run_id),
+                    "chunk_index": int(chunk_index),
+                    "chunk_count": int(chunk_count),
+                    "process_start": int(process_start),
+                    "process_end": int(process_end),
+                    "emit_start": int(emit_start - process_start),
+                    "emit_end": int(emit_end - process_start),
+                }
+                processed_len = int(process_end - process_start)
+                emitted_len = int(emit_end - emit_start)
+                max_processed_segment_frames = max(max_processed_segment_frames, processed_len)
+                overlap_added_rows += max(0, processed_len - emitted_len)
+
+        return split_segments, segment_meta, make_stats(
+            processed_segment_count=len(split_segments),
+            long_segment_count=sum(1 for length in source_lengths if length > max_frames),
+            chunked_source_segment_count=chunked_source_segment_count,
+            chunk_output_segment_count=chunk_output_segment_count,
+            max_processed_segment_frames=max_processed_segment_frames,
+            overlap_added_rows=overlap_added_rows,
+        )
+
+
     def build_track_streams(
         rows: list[TrackRow],
         anchors_per_contour: int,
@@ -12566,6 +12687,8 @@ if False:
         gapfill_max_gap: int = DEFAULT_GAPFILL_MAX_GAP,
         gapfill_temp_points: int = DEFAULT_GAPFILL_TEMP_POINTS,
         max_tracks: int = -1,
+        max_run_frames: int = DEFAULT_MAX_RUN_FRAMES,
+        run_overlap_frames: int = DEFAULT_RUN_OVERLAP_FRAMES,
     ) -> tuple[list[InstanceRun], dict[str, int]]:
         if max_tracks > 0:
             counts: dict[str, int] = {}
@@ -12607,8 +12730,31 @@ if False:
                 "segment_count": int(len(segments)),
             }
 
+        segments, segment_meta, split_stats = split_long_track_segments(
+            segments,
+            max_run_frames=int(max_run_frames),
+            run_overlap_frames=int(run_overlap_frames),
+        )
+        segmentation_stats.update(split_stats)
+
         streams: list[InstanceRun] = []
         for run_id, run_rows in enumerate(segments):
+            meta = segment_meta.get(
+                id(run_rows),
+                {
+                    "source_run_id": int(run_id),
+                    "chunk_index": 0,
+                    "chunk_count": 1,
+                    "process_start": 0,
+                    "process_end": int(len(run_rows)),
+                    "emit_start": 0,
+                    "emit_end": int(len(run_rows)),
+                },
+            )
+            source_run_id = int(meta["source_run_id"])
+            chunk_index = int(meta["chunk_index"])
+            chunk_count = int(meta["chunk_count"])
+            chunk_suffix = f":chunk{chunk_index + 1}of{chunk_count}" if chunk_count > 1 else ""
             aligned_rows: list[list[np.ndarray]] = []
             gapfilled_flags: list[bool] = []
             prev_slots: list[np.ndarray] | None = None
@@ -12661,9 +12807,9 @@ if False:
             scale = float(max(math.sqrt(max(float(np.median(np.asarray(frame_areas, dtype=np.float64))), 1.0)), 1.0))
             streams.append(
                 InstanceRun(
-                    stream_id=f"{run_rows[0].track_id}:run{run_id}:instance",
+                    stream_id=f"{run_rows[0].track_id}:run{source_run_id}{chunk_suffix}:instance",
                     track_id=run_rows[0].track_id,
-                    run_id=run_id,
+                    run_id=source_run_id,
                     frame_numbers=np.asarray([row.frame for row in run_rows], dtype=np.int32),
                     gt_polygons=frame_polygons,
                     anchors=np.asarray(frame_anchor_stack, dtype=np.float32),
@@ -12673,6 +12819,13 @@ if False:
                     gapfilled_flags=np.asarray(gapfilled_flags, dtype=np.uint8),
                     predicted_total_points=predicted_total_points,
                     run_target_total_points=int(run_target_total_points),
+                    emit_start_idx=int(meta["emit_start"]),
+                    emit_end_idx=int(meta["emit_end"]),
+                    chunk_index=chunk_index,
+                    chunk_count=chunk_count,
+                    chunk_process_start=int(meta["process_start"]),
+                    chunk_process_end=int(meta["process_end"]),
+                    chunked_from_long_run=bool(chunk_count > 1),
                 )
             )
         segmentation_stats["effective_stream_count"] = int(len(streams))
@@ -14035,12 +14188,18 @@ if False:
             self.run = run
             self.interp_polygons = interp_polygons
             self.chosen_set = {int(v) for v in chosen_frames}
+            length = int(len(run.frame_numbers))
+            self.emit_start = int(max(0, min(length, int(run.emit_start_idx))))
+            emit_end = length if int(run.emit_end_idx) < 0 else int(run.emit_end_idx)
+            self.emit_end = int(max(self.emit_start, min(length, emit_end)))
 
         def __len__(self) -> int:
-            return int(len(self.run.frame_numbers))
+            return int(self.emit_end - self.emit_start)
 
         def __iter__(self):
             for local_idx, (frame, polygons) in enumerate(zip(self.run.frame_numbers.tolist(), self.interp_polygons)):
+                if local_idx < self.emit_start or local_idx >= self.emit_end:
+                    continue
                 yield {
                     "frame": int(frame),
                     "track_id": str(self.run.track_id),
@@ -14112,9 +14271,14 @@ if False:
 
         chosen_frame_to_candidate = {int(frame_idx): int(cand_id) for frame_idx, cand_id in zip(chosen_frames, chosen_candidate_ids)}
         union_rows = LazyUnionRows(run, interp_polygons, chosen_frames)
+        emit_start = int(union_rows.emit_start)
+        emit_end = int(union_rows.emit_end)
+        emit_frame_count = int(max(0, emit_end - emit_start))
 
         final_keyframes: list[dict[str, object]] = []
         for keyframe_pos, frame_idx in enumerate(chosen_frames):
+            if int(frame_idx) < emit_start or int(frame_idx) >= emit_end:
+                continue
             final_keyframes.append(
                 {
                     "track_id": str(run.track_id),
@@ -14148,6 +14312,11 @@ if False:
             "track_id": str(run.track_id),
             "run_id": int(run.run_id),
             "frame_count": int(length),
+            "emit_frame_count": int(emit_frame_count),
+            "chunk_index": int(run.chunk_index),
+            "chunk_count": int(run.chunk_count),
+            "chunk_process_start": int(run.chunk_process_start),
+            "chunk_process_end": int(run.chunk_process_end),
             "gapfilled_frame_count": int(gapfilled_frame_count),
             "contour_count": int(run.contour_count),
             "anchors_per_contour": int(run.anchors_per_contour),
@@ -14417,6 +14586,8 @@ if False:
             gapfill_max_gap=int(args.gapfill_max_gap),
             gapfill_temp_points=int(args.gapfill_temp_points),
             max_tracks=int(args.max_tracks),
+            max_run_frames=int(args.max_run_frames),
+            run_overlap_frames=int(args.run_overlap_frames),
         )
 
         run_count = int(len(runs))
@@ -14514,6 +14685,11 @@ if False:
                 "pair_vote_refine_seconds",
                 "exact_recall_repair_seconds",
                 "final_eval_seconds",
+                "emit_frame_count",
+                "chunk_index",
+                "chunk_count",
+                "chunk_process_start",
+                "chunk_process_end",
             ],
         )
 
@@ -14526,6 +14702,8 @@ if False:
             "gapfill_enabled": bool(args.gapfill_enabled),
             "gapfill_max_gap": int(args.gapfill_max_gap),
             "gapfill_temp_points": int(args.gapfill_temp_points),
+            "max_run_frames": int(args.max_run_frames),
+            "run_overlap_frames": int(args.run_overlap_frames),
             "num_workers": int(effective_workers),
             "row_count": int(union_row_count),
             "target_ratio": float(args.target_ratio),
