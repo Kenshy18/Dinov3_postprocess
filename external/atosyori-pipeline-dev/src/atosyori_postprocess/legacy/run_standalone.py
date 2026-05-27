@@ -1219,11 +1219,12 @@ extern "C" int polygon_repair_key_scores(
             conn.close()
 
     def build_track_streams_releasing_predictor(*args, **kwargs):
+        release_predictor_after_build = bool(kwargs.pop("_release_predictor_after_build", True))
         predictor = kwargs.get("predictor")
         if predictor is None and len(args) >= 3:
             predictor = args[2]
         result = original_build_track_streams(*args, **kwargs)
-        if predictor is not None:
+        if predictor is not None and release_predictor_after_build:
             try:
                 predictor.model.to("cpu")
             except Exception:
@@ -12972,6 +12973,7 @@ if False:
                 max_tracks=-1,
                 max_run_frames=0,
                 run_overlap_frames=0,
+                _release_predictor_after_build=False,
             )
             out: list[InstanceRun] = []
             for sub_idx, run in enumerate(runs):
@@ -14989,6 +14991,15 @@ if False:
                 run = None
                 result = None
                 __import__("gc").collect()
+            if predictor is not None:
+                try:
+                    predictor.model.to("cpu")
+                    torch_mod = __import__("torch")
+                    if torch_mod.cuda.is_available():
+                        torch_mod.cuda.synchronize()
+                        torch_mod.cuda.empty_cache()
+                except Exception:
+                    pass
             union_store.commit()
             union_row_count = int(union_store.row_count)
         elif effective_workers == 1 or len(runs) <= 1:
