@@ -11697,6 +11697,7 @@ if False:
         parser.add_argument('--max-gap', type=int, default=DEFAULT_MAX_GAP)
         parser.add_argument('--max-tracks', type=int, default=-1)
         parser.add_argument('--num-workers', type=int, default=1)
+        parser.add_argument('--stream-sqlite-rows', action=argparse.BooleanOptionalAction, default=True)
         parser.add_argument('--evaluate-exact', action=argparse.BooleanOptionalAction, default=True)
         parser.add_argument('--write-pred-sqlite', action=argparse.BooleanOptionalAction, default=True)
         return parser
@@ -12830,6 +12831,349 @@ if False:
             )
         segmentation_stats["effective_stream_count"] = int(len(streams))
         return streams, segmentation_stats
+
+
+    def sqlite_allowed_track_ids(sqlite_path: Path, max_tracks: int) -> list[str] | None:
+        if int(max_tracks) <= 0:
+            return None
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            rows = conn.execute(
+                """
+                SELECT track_id, count(*) AS n
+                FROM masks
+                GROUP BY track_id
+                ORDER BY n DESC, CAST(track_id AS INTEGER)
+                LIMIT ?
+                """,
+                (int(max_tracks),),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [str(track_id) for track_id, _count in rows]
+
+
+    def sqlite_mask_stats_for_tracks(sqlite_path: Path, allowed_track_ids: list[str] | None) -> dict[str, int]:
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            if allowed_track_ids is None:
+                row = conn.execute("SELECT count(*), count(DISTINCT track_id) FROM masks").fetchone()
+            elif not allowed_track_ids:
+                row = (0, 0)
+            else:
+                placeholders = ",".join("?" for _ in allowed_track_ids)
+                row = conn.execute(
+                    f"SELECT count(*), count(DISTINCT track_id) FROM masks WHERE track_id IN ({placeholders})",
+                    tuple(str(track_id) for track_id in allowed_track_ids),
+                ).fetchone()
+        finally:
+            conn.close()
+        return {"source_rows": int(row[0] or 0), "source_tracks": int(row[1] or 0)}
+
+
+    def iter_sqlite_track_rows(sqlite_path: Path, allowed_track_ids: list[str] | None):
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            if allowed_track_ids is None:
+                rows_iter = conn.execute("SELECT frame, track_id, polygons FROM masks ORDER BY CAST(track_id AS INTEGER), frame")
+            elif not allowed_track_ids:
+                rows_iter = iter(())
+            else:
+                placeholders = ",".join("?" for _ in allowed_track_ids)
+                rows_iter = conn.execute(
+                    f"SELECT frame, track_id, polygons FROM masks WHERE track_id IN ({placeholders}) ORDER BY CAST(track_id AS INTEGER), frame",
+                    tuple(str(track_id) for track_id in allowed_track_ids),
+                )
+            for frame, track_id, polygons_json in rows_iter:
+                yield TrackRow(frame=int(frame), track_id=str(track_id), polygons=parse_polygons(str(polygons_json)))
+        finally:
+            conn.close()
+
+
+    def iter_track_streams_from_sqlite(
+        sqlite_path: Path,
+        *,
+        anchors_per_contour: int,
+        predictor: LearnedPointPredictor | None,
+        predictor_batch_size: int,
+        adaptive_anchor_counts: bool,
+        adaptive_point_quantile: float,
+        adaptive_point_offset: int,
+        min_anchors_per_contour: int,
+        gapfill_enabled: bool,
+        gapfill_max_gap: int,
+        gapfill_temp_points: int,
+        max_tracks: int,
+        max_run_frames: int,
+        run_overlap_frames: int,
+        segmentation_stats: dict[str, int],
+    ):
+        allowed_track_ids = sqlite_allowed_track_ids(sqlite_path, int(max_tracks))
+        source_stats = sqlite_mask_stats_for_tracks(sqlite_path, allowed_track_ids)
+        max_frames = int(max_run_frames)
+        requested_overlap = max(0, int(run_overlap_frames))
+        effective_overlap = 0 if max_frames <= 0 else int(min(requested_overlap, max(0, (max_frames - 1) // 2)))
+        emit_stride = 0 if max_frames <= 0 else int(max(1, max_frames - 2 * effective_overlap))
+        segmentation_stats.clear()
+        segmentation_stats.update(
+            {
+                "source_tracks": int(source_stats["source_tracks"]),
+                "source_rows": int(source_stats["source_rows"]),
+                "gapfill_inserted_frames": 0,
+                "gapfill_events": 0,
+                "hard_split_events": 0,
+                "segment_count": 0,
+                "max_run_frames": int(max_frames),
+                "run_overlap_frames": int(effective_overlap),
+                "source_segment_count": 0,
+                "processed_segment_count": 0,
+                "long_segment_count": 0,
+                "chunked_source_segment_count": 0,
+                "chunk_output_segment_count": 0,
+                "max_source_segment_frames": 0,
+                "max_processed_segment_frames": 0,
+                "emit_stride_frames": int(emit_stride),
+                "overlap_added_rows": 0,
+                "effective_stream_count": 0,
+            }
+        )
+
+        buffer: list[TrackRow] = []
+        buffer_start_idx = 0
+        segment_len = 0
+        next_emit_start = 0
+        source_run_id = 0
+        chunk_index = 0
+        current_track_id: str | None = None
+        prev: TrackRow | None = None
+
+        def build_runs_for_chunk(
+            chunk_rows: list[TrackRow],
+            *,
+            emit_start: int,
+            emit_end: int,
+            process_start: int,
+            process_end: int,
+            chunk_idx: int,
+            chunked: bool,
+        ) -> list[InstanceRun]:
+            runs, _ignored_stats = build_track_streams(
+                chunk_rows,
+                anchors_per_contour=int(anchors_per_contour),
+                predictor=predictor,
+                predictor_batch_size=int(predictor_batch_size),
+                adaptive_anchor_counts=bool(adaptive_anchor_counts),
+                adaptive_point_quantile=float(adaptive_point_quantile),
+                adaptive_point_offset=int(adaptive_point_offset),
+                min_anchors_per_contour=int(min_anchors_per_contour),
+                gapfill_enabled=False,
+                gapfill_max_gap=int(gapfill_max_gap),
+                gapfill_temp_points=int(gapfill_temp_points),
+                max_tracks=-1,
+                max_run_frames=0,
+                run_overlap_frames=0,
+            )
+            out: list[InstanceRun] = []
+            for sub_idx, run in enumerate(runs):
+                suffix = f":chunk{chunk_idx + 1}" if bool(chunked) else ""
+                extra = f":part{sub_idx + 1}" if len(runs) > 1 else ""
+                run.run_id = int(source_run_id)
+                run.stream_id = f"{run.track_id}:run{source_run_id}{suffix}{extra}:instance"
+                run.emit_start_idx = int(emit_start)
+                run.emit_end_idx = int(emit_end)
+                run.chunk_index = int(chunk_idx)
+                run.chunk_count = -1 if bool(chunked) else 1
+                run.chunk_process_start = int(process_start)
+                run.chunk_process_end = int(process_end)
+                run.chunked_from_long_run = bool(chunked)
+                out.append(run)
+            return out
+
+        def emit_chunk(process_start: int, process_end: int, emit_start: int, emit_end: int, *, final: bool) -> list[InstanceRun]:
+            nonlocal buffer, buffer_start_idx, next_emit_start, chunk_index
+            start_offset = int(process_start - buffer_start_idx)
+            end_offset = int(process_end - buffer_start_idx)
+            chunk_rows = list(buffer[start_offset:end_offset])
+            chunked = bool(segment_len > max_frames and max_frames > 0)
+            emitted_len = int(emit_end - emit_start)
+            processed_len = int(process_end - process_start)
+            segmentation_stats["processed_segment_count"] += 1
+            segmentation_stats["max_processed_segment_frames"] = int(max(segmentation_stats["max_processed_segment_frames"], processed_len))
+            if chunked:
+                segmentation_stats["chunk_output_segment_count"] += 1
+                segmentation_stats["overlap_added_rows"] += int(max(0, processed_len - emitted_len))
+            runs = build_runs_for_chunk(
+                chunk_rows,
+                emit_start=int(emit_start - process_start),
+                emit_end=int(emit_end - process_start),
+                process_start=int(process_start),
+                process_end=int(process_end),
+                chunk_idx=int(chunk_index),
+                chunked=chunked,
+            )
+            segmentation_stats["effective_stream_count"] += int(len(runs))
+            chunk_index += 1
+            next_emit_start = int(emit_end)
+            if not final:
+                keep_from = int(max(0, next_emit_start - effective_overlap))
+                drop_count = int(keep_from - buffer_start_idx)
+                if drop_count > 0:
+                    buffer = buffer[drop_count:]
+                    buffer_start_idx = keep_from
+            return runs
+
+        def emit_ready_chunks(final: bool) -> list[InstanceRun]:
+            out: list[InstanceRun] = []
+            if segment_len <= 0:
+                return out
+            if max_frames <= 0:
+                if final and next_emit_start < segment_len:
+                    out.extend(emit_chunk(0, segment_len, 0, segment_len, final=True))
+                return out
+            if segment_len <= max_frames:
+                if final and next_emit_start < segment_len:
+                    out.extend(emit_chunk(0, segment_len, 0, segment_len, final=True))
+                return out
+            while next_emit_start < segment_len:
+                emit_start = int(next_emit_start)
+                emit_end = int(min(segment_len, emit_start + emit_stride))
+                process_start = int(max(0, emit_start - effective_overlap))
+                desired_process_end = int(emit_end + effective_overlap)
+                if not final and desired_process_end > segment_len:
+                    break
+                process_end = int(min(segment_len, desired_process_end))
+                if not final and emit_end >= segment_len:
+                    break
+                out.extend(emit_chunk(process_start, process_end, emit_start, emit_end, final=final))
+                if final:
+                    continue
+            return out
+
+        def flush_segment() -> list[InstanceRun]:
+            nonlocal buffer, buffer_start_idx, segment_len, next_emit_start, source_run_id, chunk_index, prev
+            if segment_len <= 0:
+                return []
+            segmentation_stats["segment_count"] += 1
+            segmentation_stats["source_segment_count"] += 1
+            segmentation_stats["max_source_segment_frames"] = int(max(segmentation_stats["max_source_segment_frames"], segment_len))
+            if max_frames > 0 and segment_len > max_frames:
+                segmentation_stats["long_segment_count"] += 1
+                segmentation_stats["chunked_source_segment_count"] += 1
+            runs = emit_ready_chunks(final=True)
+            source_run_id += 1
+            buffer = []
+            buffer_start_idx = 0
+            segment_len = 0
+            next_emit_start = 0
+            chunk_index = 0
+            prev = None
+            return runs
+
+        def append_segment_row(row: TrackRow) -> list[InstanceRun]:
+            nonlocal segment_len
+            buffer.append(row)
+            segment_len += 1
+            return emit_ready_chunks(final=False)
+
+        for row in iter_sqlite_track_rows(sqlite_path, allowed_track_ids):
+            if current_track_id is not None and str(row.track_id) != current_track_id:
+                for run in flush_segment():
+                    yield run
+            if current_track_id != str(row.track_id):
+                current_track_id = str(row.track_id)
+                prev = None
+
+            current_slots = sort_polygons(row.polygons)
+            if prev is None:
+                first = TrackRow(
+                    frame=int(row.frame),
+                    track_id=str(row.track_id),
+                    polygons=[np.asarray(poly, dtype=np.float32) for poly in current_slots],
+                    is_gapfill=bool(row.is_gapfill),
+                )
+                for run in append_segment_row(first):
+                    yield run
+                prev = first
+                continue
+
+            prev_slots = sort_polygons(prev.polygons)
+            same_contour_count = len(prev_slots) == len(current_slots)
+            gap = int(row.frame) - int(prev.frame) - 1
+            if same_contour_count:
+                current_slots = align_contour_slots(prev_slots, current_slots)
+
+            if (not bool(gapfill_enabled)) and gap > 0:
+                for run in flush_segment():
+                    yield run
+                current = TrackRow(
+                    frame=int(row.frame),
+                    track_id=str(row.track_id),
+                    polygons=[np.asarray(poly, dtype=np.float32) for poly in sort_polygons(row.polygons)],
+                    is_gapfill=bool(row.is_gapfill),
+                )
+                for run in append_segment_row(current):
+                    yield run
+                prev = current
+                continue
+
+            if gap <= 0 and same_contour_count:
+                current = TrackRow(
+                    frame=int(row.frame),
+                    track_id=str(row.track_id),
+                    polygons=[np.asarray(poly, dtype=np.float32) for poly in current_slots],
+                    is_gapfill=bool(row.is_gapfill),
+                )
+                for run in append_segment_row(current):
+                    yield run
+                prev = current
+                continue
+
+            can_gapfill = bool(gapfill_enabled) and same_contour_count and gap > 0 and gap <= int(gapfill_max_gap)
+            if can_gapfill:
+                for step in range(1, gap + 1):
+                    interp_polys = interpolate_gapfill_polygons(
+                        prev_slots,
+                        current_slots,
+                        step=step,
+                        gap=gap,
+                        temp_points=int(gapfill_temp_points),
+                    )
+                    gap_row = TrackRow(
+                        frame=int(prev.frame) + step,
+                        track_id=str(row.track_id),
+                        polygons=[np.asarray(poly, dtype=np.float32) for poly in interp_polys],
+                        is_gapfill=True,
+                    )
+                    for run in append_segment_row(gap_row):
+                        yield run
+                segmentation_stats["gapfill_events"] += 1
+                segmentation_stats["gapfill_inserted_frames"] += int(gap)
+                current = TrackRow(
+                    frame=int(row.frame),
+                    track_id=str(row.track_id),
+                    polygons=[np.asarray(poly, dtype=np.float32) for poly in current_slots],
+                    is_gapfill=bool(row.is_gapfill),
+                )
+                for run in append_segment_row(current):
+                    yield run
+                prev = current
+                continue
+
+            for run in flush_segment():
+                yield run
+            segmentation_stats["hard_split_events"] += 1
+            current = TrackRow(
+                frame=int(row.frame),
+                track_id=str(row.track_id),
+                polygons=[np.asarray(poly, dtype=np.float32) for poly in sort_polygons(row.polygons)],
+                is_gapfill=bool(row.is_gapfill),
+            )
+            for run in append_segment_row(current):
+                yield run
+            prev = current
+
+        for run in flush_segment():
+            yield run
 
 
     def flatten_contours(contours: np.ndarray) -> np.ndarray:
@@ -14569,26 +14913,31 @@ if False:
         pred_sqlite = pred_dir / "predictions.sqlite"
         t0 = time.perf_counter()
 
-        rows = load_rows(args.input_sqlite)
         predictor: LearnedPointPredictor | None = None
         if bool(args.adaptive_anchor_counts):
             predictor = LearnedPointPredictor(Path(args.point_predictor_model_dir), str(args.predictor_device))
-        runs, segmentation_stats = build_track_streams(
-            rows,
-            anchors_per_contour=int(args.anchors_per_contour),
-            predictor=predictor,
-            predictor_batch_size=int(args.predictor_batch_size),
-            adaptive_anchor_counts=bool(args.adaptive_anchor_counts),
-            adaptive_point_quantile=float(args.adaptive_point_quantile),
-            adaptive_point_offset=int(args.adaptive_point_offset),
-            min_anchors_per_contour=int(args.min_anchors_per_contour),
-            gapfill_enabled=bool(args.gapfill_enabled),
-            gapfill_max_gap=int(args.gapfill_max_gap),
-            gapfill_temp_points=int(args.gapfill_temp_points),
-            max_tracks=int(args.max_tracks),
-            max_run_frames=int(args.max_run_frames),
-            run_overlap_frames=int(args.run_overlap_frames),
-        )
+        effective_workers = max(1, int(args.num_workers))
+        streaming_rows = bool(args.stream_sqlite_rows) and effective_workers == 1
+        runs: list[InstanceRun] = []
+        segmentation_stats: dict[str, int] = {}
+        if not streaming_rows:
+            rows = load_rows(args.input_sqlite)
+            runs, segmentation_stats = build_track_streams(
+                rows,
+                anchors_per_contour=int(args.anchors_per_contour),
+                predictor=predictor,
+                predictor_batch_size=int(args.predictor_batch_size),
+                adaptive_anchor_counts=bool(args.adaptive_anchor_counts),
+                adaptive_point_quantile=float(args.adaptive_point_quantile),
+                adaptive_point_offset=int(args.adaptive_point_offset),
+                min_anchors_per_contour=int(args.min_anchors_per_contour),
+                gapfill_enabled=bool(args.gapfill_enabled),
+                gapfill_max_gap=int(args.gapfill_max_gap),
+                gapfill_temp_points=int(args.gapfill_temp_points),
+                max_tracks=int(args.max_tracks),
+                max_run_frames=int(args.max_run_frames),
+                run_overlap_frames=int(args.run_overlap_frames),
+            )
 
         run_count = int(len(runs))
         union_rows_all: list[dict[str, object]] = []
@@ -14601,7 +14950,6 @@ if False:
         total_interval_frames = 0
         total_candidate_frames = 0
         total_stage_times: dict[str, float] = {}
-        effective_workers = max(1, int(args.num_workers))
 
         def collect_result(result: dict[str, object]) -> None:
             nonlocal total_interval_evals, total_interval_frames, total_candidate_frames
@@ -14615,7 +14963,35 @@ if False:
             for key, value in result.get("stage_times", {}).items():
                 total_stage_times[str(key)] = float(total_stage_times.get(str(key), 0.0) + float(value))
 
-        if effective_workers == 1 or len(runs) <= 1:
+        if streaming_rows:
+            union_store = SqliteUnionRowStore(output_dir / ".polygon_union_rows.tmp.sqlite")
+            for run in iter_track_streams_from_sqlite(
+                args.input_sqlite,
+                anchors_per_contour=int(args.anchors_per_contour),
+                predictor=predictor,
+                predictor_batch_size=int(args.predictor_batch_size),
+                adaptive_anchor_counts=bool(args.adaptive_anchor_counts),
+                adaptive_point_quantile=float(args.adaptive_point_quantile),
+                adaptive_point_offset=int(args.adaptive_point_offset),
+                min_anchors_per_contour=int(args.min_anchors_per_contour),
+                gapfill_enabled=bool(args.gapfill_enabled),
+                gapfill_max_gap=int(args.gapfill_max_gap),
+                gapfill_temp_points=int(args.gapfill_temp_points),
+                max_tracks=int(args.max_tracks),
+                max_run_frames=int(args.max_run_frames),
+                run_overlap_frames=int(args.run_overlap_frames),
+                segmentation_stats=segmentation_stats,
+            ):
+                run_count += 1
+                result = process_single_run(run, args)
+                union_store.add_rows(result["union_rows"])
+                collect_result(result)
+                run = None
+                result = None
+                __import__("gc").collect()
+            union_store.commit()
+            union_row_count = int(union_store.row_count)
+        elif effective_workers == 1 or len(runs) <= 1:
             union_store = SqliteUnionRowStore(output_dir / ".polygon_union_rows.tmp.sqlite")
             for run_idx, run in enumerate(runs):
                 result = process_single_run(run, args)
@@ -14635,6 +15011,18 @@ if False:
                 collect_result(result)
             union_rows = sorted(union_rows_all, key=lambda row: (int(row["frame"]), int(str(row["track_id"]))))
             union_row_count = int(len(union_rows))
+        chunk_counts_by_run: dict[tuple[str, int], int] = {}
+        for row in stream_rows:
+            if int(row.get("chunk_count", 1)) < 0:
+                key = (str(row["track_id"]), int(row["run_id"]))
+                chunk_counts_by_run[key] = max(int(chunk_counts_by_run.get(key, 0)), int(row["chunk_index"]) + 1)
+        for row in stream_rows:
+            if int(row.get("chunk_count", 1)) < 0:
+                key = (str(row["track_id"]), int(row["run_id"]))
+                chunk_count = int(chunk_counts_by_run.get(key, int(row["chunk_index"]) + 1))
+                chunk_index = int(row["chunk_index"])
+                row["chunk_count"] = int(chunk_count)
+                row["stream_id"] = str(row["stream_id"]).replace(f":chunk{chunk_index + 1}:instance", f":chunk{chunk_index + 1}of{chunk_count}:instance")
         opt_dir.mkdir(parents=True, exist_ok=True)
         if union_store is not None:
             union_store.write_union_json(opt_dir / "interpolated_union.json")
@@ -14705,6 +15093,7 @@ if False:
             "max_run_frames": int(args.max_run_frames),
             "run_overlap_frames": int(args.run_overlap_frames),
             "num_workers": int(effective_workers),
+            "stream_sqlite_rows": bool(streaming_rows),
             "row_count": int(union_row_count),
             "target_ratio": float(args.target_ratio),
             "anchors_per_contour_cap": int(args.anchors_per_contour),
